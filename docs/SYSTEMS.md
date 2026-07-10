@@ -16,8 +16,27 @@ for a free solo game.
 
 A single JSON file via `serde_json`. The state is one cohesive blob, so SQLite
 would be over-engineering: there are no relational queries, no large datasets, and
-no partial updates. JSON is simple and human-debuggable. RON is a Rust-native
-alternative if preferred.
+no partial updates. JSON is simple and human-debuggable.
+
+### Saved state
+
+The `data` blob (see [Integrity](#integrity-hmac) below) serializes one cohesive
+game-state struct. The fields, derived from the mechanics:
+
+- `version`: schema version, for migrations.
+- `prng`: the seeded PRNG state (so ticks and offline replay are reproducible).
+- `last_seen`: wall-clock time of the last write, for offline accrual.
+- `pickaxe`: tier, Efficiency, Fortune, and each enchant's level.
+- `inventory`: a map from ore (raw and Compressed) to count.
+- `level`: mining XP and current level.
+- `worlds`: which worlds are unlocked.
+- `mines`: per mine, its current size and its remaining-blocks grid state.
+- `selected_mine`: the world and mine currently targeted.
+- `prestige`: prestige rank and the derived permanent multiplier.
+- `boosts`: active temporary boosts and their remaining timers.
+
+The exact field names and shapes are settled during implementation; this is the
+information the save must carry.
 
 ### Save cadence
 
@@ -72,3 +91,31 @@ Game rules live in a `core` crate (`skylode-core`), decoupled from the TUI
 (`skylode-tui`). This keeps the rules testable (deterministic ticks, `#[test]`)
 and leaves the door open for other front-ends later. The core owns the game state,
 including the mine grid; the TUI only renders it and forwards input.
+
+### Tick loop
+
+The core advances on a fixed timestep of 20 ticks per second (see
+[MECHANICS.md](MECHANICS.md#ticks)). One `tick(input)` call applies the held-Space
+mining, the auto-miner, timers (boosts, cube regeneration), XP accrual, and enchant
+procs, all from the seeded PRNG so a run is reproducible. Rendering is decoupled:
+the TUI redraws on change at roughly 30 fps, reading the core state without
+driving it. On launch, offline time is credited by replaying elapsed ticks
+(capped) before the interactive loop starts.
+
+### Core modules
+
+The core is split by concern, each unit testable in isolation:
+
+- `worlds`, `materials`: the static data (which ores, their world, hardness, and
+  minimum pickaxe tier).
+- `pickaxes`: tiers, Efficiency, Fortune, enchant levels, and `mining_power`.
+- `mines`: the grid model, mixed content, break progress, batch reset, and size.
+- `progression`: mining XP and level, world unlocks, and the two-axis gating.
+- `enchants`: the five enchants, their per-dimension caps, and their effects.
+- `economy`: costs (composite compressed plus raw), the compression denomination,
+  and boosts.
+- `prestige`: the reset and the permanent multiplier.
+- `save`: serialization, HMAC, atomic write, and migration.
+
+The TUI (`skylode-tui`) holds the screens (Mine, Mines, Inventory, Upgrades,
+Stats), reads core state to render, and forwards keyboard input.

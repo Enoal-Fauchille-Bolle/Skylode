@@ -12,9 +12,11 @@ the workspace compiles, but the TUI front-end is still a stub. See the
 ## Concept
 
 Start with a Wooden pickaxe, mine ore cubes, and spend the ores to upgrade the
-pickaxe (tier plus Efficiency plus Fortune). Unlock new worlds (Overworld, Nether,
-End) whose materials open new functions, then prestige for permanent multipliers.
-There is no PvP, multiplayer, or money: the economy runs on ores directly.
+pickaxe (tier plus Efficiency plus Fortune) and grow your mines. Level up your
+mining to unlock new worlds (Overworld, Nether, End) whose materials open new
+functions, enchant the pickaxe with each world's enchant material, then prestige
+for permanent multipliers. There is no PvP, multiplayer, or money: the economy
+runs on ores directly.
 
 The core loop:
 
@@ -32,12 +34,17 @@ Full detail is in [docs/DESIGN.md](docs/DESIGN.md).
 All of the following are planned, not yet implemented:
 
 - Core mining loop with progressive block breaking and an instamine endgame.
+- Two-axis progression: mining level opens worlds, pickaxe tier opens mines.
 - Pickaxe upgrades: tiers, Efficiency, Fortune, with composite (compressed plus
   raw) costs.
-- Three worlds with materials that open distinct functions.
-- Amethyst enchants: Explosive, Jackhammer, Nuke, Excavator, Haste.
+- Three worlds with materials that open distinct functions, including per-world
+  enchant materials (Lapis, Quartz, Amethyst).
+- Five special enchants (Explosive, Jackhammer, Nuke, Excavator, Haste), leveled
+  per dimension.
+- Mixed-content mines and per-mine size growth (3x3 to 20x10).
+- Temporary Haste boosts from Redstone.
 - A basic auto-miner with offline accrual.
-- Prestige.
+- Prestige (deep reset for a permanent multiplier).
 - A robust save system (JSON, autosave, atomic writes, HMAC integrity, `.bak`
   recovery).
 

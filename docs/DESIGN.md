@@ -19,8 +19,9 @@ Rust, inspired by PikaNetwork's SkyMines gamemode.
 
 It reinterprets the SkyMines "tycoon mining" loop as a single-player, offline TUI.
 Start with a Wooden pickaxe, mine ore cubes, spend the ores to upgrade the pickaxe
-(tier plus Efficiency plus Fortune), unlock new worlds with new materials and
-functions, and eventually prestige for permanent multipliers.
+(tier plus Efficiency plus Fortune) and to grow your mines, level up your mining to
+unlock new worlds with new materials and functions, enchant the pickaxe with each
+world's enchant material, and eventually prestige for permanent multipliers.
 
 There is no PvP, no multiplayer, no skyblock island building, no paid ranks, and
 no money. The economy runs on ores directly.
@@ -50,16 +51,23 @@ Dropped or changed items are recorded in [DECISIONS.md](DECISIONS.md).
 
 ## Core gameplay loop
 
-1. Mine the selected ore cube with the pickaxe.
-2. Ores accumulate in the inventory (Fortune multiplies yield).
-3. Spend ores to upgrade the pickaxe (Efficiency inside a tier, then jump tier).
-4. A tier jump unlocks harder ores but temporarily lowers mining speed (the "dip",
-   a deliberate decision point).
-5. New worlds unlock new materials with new functions (speed, fortune, enchants).
-6. At the soft cap, prestige to reset progression for a permanent multiplier.
+1. Mine the selected ore cube with the pickaxe (hold Space). Ores and mining XP
+   accumulate.
+2. Ores pile up in the inventory (Fortune multiplies yield).
+3. Spend ores to upgrade the pickaxe (Efficiency inside a tier, then jump tier)
+   and to grow the mine (paid in that mine's own ore).
+4. A tier jump unlocks harder mines but temporarily lowers mining speed (the
+   "dip", a deliberate decision point).
+5. Mining levels up. New levels unlock new worlds (Nether, then End) with new
+   materials and functions (speed, fortune, enchants).
+6. Enchant the pickaxe with each world's enchant material (Lapis, then Quartz,
+   then Amethyst), which raises the enchant ceiling per world.
+7. At the End, farm Amethyst and prestige to reset progression for a permanent
+   multiplier.
 
-Engagement comes from decisions (when to jump tier, what to upgrade, when to
-prestige), not from combat. The detailed rules behind each step are in
+Engagement comes from decisions (when to jump tier, what to upgrade, which mine to
+grow, when to prestige), not from combat. The two gating axes (level opens worlds,
+pickaxe tier opens mines) and the detailed rules behind each step are in
 [MECHANICS.md](MECHANICS.md).
 
 ## Screens
@@ -69,12 +77,13 @@ Tab or number keys:
 
 - **Mine:** active mining (hold Space). The current cube is shown as a 2D grid
   (each block `##`, the targeted cell highlighted with a crack glyph), with a
-  status strip below the grid (break-progress bar, mining power, active boost).
-- **Mines:** choose the world and cube. Shows unlocked versus locked mines (gated
-  by pickaxe tier).
-- **Inventory:** ores and amounts (no stack limit).
-- **Upgrades:** the full pickaxe roadmap. Every tier and every Efficiency/Fortune
-  step with its composite cost, the current position highlighted, and future
-  (even locked) steps visible for planning the next material jump. Quality-of-life:
+  status strip below the grid (break-progress bar, mining power, active boost, and
+  the mining-level / XP bar).
+- **Mines:** choose the world and cube. Worlds are gated by mining level and mines
+  by pickaxe tier; shows unlocked versus locked, and each mine's size.
+- **Inventory:** ores and amounts (raw and Compressed, no stack limit).
+- **Upgrades:** the full pickaxe roadmap (every tier and Efficiency/Fortune step
+  with its composite cost, current position highlighted, future steps visible for
+  planning), plus enchant levels and mine-size upgrades. Quality-of-life:
   affordability markers, buy times N, buy max.
-- **Stats:** progression, prestige, milestones.
+- **Stats:** progression, mining level, prestige rank, milestones.
