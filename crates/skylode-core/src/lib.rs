@@ -25,8 +25,3 @@ pub mod mine;
 pub mod pickaxe;
 pub mod player;
 pub mod world;
-
-#[cfg(test)]
-mod tests {
-    // Integration tests for the crate's public API go here.
-}
