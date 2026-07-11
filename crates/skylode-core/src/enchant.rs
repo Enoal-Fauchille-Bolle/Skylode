@@ -140,10 +140,13 @@ impl Enchants {
         *level += 1;
     }
 
-    /// Resets the level of the specified enchantment type to 0.
-    /// If the enchantment is not present, it will be added with a level of 0.
+    /// Resets the level of the specified enchantment to 0.
+    ///
+    /// Removes the entry outright rather than storing a 0, which keeps the
+    /// "absent == level 0" invariant true: [`iter`](Enchants::iter) must only
+    /// ever yield enchantments the pickaxe actually has.
     pub fn reset_level(&mut self, kind: EnchantType) {
-        self.levels.insert(kind, 0);
+        self.levels.remove(&kind);
     }
 
     /// Resets all enchantments to level 0.
