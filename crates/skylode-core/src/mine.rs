@@ -29,12 +29,12 @@ const MINE_SIZES: [(u8, u8); 10] = [
 pub struct Mine {
     /// The blocks that make up the mine. The first entry is the main block;
     /// the rest are secondary blocks that can also appear.
-    pub blocks: Vec<Block>,
+    blocks: Vec<Block>,
     /// Size tier of the mine; indexes into `MINE_SIZES` via
     /// [`get_size`](Mine::get_size).
-    pub size_level: u32,
+    size_level: u32,
     /// The 2D grid of blocks that the player actually mines, row by row.
-    pub grid: Vec<Vec<Block>>,
+    grid: Vec<Vec<Block>>,
 }
 
 impl Mine {
