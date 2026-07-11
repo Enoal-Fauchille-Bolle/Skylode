@@ -18,8 +18,10 @@ use std::collections::HashMap;
 /// pickaxe live in [`Enchants`], which stores them more compactly as a map.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Enchant {
-    pub enchant_type: EnchantType,
-    pub level: u8,
+    /// The kind of enchantment (Efficiency, Fortune, …).
+    enchant_type: EnchantType,
+    /// The level of the enchantment, which must not exceed
+    level: u8,
 }
 
 /// The kinds of enchantment a pickaxe can have.
