@@ -41,15 +41,19 @@ pub struct Mine {
 
 impl Mine {
     /// Creates a new mine with the given blocks and size level.
+    /// The grid is filled with the main block and the secondary blocks.
     pub fn new(main_block: Block, secondary_blocks: Vec<Block>) -> Self {
-        Mine {
+        let mut mine = Mine {
             main_block,
             secondary_blocks,
             size_level: 1,
             grid: Vec::new(),
-        }
+        };
+        Self::reset(&mut mine);
+        mine
     }
 
+    /// Resets the mine to its initial state, filling the grid with the main
     pub fn reset(&mut self) {
         self.grid.clear();
         let (width, height) = self.get_size();
@@ -133,5 +137,20 @@ mod tests {
                 "size level {size_level} should clamp to the largest mine"
             );
         }
+    }
+
+    #[test]
+    fn new_mine_starts_full_of_the_main_block() {
+        let main_block = Block::Stone;
+        let secondary_blocks = vec![Block::CoalOre, Block::IronOre];
+        let mine = Mine::new(main_block, secondary_blocks);
+        let (width, height) = mine.get_size();
+        for row in &mine.grid {
+            assert_eq!(row.len(), width as usize);
+            for &block in row {
+                assert_eq!(block, main_block);
+            }
+        }
+        assert_eq!(mine.grid.len(), height as usize);
     }
 }
