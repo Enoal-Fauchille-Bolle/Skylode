@@ -72,23 +72,19 @@ impl Pickaxe {
     /// 2. Once Efficiency is maxed, it is reset to 0 and the pickaxe advances to
     ///    the next tier — so the player re-climbs Efficiency on a stronger base.
     ///
-    /// At [`Netherite`](PickaxeTier::Netherite) (the final tier) the tier stops
-    /// advancing, though Efficiency there can still climb to a higher cap.
+    /// At [`Netherite`](PickaxeTier::Netherite) Efficiency climbs to its raised
+    /// cap of 15 and the pickaxe is then fully upgraded: further calls do
+    /// nothing. They must not fall through to phase 2, which would reset
+    /// Efficiency with no tier left to gain in exchange — a permanent downgrade
+    /// from 235 mining power back to 10.
     pub fn upgrade(&mut self) {
-        if self.enchants.get_level(EnchantType::Efficiency)
-            < EnchantType::Efficiency.max_level(Some(self.tier))
-        {
-            self.enchants.upgrade(EnchantType::Efficiency);
-        } else {
-            self.enchants.reset_level(EnchantType::Efficiency);
-            self.tier = match self.tier {
-                PickaxeTier::Wooden => PickaxeTier::Stone,
-                PickaxeTier::Stone => PickaxeTier::Iron,
-                PickaxeTier::Iron => PickaxeTier::Gold,
-                PickaxeTier::Gold => PickaxeTier::Diamond,
-                PickaxeTier::Diamond => PickaxeTier::Netherite,
-                PickaxeTier::Netherite => PickaxeTier::Netherite, // Max tier
-            };
+        let efficiency = EnchantType::Efficiency;
+
+        if self.enchants.get_level(efficiency) < efficiency.max_level(Some(self.tier)) {
+            self.enchants.upgrade(efficiency, Some(self.tier));
+        } else if let Some(next_tier) = self.tier.next() {
+            self.enchants.reset_level(efficiency);
+            self.tier = next_tier;
         }
     }
 }
@@ -109,6 +105,25 @@ impl PickaxeTier {
             PickaxeTier::Gold => 12,
             PickaxeTier::Diamond => 8,
             PickaxeTier::Netherite => 9,
+        }
+    }
+
+    /// Returns the tier one step up the upgrade ladder, or `None` at
+    /// [`Netherite`](PickaxeTier::Netherite).
+    ///
+    /// The ladder is deliberately a *partial* function. Modelling it as a total
+    /// one — with Netherite mapping to itself — reads as "there is always a next
+    /// tier", which let [`Pickaxe::upgrade`] treat the top of the ladder as an
+    /// ordinary step and wipe the player's Efficiency for nothing. `None` forces
+    /// every caller to say what happens when there is no next tier.
+    pub fn next(self) -> Option<PickaxeTier> {
+        match self {
+            PickaxeTier::Wooden => Some(PickaxeTier::Stone),
+            PickaxeTier::Stone => Some(PickaxeTier::Iron),
+            PickaxeTier::Iron => Some(PickaxeTier::Gold),
+            PickaxeTier::Gold => Some(PickaxeTier::Diamond),
+            PickaxeTier::Diamond => Some(PickaxeTier::Netherite),
+            PickaxeTier::Netherite => None,
         }
     }
 }
