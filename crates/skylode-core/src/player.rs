@@ -9,16 +9,16 @@ use crate::pickaxe::Pickaxe;
 
 /// The player's persistent progression state.
 pub struct Player {
+    /// The pickaxe the player currently mines with.
+    pickaxe: Pickaxe,
     /// Current level; starts at 1 and only increases.
-    pub level: u32,
+    level: u32,
     /// Experience banked toward the *next* level (never exceeds
     /// [`experience_to_next_level`](Player::experience_to_next_level) after an
     /// XP grant is fully processed).
-    pub experience: u32,
-    /// The pickaxe the player currently mines with.
-    pub pickaxe: Pickaxe,
+    experience: u32,
     /// Number of times the player has prestiged (soft-reset for meta rewards).
-    pub prestige: u32,
+    prestige: u32,
 }
 
 impl Default for Player {
@@ -38,6 +38,16 @@ impl Player {
             pickaxe: Pickaxe::default(),
             prestige: 0,
         }
+    }
+
+    /// Returns the player's current level.
+    pub fn get_level(&self) -> u32 {
+        self.level
+    }
+
+    /// Returns the player's current experience banked toward the next level.
+    pub fn get_experience(&self) -> u32 {
+        self.experience
     }
 
     /// Grants `amount` experience and applies any resulting level-ups.
@@ -63,6 +73,16 @@ impl Player {
     pub fn experience_to_next_level(&self) -> u32 {
         self.level * 100
     }
+
+    /// Returns the player's current pickaxe.
+    pub fn get_pickaxe(&self) -> &Pickaxe {
+        &self.pickaxe
+    }
+
+    /// Returns the player's current prestige count.
+    pub fn get_prestige(&self) -> u32 {
+        self.prestige
+    }
 }
 
 #[cfg(test)]
@@ -82,10 +102,10 @@ mod tests {
     #[test]
     fn default_is_the_same_as_new() {
         let (new, default) = (Player::new(), Player::default());
-        assert_eq!(new.level, default.level);
-        assert_eq!(new.experience, default.experience);
-        assert_eq!(new.prestige, default.prestige);
-        assert_eq!(new.pickaxe, default.pickaxe);
+        assert_eq!(new.get_level(), default.get_level());
+        assert_eq!(new.get_experience(), default.get_experience());
+        assert_eq!(new.get_prestige(), default.get_prestige());
+        assert_eq!(new.get_pickaxe(), default.get_pickaxe());
     }
 
     #[test]
