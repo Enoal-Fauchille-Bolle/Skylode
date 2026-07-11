@@ -55,9 +55,11 @@ impl Material {
 
     /// Returns every [`World`] in which this material can be obtained.
     ///
-    /// Most materials are exclusive to a single world, but a few (like
-    /// [`Obsidian`](Material::Obsidian)) span more than one, hence the slice
-    /// return type rather than a single `World`.
+    /// The slice return type allows a material to be sourced from more than one
+    /// world; none currently is, but the drop tables are expected to overlap as
+    /// worlds gain blocks. Must stay in step with
+    /// [`World::materials`](crate::world::World::materials), which encodes the
+    /// same relation from the other side.
     pub fn worlds(self) -> &'static [World] {
         match self {
             Self::Stone
@@ -68,8 +70,9 @@ impl Material {
             | Self::Redstone
             | Self::Emerald
             | Self::Diamond => &[World::Overworld],
-            Self::Quartz | Self::AncientDebris => &[World::Nether],
-            Self::Obsidian | Self::CryingObsidian => &[World::Nether, World::End],
+            Self::Quartz | Self::AncientDebris | Self::Obsidian | Self::CryingObsidian => {
+                &[World::Nether]
+            }
             Self::Amethyst => &[World::End],
         }
     }
