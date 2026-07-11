@@ -176,7 +176,19 @@ impl Enchants {
 mod tests {
     use super::*;
 
-    /// The enchantments whose cap does not depend on the pickaxe tier.
+    /// Every [`EnchantType`] variant.
+    const ALL_ENCHANTS: [EnchantType; 7] = [
+        EnchantType::Efficiency,
+        EnchantType::Fortune,
+        EnchantType::Explosive,
+        EnchantType::Jackhammer,
+        EnchantType::Nuke,
+        EnchantType::Excavator,
+        EnchantType::Haste,
+    ];
+
+    /// The enchantments whose cap does not depend on the pickaxe tier — that is,
+    /// every one but [`Efficiency`](EnchantType::Efficiency).
     const TIER_INDEPENDENT: [EnchantType; 6] = [
         EnchantType::Fortune,
         EnchantType::Explosive,
@@ -185,6 +197,45 @@ mod tests {
         EnchantType::Excavator,
         EnchantType::Haste,
     ];
+
+    /// Names are what the pickaxe screen shows, so a blank or duplicated one
+    /// would leave the player unable to tell two enchantments apart.
+    #[test]
+    fn enchant_names_are_present_and_unique() {
+        for (i, &a) in ALL_ENCHANTS.iter().enumerate() {
+            assert!(!a.name().is_empty(), "{a:?} has no display name");
+            for &b in &ALL_ENCHANTS[i + 1..] {
+                assert_ne!(
+                    a.name(),
+                    b.name(),
+                    "{a:?} and {b:?} share the display name {:?}",
+                    a.name()
+                );
+            }
+        }
+    }
+
+    /// `Enchant` and `Enchants` are two shapes of the same `(type, level)`
+    /// fact — a detached pair on one side, a sparse map on the other. Anything
+    /// that hands an `Enchant` around must be able to round-trip it through the
+    /// set actually installed on a pickaxe.
+    #[test]
+    fn a_detached_enchant_round_trips_through_the_installed_set() {
+        let detached = Enchant::new(EnchantType::Fortune, 3);
+        assert_eq!(detached.enchant_type, EnchantType::Fortune);
+        assert_eq!(detached.level, 3);
+
+        let mut installed = Enchants::new();
+        for _ in 0..detached.level {
+            installed.upgrade(detached.enchant_type, None);
+        }
+
+        let read_back = Enchant::new(
+            detached.enchant_type,
+            installed.get_level(detached.enchant_type),
+        );
+        assert_eq!(read_back, detached);
+    }
 
     #[test]
     fn an_absent_enchant_reads_as_level_zero() {

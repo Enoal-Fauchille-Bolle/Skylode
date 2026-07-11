@@ -30,7 +30,6 @@ pub struct Mine {
     /// The blocks that make up the mine. The first entry is the main block;
     /// the rest are secondary blocks that can also appear.
     pub blocks: Vec<Block>,
-
     /// Size tier of the mine; indexes into `MINE_SIZES` via
     /// [`get_size`](Mine::get_size).
     pub size_level: u32,
@@ -68,6 +67,68 @@ impl Mine {
             MINE_SIZES[index]
         } else {
             MINE_SIZES[MINE_SIZES.len() - 1] // Return the largest size if out of bounds
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A mine at the given size level. The block pool and grid are irrelevant to
+    /// sizing, which reads `size_level` alone.
+    fn mine_at(size_level: u32) -> Mine {
+        Mine {
+            blocks: Vec::new(),
+            size_level,
+            grid: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn size_level_indexes_the_dimension_table() {
+        assert_eq!(mine_at(0).get_size(), (3, 3));
+        assert_eq!(mine_at(4).get_size(), (10, 6));
+        assert_eq!(mine_at(9).get_size(), (20, 10));
+    }
+
+    /// A bigger mine must never be a smaller one: mine size is a reward, so the
+    /// table has to grow. Height is allowed to plateau, but the block count the
+    /// player must clear has to strictly increase, or a size level would cost an
+    /// upgrade and hand back nothing.
+    #[test]
+    fn mines_only_ever_grow_with_their_size_level() {
+        for pair in MINE_SIZES.windows(2) {
+            let ((width, height), (next_width, next_height)) = (pair[0], pair[1]);
+            assert!(
+                next_width >= width && next_height >= height,
+                "({next_width}, {next_height}) is smaller than ({width}, {height})"
+            );
+
+            let (area, next_area) = (
+                u32::from(width) * u32::from(height),
+                u32::from(next_width) * u32::from(next_height),
+            );
+            assert!(
+                next_area > area,
+                "a mine of {next_width}x{next_height} holds no more blocks than one of {width}x{height}"
+            );
+        }
+    }
+
+    /// `size_level` is a `u32` but the table has only 10 rows, so every level
+    /// past the end must clamp to the largest mine. Indexing straight into the
+    /// table would panic instead — and this is reachable, since nothing caps the
+    /// field.
+    #[test]
+    fn size_levels_past_the_table_clamp_to_the_largest_mine() {
+        let largest = mine_at(9).get_size();
+        for size_level in [10, 11, 100, u32::MAX] {
+            assert_eq!(
+                mine_at(size_level).get_size(),
+                largest,
+                "size level {size_level} should clamp to the largest mine"
+            );
         }
     }
 }

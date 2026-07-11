@@ -199,6 +199,19 @@ mod tests {
         );
     }
 
+    /// Pins the balance table. These six numbers set the pace of the entire
+    /// run, so a change to any of them should be a deliberate one that also
+    /// updates this test.
+    #[test]
+    fn each_tier_has_its_balanced_base_power() {
+        assert_eq!(PickaxeTier::Wooden.base_power(), 2.0);
+        assert_eq!(PickaxeTier::Stone.base_power(), 4.0);
+        assert_eq!(PickaxeTier::Iron.base_power(), 6.0);
+        assert_eq!(PickaxeTier::Gold.base_power(), 12.0);
+        assert_eq!(PickaxeTier::Diamond.base_power(), 8.0);
+        assert_eq!(PickaxeTier::Netherite.base_power(), 9.0);
+    }
+
     /// Deliberate, and easy to "fix" by accident: Gold mines faster than both
     /// Diamond and Netherite, mirroring Minecraft. Tier gates *access*, not raw
     /// speed.
