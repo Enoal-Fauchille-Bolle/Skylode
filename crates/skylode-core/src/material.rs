@@ -13,7 +13,7 @@ use crate::world::World;
 /// player spends/accumulates them. The set is deliberately smaller than the
 /// [`Block`](crate::block::Block) set because ore and compressed-block variants
 /// collapse onto the same material.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub enum Material {
     Stone,
     Coal,

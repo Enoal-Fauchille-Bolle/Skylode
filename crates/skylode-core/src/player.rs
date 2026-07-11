@@ -5,7 +5,7 @@
 //! [`pickaxe`](Player::pickaxe), and their [`prestige`](Player::prestige)
 //! count. It owns the level-up curve and experience bookkeeping.
 
-use crate::pickaxe::Pickaxe;
+use crate::{inventory::Inventory, pickaxe::Pickaxe};
 
 /// The player's persistent progression state.
 pub struct Player {
@@ -17,6 +17,8 @@ pub struct Player {
     /// [`experience_to_next_level`](Player::experience_to_next_level) after an
     /// XP grant is fully processed).
     experience: u32,
+    /// The player's inventory of materials
+    inventory: Inventory,
     /// Number of times the player has prestiged (soft-reset for meta rewards).
     prestige: u32,
 }
@@ -37,6 +39,7 @@ impl Player {
             experience: 0,
             pickaxe: Pickaxe::default(),
             prestige: 0,
+            inventory: Inventory::new(),
         }
     }
 
@@ -79,6 +82,11 @@ impl Player {
         &self.pickaxe
     }
 
+    /// Returns a reference to the player's inventory.
+    pub fn get_inventory(&self) -> &Inventory {
+        &self.inventory
+    }
+
     /// Returns the player's current prestige count.
     pub fn get_prestige(&self) -> u32 {
         self.prestige
@@ -106,6 +114,7 @@ mod tests {
         assert_eq!(new.get_experience(), default.get_experience());
         assert_eq!(new.get_prestige(), default.get_prestige());
         assert_eq!(new.get_pickaxe(), default.get_pickaxe());
+        assert_eq!(new.get_inventory(), default.get_inventory());
     }
 
     #[test]

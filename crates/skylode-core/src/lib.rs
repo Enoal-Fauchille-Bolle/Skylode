@@ -20,6 +20,7 @@
 
 pub mod block;
 pub mod enchant;
+pub mod inventory;
 pub mod material;
 pub mod mine;
 pub mod pickaxe;
