@@ -133,11 +133,21 @@ impl Enchants {
         self.levels.get(&kind).copied().unwrap_or(0)
     }
 
-    /// Increases the level of the specified enchantment type by 1.
-    /// If the enchantment is not present, it will be added with a level of 1.
-    pub fn upgrade(&mut self, kind: EnchantType) {
-        let level = self.levels.entry(kind).or_insert(0);
-        *level += 1;
+    /// Increases the level of the specified enchantment by 1, up to its cap.
+    ///
+    /// Absent enchantments start from 0, so the first call installs them at
+    /// level 1. Calls beyond [`max_level`](EnchantType::max_level) are no-ops:
+    /// the cap is enforced here rather than left to each caller, so no code path
+    /// can hand the player a level the game has no rules for.
+    ///
+    /// `pickaxe_tier` is needed because
+    /// [`Efficiency`](EnchantType::Efficiency)'s cap depends on it; pass `None`
+    /// for the tier-less default of 5.
+    pub fn upgrade(&mut self, kind: EnchantType, pickaxe_tier: Option<PickaxeTier>) {
+        let level = self.get_level(kind);
+        if level < kind.max_level(pickaxe_tier) {
+            self.levels.insert(kind, level + 1);
+        }
     }
 
     /// Resets the level of the specified enchantment to 0.
