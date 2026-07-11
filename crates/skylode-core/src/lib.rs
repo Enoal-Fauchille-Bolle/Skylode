@@ -12,11 +12,14 @@
 //! - [`block`]: individual placeable/mineable blocks and their properties
 //!   (hardness, required pickaxe tier, drops).
 //! - [`material`]: the raw resources that blocks yield when mined.
+//! - [`mine`]: a generated grid of blocks the player digs through, sized by
+//!   level.
 //! - [`pickaxe`]: the player's tool, its tier and mining power.
 //! - [`enchant`]: enchantments that modify a pickaxe's behaviour.
 pub mod block;
 pub mod enchant;
 pub mod material;
+pub mod mine;
 pub mod pickaxe;
 pub mod world;
 
