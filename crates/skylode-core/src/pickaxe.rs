@@ -58,9 +58,9 @@ impl Pickaxe {
     /// Efficiency bonus of `level² + 1`. The `+ 1` means even an unenchanted
     /// pickaxe (Efficiency 0) gets a small bonus, while the squaring makes high
     /// Efficiency levels scale sharply — the main long-term power lever.
-    pub fn mining_power(&self) -> u32 {
+    pub fn mining_power(&self) -> f32 {
         let base = self.tier.base_power();
-        let eff_bonus = (self.enchants.get_level(EnchantType::Efficiency) as u32).pow(2) + 1;
+        let eff_bonus = (self.enchants.get_level(EnchantType::Efficiency) as f32).powi(2) + 1.0;
         base + eff_bonus
     }
 
@@ -97,14 +97,14 @@ impl PickaxeTier {
     /// `Diamond` (8) and `Netherite` (9), mirroring Minecraft, where Gold mines
     /// fast but is otherwise weak. Tier still gates *which* blocks are
     /// mineable via [`Block::min_pickaxe_tier`](crate::block::Block::min_pickaxe_tier).
-    pub fn base_power(&self) -> u32 {
+    pub fn base_power(&self) -> f32 {
         match self {
-            PickaxeTier::Wooden => 2,
-            PickaxeTier::Stone => 4,
-            PickaxeTier::Iron => 6,
-            PickaxeTier::Gold => 12,
-            PickaxeTier::Diamond => 8,
-            PickaxeTier::Netherite => 9,
+            PickaxeTier::Wooden => 2.0,
+            PickaxeTier::Stone => 4.0,
+            PickaxeTier::Iron => 6.0,
+            PickaxeTier::Gold => 12.0,
+            PickaxeTier::Diamond => 8.0,
+            PickaxeTier::Netherite => 9.0,
         }
     }
 
@@ -166,7 +166,7 @@ mod tests {
     /// something: a fresh pickaxe mines at 2 (Wooden) + 0² + 1 = 3, not 2.
     #[test]
     fn an_unenchanted_pickaxe_still_gets_the_flat_bonus() {
-        assert_eq!(Pickaxe::default().mining_power(), 3);
+        assert_eq!(Pickaxe::default().mining_power(), 3.0);
     }
 
     /// Efficiency squares, so it is the long-term lever: on the same Wooden
@@ -177,13 +177,13 @@ mod tests {
         let mut enchants = Enchants::new();
         enchants.upgrade(EnchantType::Efficiency, tier);
         let level_one = Pickaxe::new(PickaxeTier::Wooden, enchants.clone());
-        assert_eq!(level_one.mining_power(), 2 + 1 + 1);
+        assert_eq!(level_one.mining_power(), 2.0 + 1.0 + 1.0);
 
         for _ in 0..4 {
             enchants.upgrade(EnchantType::Efficiency, tier);
         }
         let level_five = Pickaxe::new(PickaxeTier::Wooden, enchants);
-        assert_eq!(level_five.mining_power(), 2 + 25 + 1);
+        assert_eq!(level_five.mining_power(), 2.0 + 25.0 + 1.0);
     }
 
     /// The ladder must be walkable end to end, and stop exactly once.
@@ -269,7 +269,7 @@ mod tests {
             );
         }
         // 9 (Netherite) + 15² + 1
-        assert_eq!(pickaxe.mining_power(), 235);
+        assert_eq!(pickaxe.mining_power(), 235.0);
     }
 
     /// The final tier has nowhere left to advance to, so an upgrade there must
