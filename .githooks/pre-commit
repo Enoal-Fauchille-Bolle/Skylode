@@ -24,23 +24,30 @@ esac
 printf "${BLUE_BOLD}Running pre-commit checks...${RESET}\n"
 
 # Run cargo fmt
-printf "${WHITE_BOLD}[1/3] Running cargo fmt...${RESET}\n"
+printf "${WHITE_BOLD}[1/4] Running cargo fmt...${RESET}\n"
 if ! cargo fmt --all -- --check; then
     printf "${RED_BOLD}cargo fmt failed. Please run 'cargo +nightly fmt' to fix formatting issues.${RESET}\n"
     exit 1
 fi
 
 # Run cargo check
-printf "${WHITE_BOLD}[2/3] Running cargo check...${RESET}\n"
+printf "${WHITE_BOLD}[2/4] Running cargo check...${RESET}\n"
 if ! cargo check --all-targets --all-features; then
     printf "${RED_BOLD}cargo check failed. Please fix the compilation errors.${RESET}\n"
     exit 1
 fi
 
 # Run cargo clippy
-printf "${WHITE_BOLD}[3/3] Running cargo clippy...${RESET}\n"
+printf "${WHITE_BOLD}[3/4] Running cargo clippy...${RESET}\n"
 if ! cargo clippy --all-targets --all-features -- -D warnings; then
     printf "${RED_BOLD}cargo clippy failed. Please fix the linting warnings.${RESET}\n"
+    exit 1
+fi
+
+# Run cargo test
+printf "${WHITE_BOLD}[4/4] Running cargo test...${RESET}\n"
+if ! cargo test --all-targets --all-features; then
+    printf "${RED_BOLD}cargo test failed. Please fix the failing tests.${RESET}\n"
     exit 1
 fi
 
