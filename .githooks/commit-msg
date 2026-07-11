@@ -1,0 +1,125 @@
+#!/usr/bin/env sh
+# Git commit-msg hook
+# Validates Conventional Commits as specified in CONTRIBUTING.md:
+#   type(scope): subject
+# One line, imperative, lowercase, no trailing period, 72 characters at most.
+# A body is allowed when separated from the subject by a blank line.
+
+# Set up colors
+RED_BOLD="\033[1;31m"
+GREEN_BOLD="\033[1;32m"
+BLUE_BOLD="\033[1;34m"
+GOLD_BOLD="\033[1;33m"
+WHITE_BOLD="\033[1;37m"
+RESET="\033[0m"
+
+# The nine types listed in CONTRIBUTING.md. Kept as a closed set on purpose: a
+# hook without an allowlist would happily accept 'stuff(core): ...'.
+TYPES="feat|fix|docs|refactor|chore|style|test|build|ci"
+
+msg_file="$1"
+
+# Get the current branch name
+branch="$(git branch --show-current)"
+
+# Bypass if dev/: drafts there are meant to be cleaned up before merging.
+case "$branch" in
+  dev/*)
+    printf "${GOLD_BOLD}Branch starts with 'dev/', bypassing commit-msg checks.${RESET}\n"
+    exit 0
+    ;;
+esac
+
+# The subject is the first line that is neither blank nor a comment, which is
+# what git's default cleanup will keep as the subject too.
+subject="$(grep -v '^#' "$msg_file" | tr -d '\r' | grep -v '^[[:space:]]*$' | head -n 1)"
+
+# Nothing to validate: git aborts empty commit messages on its own, with a
+# clearer error than anything this hook could print.
+if [ -z "$subject" ]; then
+    exit 0
+fi
+
+# Bypass the messages git writes itself. Merges, reverts and rebase autosquash
+# markers cannot follow the convention and are never typed by hand; MERGE_HEAD
+# is the reliable signal, the prefixes catch the cases where it is already gone.
+if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+    printf "${GOLD_BOLD}Merge in progress, bypassing commit-msg checks.${RESET}\n"
+    exit 0
+fi
+case "$subject" in
+  "Merge "*|"Revert "*|"fixup! "*|"squash! "*|"amend! "*)
+    printf "${GOLD_BOLD}Generated message ('%.20s...'), bypassing commit-msg checks.${RESET}\n" "$subject"
+    exit 0
+    ;;
+esac
+
+printf "${BLUE_BOLD}Running commit-msg checks...${RESET}\n"
+
+# Max length <= 72
+# We use POSIX compatible string length calculation
+len=${#subject}
+if [ "$len" -gt 72 ]; then
+    printf "${RED_BOLD}Subject exceeds 72 characters (actual: $len).${RESET}\n"
+    exit 1
+fi
+
+# Conventional Commits format, with an optional lowercase scope.
+if ! printf "%s" "$subject" | grep -Eq "^($TYPES)(\([a-z0-9][a-z0-9-]*\))?: .+$"; then
+    printf "${RED_BOLD}Subject does not match the format: <type>(<scope>): <subject>${RESET}\n"
+    printf "${WHITE_BOLD}  types: $TYPES${RESET}\n"
+    printf "${WHITE_BOLD}  scope is optional and lowercase, e.g. 'feat(core): add fortune multiplier'${RESET}\n"
+    exit 1
+fi
+
+# A body must be separated from the subject by a blank line, so that git and
+# every tool downstream can tell the two apart. Checked on the raw second line:
+# once comments are stripped, 'git commit -v' would leave its diff behind and
+# make a well-formed message look like it had a body glued to the subject.
+# The trailing newline matters: an empty string piped into grep is zero lines,
+# not one blank line, and the blank-line pattern below would never match it.
+first_line="$(sed -n '1p' "$msg_file" | tr -d '\r')"
+second_line="$(sed -n '2p' "$msg_file" | tr -d '\r')"
+if [ -n "$first_line" ] && ! printf '%s\n' "$second_line" | grep -Eq '^[[:space:]]*$|^#'; then
+    printf "${RED_BOLD}Separate the subject from the body with a blank line.${RESET}\n"
+    exit 1
+fi
+
+# No double spaces
+if printf "%s" "$subject" | grep -Eq '  +'; then
+    printf "${RED_BOLD}Subject contains multiple consecutive spaces.${RESET}\n"
+    exit 1
+fi
+
+# Last character must be a letter or a number: this is what rules out the
+# trailing period, and any other stray punctuation with it.
+if ! printf "%s" "$subject" | grep -Eq '[a-zA-Z0-9]$'; then
+    printf "${RED_BOLD}Subject must end with a letter or a number (no trailing period).${RESET}\n"
+    exit 1
+fi
+
+# Extract the description and its first word to check lowercase and imperative mood
+description="${subject#*: }"
+first_word="${description%% *}"
+
+# Check that the first word is strictly lowercase
+if printf "%s" "$first_word" | grep -q '[A-Z]'; then
+    printf "${RED_BOLD}The first word of the subject ('%s') must be in lowercase.${RESET}\n" "$first_word"
+    exit 1
+fi
+
+# Basic check for imperative mood (not ending in -ed, -ing, or third-person -s).
+# Uses es$|[^s]s$ to avoid rejecting imperatives that end in double-s (address,
+# process, compress). The allowlist covers the imperatives the pattern would
+# otherwise reject on their spelling alone -- 'seed' and 'embed' matter here,
+# the core seeds its PRNG from the save.
+IMPERATIVES="pass|focus|bypass|alias|express|bring|string|ring|spring|swing|sing|seed|feed|embed|speed|spread|shed|exceed|proceed|succeed"
+if printf "%s" "$first_word" | grep -Eq '(ed|ing|es|[^s]s)$' && ! printf "%s" "$first_word" | grep -Eq "^($IMPERATIVES)$"; then
+    printf "${RED_BOLD}The first word of the subject ('%s') must be in the imperative mood (e.g., 'add' instead of 'added' or 'adds').${RESET}\n" "$first_word"
+    exit 1
+fi
+
+printf "${GREEN_BOLD}All commit-msg checks passed successfully!${RESET}\n"
+
+# Output success
+exit 0

@@ -37,12 +37,47 @@ This project follows [Conventional Commits](https://www.conventionalcommits.org)
 type(scope): subject
 ```
 
-- One line, imperative mood, lowercase, no trailing period (for example
-  `feat(core): add fortune multiplier to drops`).
+- The subject is one line of 72 characters at most, imperative mood, lowercase,
+  with no trailing period (for example `feat(core): add fortune multiplier`).
+- A body is optional; separate it from the subject with a blank line.
 - The scope is optional; use it when the affected area is obvious (`core`, `tui`,
   `docs`).
-- Common types: `feat`, `fix`, `docs`, `refactor`, `chore`, `style`, `test`,
-  `build`, `ci`.
+- Types: `feat`, `fix`, `docs`, `refactor`, `chore`, `style`, `test`, `build`,
+  `ci`. The list is closed: the `commit-msg` hook rejects anything else.
+
+## Git hooks
+
+The hooks in [.githooks/](.githooks/) check the rules above so a broken commit
+never reaches the history. Git does not version the hooks path, so install them
+once per clone:
+
+```sh
+.githooks/setup-hooks.sh     # macOS, Linux, WSL
+.githooks/setup-hooks.ps1    # Windows, PowerShell
+```
+
+Both scripts do the same thing: `git config core.hooksPath .githooks`, which
+points git at the versioned hooks instead of the local `.git/hooks/`. Undo it
+with `git config --unset core.hooksPath`.
+
+- **`pre-commit`** runs `cargo fmt --check`, `cargo check`, and `cargo clippy -D
+  warnings` over the workspace, and refuses the commit on the first failure. It
+  is the slow one, since it compiles.
+- **`commit-msg`** validates the commit message against the rules above: type
+  from the closed list, optional lowercase scope, subject in the imperative mood
+  and 72 characters at most, no trailing period, body separated by a blank line.
+
+Both hooks step aside where enforcing them would only get in the way:
+
+- **On a `dev/*` branch**, both bypass every check. Work in progress stays cheap
+  there; rewrite the history before merging into `main`.
+- **On the messages git writes itself** (merges, reverts, `fixup!`/`squash!`),
+  `commit-msg` bypasses validation. They cannot follow the convention and are not
+  typed by hand. This is also why there is no `merge` type: a merge is already
+  identified by its two parents, not by its message.
+
+Skipping a hook for a single commit is `git commit --no-verify`. Reach for it
+rarely, and never on `main`.
 
 ## Design context
 
