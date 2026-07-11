@@ -44,10 +44,10 @@ if ! cargo clippy --all-targets --all-features -- -D warnings; then
     exit 1
 fi
 
-# Run cargo test
-printf "${WHITE_BOLD}[4/4] Running cargo test...${RESET}\n"
-if ! cargo test --all-targets --all-features; then
-    printf "${RED_BOLD}cargo test failed. Please fix the failing tests.${RESET}\n"
+# Run cargo test & coverage
+printf "${WHITE_BOLD}[4/4] Running cargo tarpaulin...${RESET}\n"
+if ! cargo tarpaulin --fail-under 70 --out Stdout; then
+    printf "${RED_BOLD}cargo tarpaulin failed. Please fix the failing tests or improve coverage.${RESET}\n"
     exit 1
 fi
 
