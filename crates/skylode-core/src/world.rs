@@ -79,6 +79,7 @@ impl World {
                 Material::Emerald,
             ],
             Self::Nether => &[
+                Material::Quartz,
                 Material::AncientDebris,
                 Material::Obsidian,
                 Material::CryingObsidian,
