@@ -16,11 +16,14 @@
 //!   level.
 //! - [`pickaxe`]: the player's tool, its tier and mining power.
 //! - [`enchant`]: enchantments that modify a pickaxe's behaviour.
+//! - [`player`]: the player's progression state (level, experience, pickaxe).
+
 pub mod block;
 pub mod enchant;
 pub mod material;
 pub mod mine;
 pub mod pickaxe;
+pub mod player;
 pub mod world;
 
 #[cfg(test)]
