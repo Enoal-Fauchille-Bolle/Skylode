@@ -29,10 +29,10 @@ pub enum PickaxeTier {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pickaxe {
     /// The tier of the pickaxe, which determines its base mining power.
-    pub tier: PickaxeTier,
+    tier: PickaxeTier,
     /// The enchantments on the pickaxe, which modify its mining power and other
     /// properties.
-    pub enchants: Enchants,
+    enchants: Enchants,
 }
 
 impl Default for Pickaxe {
@@ -50,6 +50,11 @@ impl Pickaxe {
     /// Use [`Pickaxe::default`] for a fresh Wooden pickaxe with no enchants.
     pub fn new(tier: PickaxeTier, enchants: Enchants) -> Self {
         Self { tier, enchants }
+    }
+
+    /// Returns the tier of the pickaxe.
+    pub fn get_tier(&self) -> PickaxeTier {
+        self.tier
     }
 
     /// Computes the total mining power applied against block hardness.
@@ -158,7 +163,7 @@ mod tests {
     #[test]
     fn a_fresh_pickaxe_is_wooden_and_unenchanted() {
         let pickaxe = Pickaxe::default();
-        assert_eq!(pickaxe.tier, PickaxeTier::Wooden);
+        assert_eq!(pickaxe.get_tier(), PickaxeTier::Wooden);
         assert_eq!(pickaxe.enchants.get_level(EnchantType::Efficiency), 0);
     }
 
@@ -241,7 +246,7 @@ mod tests {
         let mut pickaxe = Pickaxe::default();
         for expected_level in 1..=5 {
             pickaxe.upgrade();
-            assert_eq!(pickaxe.tier, PickaxeTier::Wooden);
+            assert_eq!(pickaxe.get_tier(), PickaxeTier::Wooden);
             assert_eq!(
                 pickaxe.enchants.get_level(EnchantType::Efficiency),
                 expected_level
@@ -257,14 +262,14 @@ mod tests {
         for _ in 0..UPGRADES_PER_TIER {
             pickaxe.upgrade();
         }
-        assert_eq!(pickaxe.tier, PickaxeTier::Stone);
+        assert_eq!(pickaxe.get_tier(), PickaxeTier::Stone);
         assert_eq!(pickaxe.enchants.get_level(EnchantType::Efficiency), 0);
     }
 
     #[test]
     fn thirty_upgrades_walk_the_whole_tier_ladder() {
         let pickaxe = maxed_tier_pickaxe();
-        assert_eq!(pickaxe.tier, PickaxeTier::Netherite);
+        assert_eq!(pickaxe.get_tier(), PickaxeTier::Netherite);
         assert_eq!(pickaxe.enchants.get_level(EnchantType::Efficiency), 0);
     }
 
@@ -275,7 +280,7 @@ mod tests {
         let mut pickaxe = maxed_tier_pickaxe();
         for expected_level in 1..=15 {
             pickaxe.upgrade();
-            assert_eq!(pickaxe.tier, PickaxeTier::Netherite);
+            assert_eq!(pickaxe.get_tier(), PickaxeTier::Netherite);
             assert_eq!(
                 pickaxe.enchants.get_level(EnchantType::Efficiency),
                 expected_level
@@ -299,7 +304,7 @@ mod tests {
 
         pickaxe.upgrade();
 
-        assert_eq!(pickaxe.tier, PickaxeTier::Netherite);
+        assert_eq!(pickaxe.get_tier(), PickaxeTier::Netherite);
         assert!(
             pickaxe.mining_power() >= maxed_power,
             "upgrading a maxed Netherite pickaxe dropped its mining power from {maxed_power} to {}",

@@ -104,7 +104,7 @@ mod tests {
         assert_eq!(player.level, 1);
         assert_eq!(player.experience, 0);
         assert_eq!(player.prestige, 0);
-        assert_eq!(player.pickaxe.tier, PickaxeTier::Wooden);
+        assert_eq!(player.pickaxe.get_tier(), PickaxeTier::Wooden);
     }
 
     #[test]
