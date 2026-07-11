@@ -7,10 +7,18 @@
 //!
 //! ## Module map
 //!
+//! - [`world`]: the three dimensions (Overworld, Nether, End) and which
+//!   blocks/materials belong to each.
+//! - [`block`]: individual placeable/mineable blocks and their properties
+//!   (hardness, required pickaxe tier, drops).
+//! - [`material`]: the raw resources that blocks yield when mined.
 //! - [`pickaxe`]: the player's tool, its tier and mining power.
 //! - [`enchant`]: enchantments that modify a pickaxe's behaviour.
+pub mod block;
 pub mod enchant;
+pub mod material;
 pub mod pickaxe;
+pub mod world;
 
 #[cfg(test)]
 mod tests {
