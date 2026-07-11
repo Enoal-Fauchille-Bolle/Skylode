@@ -190,3 +190,152 @@ impl Block {
         }
     }
 }
+
+/// Every [`Block`] variant, for tests that must cover the whole enum.
+///
+/// Test-only: an enum has no built-in way to enumerate its variants, and the
+/// table-consistency tests (here and in [`world`](crate::world)) need to walk
+/// all of them. The `match`es above are exhaustive, so adding a variant already
+/// breaks the build; the length assertion in `all_blocks_covers_every_variant`
+/// is what reminds you to extend this list too.
+#[cfg(test)]
+pub(crate) const ALL_BLOCKS: &[Block] = &[
+    Block::Stone,
+    Block::Cobblestone,
+    Block::CoalOre,
+    Block::CoalBlock,
+    Block::IronOre,
+    Block::IronBlock,
+    Block::GoldOre,
+    Block::GoldBlock,
+    Block::LapisOre,
+    Block::LapisBlock,
+    Block::RedstoneOre,
+    Block::RedstoneBlock,
+    Block::EmeraldOre,
+    Block::EmeraldBlock,
+    Block::DiamondOre,
+    Block::DiamondBlock,
+    Block::Netherrack,
+    Block::QuartzOre,
+    Block::AncientDebris,
+    Block::NetheriteBlock,
+    Block::Obsidian,
+    Block::CryingObsidian,
+    Block::Endstone,
+    Block::Amethyst,
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `(ore, compressed)` pairs the enum's grouping promises.
+    const PAIRS: &[(Block, Block)] = &[
+        (Block::Stone, Block::Cobblestone),
+        (Block::CoalOre, Block::CoalBlock),
+        (Block::IronOre, Block::IronBlock),
+        (Block::GoldOre, Block::GoldBlock),
+        (Block::LapisOre, Block::LapisBlock),
+        (Block::RedstoneOre, Block::RedstoneBlock),
+        (Block::EmeraldOre, Block::EmeraldBlock),
+        (Block::DiamondOre, Block::DiamondBlock),
+        (Block::AncientDebris, Block::NetheriteBlock),
+    ];
+
+    #[test]
+    fn all_blocks_covers_every_variant() {
+        assert_eq!(
+            ALL_BLOCKS.len(),
+            24,
+            "a Block variant was added or removed: update ALL_BLOCKS"
+        );
+    }
+
+    /// An ore and its compressed form are two shapes of one resource, so they
+    /// must agree on everything that identifies the resource. Only the two
+    /// quantities that express "compressed" may differ.
+    #[test]
+    fn ore_and_compressed_forms_describe_the_same_resource() {
+        for &(ore, compressed) in PAIRS {
+            assert_eq!(
+                ore.material(),
+                compressed.material(),
+                "{ore:?} and {compressed:?} drop different materials"
+            );
+            assert_eq!(
+                ore.world(),
+                compressed.world(),
+                "{ore:?} and {compressed:?} live in different worlds"
+            );
+            assert_eq!(
+                ore.min_pickaxe_tier(),
+                compressed.min_pickaxe_tier(),
+                "{ore:?} and {compressed:?} need different pickaxe tiers"
+            );
+        }
+    }
+
+    /// The whole point of the compressed form: harder to break, but worth nine
+    /// times as much. Either half alone would make it pointless or free.
+    #[test]
+    fn compressed_forms_are_tougher_and_drop_nine() {
+        for &(ore, compressed) in PAIRS {
+            assert!(
+                compressed.hardness() > ore.hardness(),
+                "{compressed:?} ({}) is not tougher than {ore:?} ({})",
+                compressed.hardness(),
+                ore.hardness()
+            );
+            assert_eq!(ore.drop_amount(), 1, "{ore:?} should drop a single item");
+            assert_eq!(
+                compressed.drop_amount(),
+                ITEMS_PER_BLOCK,
+                "{compressed:?} should drop a full block's worth"
+            );
+        }
+    }
+
+    #[test]
+    fn filler_blocks_drop_nothing() {
+        // Netherrack and Endstone are the "dirt" of their worlds: they fill the
+        // grid and cost time, but yield no material.
+        assert_eq!(Block::Netherrack.material(), None);
+        assert_eq!(Block::Endstone.material(), None);
+    }
+
+    #[test]
+    fn every_block_has_positive_hardness() {
+        // Hardness is the divisor of the mining loop; a zero or negative value
+        // would make a block break instantly or never.
+        for &block in ALL_BLOCKS {
+            assert!(
+                block.hardness() > 0.0,
+                "{block:?} has a non-positive hardness of {}",
+                block.hardness()
+            );
+        }
+    }
+
+    /// A fresh player holds a Wooden pickaxe, so the filler block of every
+    /// world must be breakable with it — otherwise arriving in that world
+    /// would soft-lock the run.
+    #[test]
+    fn every_world_filler_is_breakable_with_a_wooden_pickaxe() {
+        for block in [Block::Stone, Block::Netherrack, Block::Endstone] {
+            assert_eq!(block.min_pickaxe_tier(), PickaxeTier::Wooden);
+        }
+    }
+
+    #[test]
+    fn obsidian_class_blocks_gate_behind_diamond() {
+        for block in [
+            Block::Obsidian,
+            Block::CryingObsidian,
+            Block::AncientDebris,
+            Block::NetheriteBlock,
+        ] {
+            assert_eq!(block.min_pickaxe_tier(), PickaxeTier::Diamond);
+        }
+    }
+}

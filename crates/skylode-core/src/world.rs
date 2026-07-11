@@ -88,3 +88,98 @@ impl World {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::block::ALL_BLOCKS;
+    use crate::material::ALL_MATERIALS;
+
+    const ALL_WORLDS: [World; 3] = [World::Overworld, World::Nether, World::End];
+
+    #[test]
+    fn worlds_have_display_names() {
+        assert_eq!(World::Overworld.name(), "Overworld");
+        assert_eq!(World::Nether.name(), "Nether");
+        assert_eq!(World::End.name(), "End");
+    }
+
+    /// `Block::world()` and `World::blocks()` encode the same relation from
+    /// opposite ends. A block listed by no world can never be generated; a block
+    /// listed by two would leak across dimensions.
+    #[test]
+    fn each_block_is_listed_by_exactly_the_world_it_claims() {
+        for &block in ALL_BLOCKS {
+            let listed_in: Vec<World> = ALL_WORLDS
+                .iter()
+                .copied()
+                .filter(|world| world.blocks().contains(&block))
+                .collect();
+            assert_eq!(
+                listed_in,
+                vec![block.world()],
+                "{block:?} says it lives in {:?}, but World::blocks() lists it in {listed_in:?}",
+                block.world()
+            );
+        }
+    }
+
+    /// Mine generation draws from `World::blocks()`, and every block drops a
+    /// material. If the world's own material list omits one of them, anything
+    /// reading `World::materials()` (shop, inventory, unlock gates) is working
+    /// from an incomplete picture of what that world can actually yield.
+    #[test]
+    fn a_world_lists_every_material_its_own_blocks_drop() {
+        for world in ALL_WORLDS {
+            for &block in world.blocks() {
+                let Some(material) = block.material() else {
+                    continue;
+                };
+                assert!(
+                    world.materials().contains(&material),
+                    "{}::materials() omits {material:?}, which {block:?} drops in that world",
+                    world.name()
+                );
+            }
+        }
+    }
+
+    /// `Material::worlds()` and `World::materials()` are two views of one
+    /// relation, so it must read the same in both directions.
+    #[test]
+    fn the_world_material_relation_agrees_in_both_directions() {
+        for &material in ALL_MATERIALS {
+            for &world in material.worlds() {
+                assert!(
+                    world.materials().contains(&material),
+                    "{material:?}::worlds() claims {}, but {}::materials() does not list {material:?}",
+                    world.name(),
+                    world.name()
+                );
+            }
+        }
+
+        for world in ALL_WORLDS {
+            for &material in world.materials() {
+                assert!(
+                    material.worlds().contains(&world),
+                    "{}::materials() lists {material:?}, but {material:?}::worlds() does not claim {}",
+                    world.name(),
+                    world.name()
+                );
+            }
+        }
+    }
+
+    /// A world with no blocks cannot generate a mine.
+    #[test]
+    fn every_world_has_blocks_to_mine() {
+        for world in ALL_WORLDS {
+            assert!(
+                !world.blocks().is_empty(),
+                "{} has no blocks, so no mine can be generated in it",
+                world.name()
+            );
+        }
+    }
+}

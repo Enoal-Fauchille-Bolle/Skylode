@@ -127,3 +127,170 @@ impl PickaxeTier {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every tier, weakest first.
+    const ALL_TIERS: [PickaxeTier; 6] = [
+        PickaxeTier::Wooden,
+        PickaxeTier::Stone,
+        PickaxeTier::Iron,
+        PickaxeTier::Gold,
+        PickaxeTier::Diamond,
+        PickaxeTier::Netherite,
+    ];
+
+    /// Upgrades needed to move one tier: fill Efficiency to its cap of 5, then
+    /// one more to spend the maxed enchant on the next tier.
+    const UPGRADES_PER_TIER: usize = 6;
+
+    /// Drives a fresh pickaxe all the way to Netherite with no Efficiency.
+    fn maxed_tier_pickaxe() -> Pickaxe {
+        let mut pickaxe = Pickaxe::default();
+        for _ in 0..(UPGRADES_PER_TIER * (ALL_TIERS.len() - 1)) {
+            pickaxe.upgrade();
+        }
+        pickaxe
+    }
+
+    #[test]
+    fn a_fresh_pickaxe_is_wooden_and_unenchanted() {
+        let pickaxe = Pickaxe::default();
+        assert_eq!(pickaxe.tier, PickaxeTier::Wooden);
+        assert_eq!(pickaxe.enchants.get_level(EnchantType::Efficiency), 0);
+    }
+
+    /// The `+ 1` in the Efficiency formula means level 0 is still worth
+    /// something: a fresh pickaxe mines at 2 (Wooden) + 0² + 1 = 3, not 2.
+    #[test]
+    fn an_unenchanted_pickaxe_still_gets_the_flat_bonus() {
+        assert_eq!(Pickaxe::default().mining_power(), 3);
+    }
+
+    /// Efficiency squares, so it is the long-term lever: on the same Wooden
+    /// base, level 5 is worth 26 power where level 1 is worth 2.
+    #[test]
+    fn efficiency_scales_quadratically() {
+        let tier = Some(PickaxeTier::Wooden);
+        let mut enchants = Enchants::new();
+        enchants.upgrade(EnchantType::Efficiency, tier);
+        let level_one = Pickaxe::new(PickaxeTier::Wooden, enchants.clone());
+        assert_eq!(level_one.mining_power(), 2 + 1 + 1);
+
+        for _ in 0..4 {
+            enchants.upgrade(EnchantType::Efficiency, tier);
+        }
+        let level_five = Pickaxe::new(PickaxeTier::Wooden, enchants);
+        assert_eq!(level_five.mining_power(), 2 + 25 + 1);
+    }
+
+    /// The ladder must be walkable end to end, and stop exactly once.
+    #[test]
+    fn the_tier_ladder_ends_at_netherite() {
+        for pair in ALL_TIERS.windows(2) {
+            assert_eq!(pair[0].next(), Some(pair[1]));
+        }
+        assert_eq!(
+            PickaxeTier::Netherite.next(),
+            None,
+            "Netherite is the final tier and must not report a successor"
+        );
+    }
+
+    /// Deliberate, and easy to "fix" by accident: Gold mines faster than both
+    /// Diamond and Netherite, mirroring Minecraft. Tier gates *access*, not raw
+    /// speed.
+    #[test]
+    fn gold_out_powers_diamond_and_netherite() {
+        assert!(PickaxeTier::Gold.base_power() > PickaxeTier::Diamond.base_power());
+        assert!(PickaxeTier::Gold.base_power() > PickaxeTier::Netherite.base_power());
+    }
+
+    /// `min_pickaxe_tier` gating relies on `Ord` following declaration order.
+    #[test]
+    fn tiers_compare_in_progression_order() {
+        for pair in ALL_TIERS.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "{:?} should rank below {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    /// Phase 1 of the upgrade curve: spend upgrades on Efficiency while the cap
+    /// allows, keeping the tier put.
+    #[test]
+    fn upgrades_fill_efficiency_before_touching_the_tier() {
+        let mut pickaxe = Pickaxe::default();
+        for expected_level in 1..=5 {
+            pickaxe.upgrade();
+            assert_eq!(pickaxe.tier, PickaxeTier::Wooden);
+            assert_eq!(
+                pickaxe.enchants.get_level(EnchantType::Efficiency),
+                expected_level
+            );
+        }
+    }
+
+    /// Phase 2: once Efficiency is capped, the next upgrade cashes it in for a
+    /// tier, and the climb restarts on a stronger base.
+    #[test]
+    fn a_capped_efficiency_is_cashed_in_for_the_next_tier() {
+        let mut pickaxe = Pickaxe::default();
+        for _ in 0..UPGRADES_PER_TIER {
+            pickaxe.upgrade();
+        }
+        assert_eq!(pickaxe.tier, PickaxeTier::Stone);
+        assert_eq!(pickaxe.enchants.get_level(EnchantType::Efficiency), 0);
+    }
+
+    #[test]
+    fn thirty_upgrades_walk_the_whole_tier_ladder() {
+        let pickaxe = maxed_tier_pickaxe();
+        assert_eq!(pickaxe.tier, PickaxeTier::Netherite);
+        assert_eq!(pickaxe.enchants.get_level(EnchantType::Efficiency), 0);
+    }
+
+    /// Netherite raises the Efficiency cap from 5 to 15, which is what makes the
+    /// final tier worth reaching despite its middling base power.
+    #[test]
+    fn netherite_efficiency_climbs_to_fifteen() {
+        let mut pickaxe = maxed_tier_pickaxe();
+        for expected_level in 1..=15 {
+            pickaxe.upgrade();
+            assert_eq!(pickaxe.tier, PickaxeTier::Netherite);
+            assert_eq!(
+                pickaxe.enchants.get_level(EnchantType::Efficiency),
+                expected_level
+            );
+        }
+        // 9 (Netherite) + 15² + 1
+        assert_eq!(pickaxe.mining_power(), 235);
+    }
+
+    /// The final tier has nowhere left to advance to, so an upgrade there must
+    /// never be a *downgrade*. Wiping Efficiency at the ceiling would drop the
+    /// player from 235 mining power back to 10 — permanently, since the tier can
+    /// no longer climb to compensate.
+    #[test]
+    fn upgrading_a_fully_maxed_pickaxe_never_reduces_its_power() {
+        let mut pickaxe = maxed_tier_pickaxe();
+        for _ in 0..15 {
+            pickaxe.upgrade();
+        }
+        let maxed_power = pickaxe.mining_power();
+
+        pickaxe.upgrade();
+
+        assert_eq!(pickaxe.tier, PickaxeTier::Netherite);
+        assert!(
+            pickaxe.mining_power() >= maxed_power,
+            "upgrading a maxed Netherite pickaxe dropped its mining power from {maxed_power} to {}",
+            pickaxe.mining_power()
+        );
+    }
+}

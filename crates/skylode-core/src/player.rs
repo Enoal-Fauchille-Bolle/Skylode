@@ -64,3 +64,112 @@ impl Player {
         self.level * 100
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pickaxe::PickaxeTier;
+
+    #[test]
+    fn a_new_player_starts_at_level_one_with_a_wooden_pickaxe() {
+        let player = Player::new();
+        assert_eq!(player.level, 1);
+        assert_eq!(player.experience, 0);
+        assert_eq!(player.prestige, 0);
+        assert_eq!(player.pickaxe.tier, PickaxeTier::Wooden);
+    }
+
+    #[test]
+    fn default_is_the_same_as_new() {
+        let (new, default) = (Player::new(), Player::default());
+        assert_eq!(new.level, default.level);
+        assert_eq!(new.experience, default.experience);
+        assert_eq!(new.prestige, default.prestige);
+        assert_eq!(new.pickaxe, default.pickaxe);
+    }
+
+    #[test]
+    fn the_level_cost_grows_by_a_hundred_per_level() {
+        let mut player = Player::new();
+        assert_eq!(player.experience_to_next_level(), 100);
+        player.level = 2;
+        assert_eq!(player.experience_to_next_level(), 200);
+        player.level = 10;
+        assert_eq!(player.experience_to_next_level(), 1000);
+    }
+
+    #[test]
+    fn experience_short_of_the_threshold_is_only_banked() {
+        let mut player = Player::new();
+        player.add_experience(99);
+        assert_eq!(player.level, 1);
+        assert_eq!(player.experience, 99);
+    }
+
+    #[test]
+    fn exactly_enough_experience_levels_up_and_banks_nothing() {
+        let mut player = Player::new();
+        player.add_experience(100);
+        assert_eq!(player.level, 2);
+        assert_eq!(player.experience, 0);
+    }
+
+    #[test]
+    fn surplus_experience_carries_over_instead_of_being_lost() {
+        let mut player = Player::new();
+        player.add_experience(150);
+        assert_eq!(player.level, 2);
+        assert_eq!(player.experience, 50);
+    }
+
+    /// Offline progress is credited as one lump grant, so a single call has to
+    /// cascade through as many levels as it can pay for — not just one.
+    #[test]
+    fn one_large_grant_cascades_through_several_levels() {
+        let mut player = Player::new();
+        player.add_experience(100 + 200 + 300 + 50);
+        assert_eq!(player.level, 4);
+        assert_eq!(player.experience, 50);
+    }
+
+    /// Granting the same total in pieces or in one go must land in the same
+    /// place; anything else would make offline credit differ from live play.
+    #[test]
+    fn many_small_grants_match_one_large_grant() {
+        let mut piecemeal = Player::new();
+        for _ in 0..65 {
+            piecemeal.add_experience(10);
+        }
+        let mut lump = Player::new();
+        lump.add_experience(650);
+
+        assert_eq!(piecemeal.level, lump.level);
+        assert_eq!(piecemeal.experience, lump.experience);
+    }
+
+    #[test]
+    fn granting_no_experience_changes_nothing() {
+        let mut player = Player::new();
+        player.add_experience(60);
+        player.add_experience(0);
+        assert_eq!(player.level, 1);
+        assert_eq!(player.experience, 60);
+    }
+
+    /// The invariant that makes the level-up loop's exit condition sound: after
+    /// a grant is processed, the banked experience is never enough to buy
+    /// another level.
+    #[test]
+    fn banked_experience_never_covers_another_level() {
+        let mut player = Player::new();
+        for grant in [37, 250, 1, 999, 12_345] {
+            player.add_experience(grant);
+            assert!(
+                player.experience < player.experience_to_next_level(),
+                "level {} is holding {} banked XP, enough to buy another level",
+                player.level,
+                player.experience
+            );
+        }
+    }
+}

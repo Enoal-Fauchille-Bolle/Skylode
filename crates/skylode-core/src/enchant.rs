@@ -171,3 +171,154 @@ impl Enchants {
         self.levels.iter().map(|(&k, &v)| (k, v))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The enchantments whose cap does not depend on the pickaxe tier.
+    const TIER_INDEPENDENT: [EnchantType; 6] = [
+        EnchantType::Fortune,
+        EnchantType::Explosive,
+        EnchantType::Jackhammer,
+        EnchantType::Nuke,
+        EnchantType::Excavator,
+        EnchantType::Haste,
+    ];
+
+    #[test]
+    fn an_absent_enchant_reads_as_level_zero() {
+        // The core of the sparse-map design: nothing is stored until it is
+        // earned, and callers still see a level for every enchant.
+        assert_eq!(Enchants::new().get_level(EnchantType::Fortune), 0);
+        assert_eq!(Enchants::new().iter().count(), 0);
+    }
+
+    #[test]
+    fn upgrading_an_absent_enchant_installs_it_at_level_one() {
+        let mut enchants = Enchants::new();
+        enchants.upgrade(EnchantType::Fortune, None);
+        assert_eq!(enchants.get_level(EnchantType::Fortune), 1);
+    }
+
+    #[test]
+    fn reset_level_leaves_the_other_enchants_alone() {
+        let mut enchants = Enchants::new();
+        enchants.upgrade(EnchantType::Fortune, None);
+        enchants.upgrade(EnchantType::Haste, None);
+
+        enchants.reset_level(EnchantType::Fortune);
+
+        assert_eq!(enchants.get_level(EnchantType::Fortune), 0);
+        assert_eq!(enchants.get_level(EnchantType::Haste), 1);
+    }
+
+    #[test]
+    fn reset_clears_every_enchant() {
+        let mut enchants = Enchants::new();
+        enchants.upgrade(EnchantType::Fortune, None);
+        enchants.upgrade(EnchantType::Haste, None);
+
+        enchants.reset();
+
+        assert_eq!(enchants.get_level(EnchantType::Fortune), 0);
+        assert_eq!(enchants.get_level(EnchantType::Haste), 0);
+        assert_eq!(enchants.iter().count(), 0);
+    }
+
+    /// `iter()` is what a UI walks to list "what is on this pickaxe", so it must
+    /// yield only enchants the player actually has. The struct promises
+    /// "absent == level 0" and that only active enchants consume memory —
+    /// a level-0 entry left in the map breaks both.
+    #[test]
+    fn iter_yields_only_active_enchants() {
+        let mut enchants = Enchants::new();
+        enchants.upgrade(EnchantType::Fortune, None);
+        enchants.reset_level(EnchantType::Fortune);
+
+        assert_eq!(
+            enchants.iter().count(),
+            0,
+            "a level-0 entry survived reset_level, so the UI would list an enchant the player does not have"
+        );
+    }
+
+    /// Only Efficiency reads the tier, and only Netherite changes the answer.
+    /// That raised cap is the whole reward for reaching the final tier.
+    #[test]
+    fn efficiency_caps_at_five_everywhere_but_netherite() {
+        for tier in [
+            PickaxeTier::Wooden,
+            PickaxeTier::Stone,
+            PickaxeTier::Iron,
+            PickaxeTier::Gold,
+            PickaxeTier::Diamond,
+        ] {
+            assert_eq!(EnchantType::Efficiency.max_level(Some(tier)), 5);
+        }
+        assert_eq!(
+            EnchantType::Efficiency.max_level(Some(PickaxeTier::Netherite)),
+            15
+        );
+        assert_eq!(
+            EnchantType::Efficiency.max_level(None),
+            5,
+            "the tier-less fallback must match the cap shared by every non-Netherite tier"
+        );
+    }
+
+    #[test]
+    fn other_enchants_ignore_the_pickaxe_tier() {
+        for kind in TIER_INDEPENDENT {
+            assert_eq!(
+                kind.max_level(None),
+                kind.max_level(Some(PickaxeTier::Netherite)),
+                "{} must not depend on the pickaxe tier",
+                kind.name()
+            );
+        }
+    }
+
+    #[test]
+    fn every_enchant_has_a_reachable_cap() {
+        for kind in TIER_INDEPENDENT {
+            assert!(
+                kind.max_level(None) > 0,
+                "{} caps at 0, so it can never be earned",
+                kind.name()
+            );
+        }
+    }
+
+    /// A level above the cap is a level the game has no rules for: `max_level`
+    /// would no longer bound what the player can hold.
+    #[test]
+    fn upgrade_stops_at_the_enchant_cap() {
+        let cap = EnchantType::Fortune.max_level(None);
+        let mut enchants = Enchants::new();
+        for _ in 0..(u32::from(cap) + 5) {
+            enchants.upgrade(EnchantType::Fortune, None);
+        }
+
+        assert_eq!(
+            enchants.get_level(EnchantType::Fortune),
+            cap,
+            "Enchants::upgrade let Fortune climb past its cap of {cap}"
+        );
+    }
+
+    /// Efficiency is the one enchant whose ceiling moves with the tier, so the
+    /// cap `upgrade` enforces has to follow the tier it is handed.
+    #[test]
+    fn the_cap_upgrade_enforces_follows_the_tier() {
+        let mut wooden = Enchants::new();
+        let mut netherite = Enchants::new();
+        for _ in 0..15 {
+            wooden.upgrade(EnchantType::Efficiency, Some(PickaxeTier::Wooden));
+            netherite.upgrade(EnchantType::Efficiency, Some(PickaxeTier::Netherite));
+        }
+
+        assert_eq!(wooden.get_level(EnchantType::Efficiency), 5);
+        assert_eq!(netherite.get_level(EnchantType::Efficiency), 15);
+    }
+}

@@ -77,3 +77,70 @@ impl Material {
         }
     }
 }
+
+/// Every [`Material`] variant, for tests that must cover the whole enum.
+///
+/// Test-only; see [`ALL_BLOCKS`](crate::block::ALL_BLOCKS) for the rationale.
+#[cfg(test)]
+pub(crate) const ALL_MATERIALS: &[Material] = &[
+    Material::Stone,
+    Material::Coal,
+    Material::Iron,
+    Material::Gold,
+    Material::Lapis,
+    Material::Redstone,
+    Material::Emerald,
+    Material::Diamond,
+    Material::Quartz,
+    Material::AncientDebris,
+    Material::Obsidian,
+    Material::CryingObsidian,
+    Material::Amethyst,
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_materials_covers_every_variant() {
+        assert_eq!(
+            ALL_MATERIALS.len(),
+            13,
+            "a Material variant was added or removed: update ALL_MATERIALS"
+        );
+    }
+
+    /// A material no world produces is dead weight the player can never obtain.
+    #[test]
+    fn every_material_is_obtainable_in_at_least_one_world() {
+        for &material in ALL_MATERIALS {
+            assert!(
+                !material.worlds().is_empty(),
+                "{material:?} belongs to no world, so nothing can ever drop it"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_word_materials_are_displayed_with_spaces() {
+        assert_eq!(Material::AncientDebris.name(), "Ancient Debris");
+        assert_eq!(Material::CryingObsidian.name(), "Crying Obsidian");
+    }
+
+    /// Names go straight to the inventory UI, so two materials sharing one
+    /// would be indistinguishable to the player.
+    #[test]
+    fn display_names_are_unique() {
+        for (i, &a) in ALL_MATERIALS.iter().enumerate() {
+            for &b in &ALL_MATERIALS[i + 1..] {
+                assert_ne!(
+                    a.name(),
+                    b.name(),
+                    "{a:?} and {b:?} share the display name {:?}",
+                    a.name()
+                );
+            }
+        }
+    }
+}
