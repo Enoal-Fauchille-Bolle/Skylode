@@ -38,23 +38,6 @@ pub struct Mine {
 }
 
 impl Mine {
-    // Per-block mining tick, disabled while the model moves from a single
-    // `material`/`break_progress` block to the grid-based `Mine` above. When
-    // re-enabled it will accumulate `mining_power` against the block's hardness
-    // and return the drop amount once the block breaks (Fortune applied by the
-    // caller):
-    //
-    // pub fn tick(&mut self, mining_power: f32) -> f32 {
-    //     self.break_progress += mining_power;
-    //     let hardness = self.material.hardness();
-    //     if self.break_progress >= hardness {
-    //         self.break_progress = 0.0;
-    //         1.0 // base drop; Fortune multiplies at the caller
-    //     } else {
-    //         0.0
-    //     }
-    // }
-
     /// Returns this mine's `(width, height)` in blocks.
     ///
     /// Looks the dimensions up in `MINE_SIZES` by
