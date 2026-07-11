@@ -61,6 +61,16 @@ impl Mine {
         self.grid = vec![vec![self.main_block; width as usize]; height as usize];
     }
 
+    /// Returns a copy of the mine's grid of blocks.
+    pub fn get_grid(&self) -> Vec<Vec<Block>> {
+        self.grid.clone()
+    }
+
+    /// Returns the mine's size level, which indexes into `MINE_SIZES`.
+    pub fn get_size_level(&self) -> u32 {
+        self.size_level
+    }
+
     /// Returns this mine's `(width, height)` in blocks.
     ///
     /// Looks the dimensions up in `MINE_SIZES` by
@@ -74,6 +84,12 @@ impl Mine {
         } else {
             MINE_SIZES[MINE_SIZES.len() - 1] // Return the largest size if out of bounds
         }
+    }
+
+    /// Increases the mine's size level by 1 and resets the grid to the new size.
+    pub fn upgrade_size_level(&mut self) {
+        self.size_level += 1;
+        self.reset();
     }
 }
 
@@ -152,5 +168,50 @@ mod tests {
             }
         }
         assert_eq!(mine.grid.len(), height as usize);
+    }
+
+    #[test]
+    fn upgrading_the_size_level_increases_the_grid_dimensions() {
+        let mut mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
+        let (initial_width, initial_height) = mine.get_size();
+        mine.upgrade_size_level();
+        let (new_width, new_height) = mine.get_size();
+        assert!(new_width > initial_width);
+        assert!(new_height >= initial_height);
+    }
+
+    #[test]
+    fn size_level_is_correctly_updated_when_upgrading() {
+        let mut mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
+        let initial_size_level = mine.get_size_level();
+        mine.upgrade_size_level();
+        let new_size_level = mine.get_size_level();
+        assert_eq!(new_size_level, initial_size_level + 1);
+    }
+
+    #[test]
+    fn reset_clears_the_grid_and_refills_with_main_block() {
+        let mut mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
+        mine.grid[0][0] = Block::IronOre; // Modify the grid
+        mine.reset();
+        let (width, height) = mine.get_size();
+        for row in &mine.grid {
+            assert_eq!(row.len(), width as usize);
+            for &block in row {
+                assert_eq!(block, Block::Stone);
+            }
+        }
+        assert_eq!(mine.grid.len(), height as usize);
+    }
+
+    #[test]
+    fn get_grid_returns_a_copy_of_the_grid() {
+        let mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
+        let grid_copy = mine.get_grid();
+        assert_eq!(grid_copy, mine.grid);
+        // Modify the copy and ensure the original grid is unaffected
+        let mut modified_copy = grid_copy.clone();
+        modified_copy[0][0] = Block::IronOre;
+        assert_ne!(modified_copy, mine.grid);
     }
 }
