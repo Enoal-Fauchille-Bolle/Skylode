@@ -27,9 +27,11 @@ const MINE_SIZES: [(u8, u8); 10] = [
 /// player mines through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mine {
-    /// The blocks that make up the mine. The first entry is the main block;
-    /// the rest are secondary blocks that can also appear.
-    blocks: Vec<Block>,
+    /// The main block of the mine, which is always the first in the pool.
+    main_block: Block,
+    /// The secondary blocks of the mine, which can appear alongside the main
+    /// block.
+    secondary_blocks: Vec<Block>,
     /// Size tier of the mine; indexes into `MINE_SIZES` via
     /// [`get_size`](Mine::get_size).
     size_level: u32,
@@ -38,6 +40,23 @@ pub struct Mine {
 }
 
 impl Mine {
+    /// Creates a new mine with the given blocks and size level.
+    pub fn new(main_block: Block, secondary_blocks: Vec<Block>) -> Self {
+        Mine {
+            main_block,
+            secondary_blocks,
+            size_level: 1,
+            grid: Vec::new(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.grid.clear();
+        let (width, height) = self.get_size();
+        // Fill the grid with the main block for now
+        self.grid = vec![vec![self.main_block; width as usize]; height as usize];
+    }
+
     /// Returns this mine's `(width, height)` in blocks.
     ///
     /// Looks the dimensions up in `MINE_SIZES` by
@@ -62,7 +81,8 @@ mod tests {
     /// sizing, which reads `size_level` alone.
     fn mine_at(size_level: u32) -> Mine {
         Mine {
-            blocks: Vec::new(),
+            main_block: Block::default(),
+            secondary_blocks: Vec::new(),
             size_level,
             grid: Vec::new(),
         }

@@ -26,9 +26,10 @@ const ITEMS_PER_BLOCK: u32 = 9;
 /// compressed form exists, plus standalone blocks (Netherrack, Obsidian, …)
 /// that have no dual form. The whole enum is `Copy` because a block is just a
 /// lightweight tag with no owned data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Block {
     // --- Overworld ---
+    #[default]
     Stone,
     Cobblestone,
     CoalOre,
