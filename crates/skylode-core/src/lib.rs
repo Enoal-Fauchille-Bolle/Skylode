@@ -18,9 +18,11 @@
 //! - [`pickaxe`]: the player's tool, its tier and mining power.
 //! - [`enchant`]: enchantments that modify a pickaxe's behaviour.
 //! - [`player`]: the player's progression state (level, experience, pickaxe).
+//! - [`error`]: what the rules refuse, and why.
 
 pub mod block;
 pub mod enchant;
+pub mod error;
 pub mod inventory;
 pub mod material;
 pub mod mine;
