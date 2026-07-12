@@ -79,12 +79,13 @@ impl World {
                 Material::Emerald,
             ],
             Self::Nether => &[
+                Material::Netherrack,
                 Material::Quartz,
                 Material::AncientDebris,
                 Material::Obsidian,
                 Material::CryingObsidian,
             ],
-            Self::End => &[Material::Amethyst],
+            Self::End => &[Material::Endstone, Material::Amethyst],
         }
     }
 }
@@ -132,9 +133,7 @@ mod tests {
     fn a_world_lists_every_material_its_own_blocks_drop() {
         for world in ALL_WORLDS {
             for &block in world.blocks() {
-                let Some(material) = block.material() else {
-                    continue;
-                };
+                let material = block.material();
                 assert!(
                     world.materials().contains(&material),
                     "{}::materials() omits {material:?}, which {block:?} drops in that world",

@@ -33,6 +33,8 @@ pub const RAW_PER_COMPRESSED: u32 = 100;
 /// variants collapse onto the same material.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub enum Material {
+    // --- Overworld ---
+    /// The Overworld's filler: what most of a starter mine is made of.
     Stone,
     Coal,
     Iron,
@@ -41,10 +43,16 @@ pub enum Material {
     Redstone,
     Emerald,
     Diamond,
+    // --- Nether ---
+    /// The Nether's filler, the counterpart of [`Stone`](Material::Stone).
+    Netherrack,
     Quartz,
     AncientDebris,
     Obsidian,
     CryingObsidian,
+    // --- End ---
+    /// The End's filler, and the common material of its mixed mine.
+    Endstone,
     Amethyst,
 }
 
@@ -52,7 +60,10 @@ impl Material {
     /// Returns the human-readable display name of the material.
     ///
     /// Multi-word materials use spaced names (e.g. `"Ancient Debris"`) so the
-    /// result can be shown directly in the UI.
+    /// result can be shown directly in the UI. The variant is spelled
+    /// `Endstone`, to match [`Block::Endstone`](crate::block::Block::Endstone),
+    /// but it *displays* as "End Stone", which is how Minecraft and the design
+    /// docs write it.
     pub fn name(self) -> &'static str {
         match self {
             Self::Stone => "Stone",
@@ -63,10 +74,12 @@ impl Material {
             Self::Redstone => "Redstone",
             Self::Emerald => "Emerald",
             Self::Diamond => "Diamond",
+            Self::Netherrack => "Netherrack",
             Self::Quartz => "Quartz",
             Self::AncientDebris => "Ancient Debris",
             Self::Obsidian => "Obsidian",
             Self::CryingObsidian => "Crying Obsidian",
+            Self::Endstone => "End Stone",
             Self::Amethyst => "Amethyst",
         }
     }
@@ -88,10 +101,12 @@ impl Material {
             | Self::Redstone
             | Self::Emerald
             | Self::Diamond => &[World::Overworld],
-            Self::Quartz | Self::AncientDebris | Self::Obsidian | Self::CryingObsidian => {
-                &[World::Nether]
-            }
-            Self::Amethyst => &[World::End],
+            Self::Netherrack
+            | Self::Quartz
+            | Self::AncientDebris
+            | Self::Obsidian
+            | Self::CryingObsidian => &[World::Nether],
+            Self::Endstone | Self::Amethyst => &[World::End],
         }
     }
 }
@@ -180,10 +195,12 @@ pub(crate) const ALL_MATERIALS: &[Material] = &[
     Material::Redstone,
     Material::Emerald,
     Material::Diamond,
+    Material::Netherrack,
     Material::Quartz,
     Material::AncientDebris,
     Material::Obsidian,
     Material::CryingObsidian,
+    Material::Endstone,
     Material::Amethyst,
 ];
 
@@ -195,9 +212,20 @@ mod tests {
     fn all_materials_covers_every_variant() {
         assert_eq!(
             ALL_MATERIALS.len(),
-            13,
+            15,
             "a Material variant was added or removed: update ALL_MATERIALS"
         );
+    }
+
+    /// Every world's filler yields its own material — Stone, Netherrack, End
+    /// Stone. A world whose filler dropped nothing would spend the player's time
+    /// for no return, which is the one thing an idle game cannot afford to do
+    /// with the block the player hits most often.
+    #[test]
+    fn every_world_has_a_filler_material() {
+        assert_eq!(Material::Stone.worlds(), &[World::Overworld]);
+        assert_eq!(Material::Netherrack.worlds(), &[World::Nether]);
+        assert_eq!(Material::Endstone.worlds(), &[World::End]);
     }
 
     /// A material no world produces is dead weight the player can never obtain.
@@ -211,10 +239,14 @@ mod tests {
         }
     }
 
+    /// The variant spelling and the display name are allowed to diverge, and for
+    /// `Endstone` they deliberately do: the code matches `Block::Endstone`, the
+    /// player reads "End Stone".
     #[test]
     fn multi_word_materials_are_displayed_with_spaces() {
         assert_eq!(Material::AncientDebris.name(), "Ancient Debris");
         assert_eq!(Material::CryingObsidian.name(), "Crying Obsidian");
+        assert_eq!(Material::Endstone.name(), "End Stone");
     }
 
     /// Names go straight to the inventory UI, so two materials sharing one

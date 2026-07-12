@@ -67,24 +67,30 @@ pub enum Block {
 }
 
 impl Block {
-    /// Returns the material of the block, if it has one.
-    /// Some blocks, like Netherrack, do not have a material.
-    pub fn material(self) -> Option<Material> {
+    /// Returns the material the block is made of.
+    ///
+    /// Total, not partial: *every* block yields something, fillers included.
+    /// Netherrack and End Stone drop their own material, exactly as Stone does in
+    /// the Overworld — a filler is the block the player breaks most often, and one
+    /// that paid nothing would be pure spent time. An `Option` here would hand
+    /// every caller a `None` branch that can never be taken.
+    pub fn material(self) -> Material {
         match self {
-            Self::Stone | Self::Cobblestone => Some(Material::Stone),
-            Self::CoalOre | Self::CoalBlock => Some(Material::Coal),
-            Self::IronOre | Self::IronBlock => Some(Material::Iron),
-            Self::GoldOre | Self::GoldBlock => Some(Material::Gold),
-            Self::LapisOre | Self::LapisBlock => Some(Material::Lapis),
-            Self::RedstoneOre | Self::RedstoneBlock => Some(Material::Redstone),
-            Self::EmeraldOre | Self::EmeraldBlock => Some(Material::Emerald),
-            Self::DiamondOre | Self::DiamondBlock => Some(Material::Diamond),
-            Self::QuartzOre => Some(Material::Quartz),
-            Self::AncientDebris | Self::NetheriteBlock => Some(Material::AncientDebris),
-            Self::Obsidian => Some(Material::Obsidian),
-            Self::CryingObsidian => Some(Material::CryingObsidian),
-            Self::Amethyst => Some(Material::Amethyst),
-            Self::Netherrack | Self::Endstone => None,
+            Self::Stone | Self::Cobblestone => Material::Stone,
+            Self::CoalOre | Self::CoalBlock => Material::Coal,
+            Self::IronOre | Self::IronBlock => Material::Iron,
+            Self::GoldOre | Self::GoldBlock => Material::Gold,
+            Self::LapisOre | Self::LapisBlock => Material::Lapis,
+            Self::RedstoneOre | Self::RedstoneBlock => Material::Redstone,
+            Self::EmeraldOre | Self::EmeraldBlock => Material::Emerald,
+            Self::DiamondOre | Self::DiamondBlock => Material::Diamond,
+            Self::Netherrack => Material::Netherrack,
+            Self::QuartzOre => Material::Quartz,
+            Self::AncientDebris | Self::NetheriteBlock => Material::AncientDebris,
+            Self::Obsidian => Material::Obsidian,
+            Self::CryingObsidian => Material::CryingObsidian,
+            Self::Endstone => Material::Endstone,
+            Self::Amethyst => Material::Amethyst,
         }
     }
 
@@ -200,8 +206,7 @@ impl Block {
         }
     }
 
-    /// What this block *contains*, before Fortune, or `None` for a filler block
-    /// that yields nothing.
+    /// What this block *contains*, before Fortune: an item, and how many of it.
     ///
     /// Always an [`Item::Raw`], and that is the point of stating it as an `Item`
     /// at all: nothing in the ground is worth a hundred. A Compressed unit is
@@ -214,9 +219,8 @@ impl Block {
     /// then applies the enchants.
     ///
     /// [`Excavator`]: crate::enchant::EnchantType::Excavator
-    pub fn drops(self) -> Option<(Item, u32)> {
-        self.material()
-            .map(|material| (Item::Raw(material), self.drop_amount()))
+    pub fn drops(self) -> (Item, u32) {
+        (Item::Raw(self.material()), self.drop_amount())
     }
 }
 
@@ -344,46 +348,41 @@ mod tests {
     #[test]
     fn no_block_contains_a_compressed_unit() {
         for &block in ALL_BLOCKS {
-            if let Some((item, amount)) = block.drops() {
-                assert!(
-                    matches!(item, Item::Raw(_)),
-                    "{block:?} contains {item}; blocks hold raw items and nothing else"
-                );
-                assert!(
-                    amount <= RAW_PER_DENSE_BLOCK,
-                    "{block:?} drops {amount} items, more than a dense block's worth"
-                );
-            }
+            let (item, amount) = block.drops();
+            assert!(
+                matches!(item, Item::Raw(_)),
+                "{block:?} contains {item}; blocks hold raw items and nothing else"
+            );
+            assert!(
+                amount <= RAW_PER_DENSE_BLOCK,
+                "{block:?} drops {amount} items, more than a dense block's worth"
+            );
         }
     }
 
-    /// `drops` is the accessor the mining loop will call, so it must agree with
-    /// the two it is built from rather than drifting into a third answer.
+    /// Every block pays. The mining loop has no branch for a swing that lands on
+    /// nothing, and this is what entitles it to have none.
     #[test]
-    fn drops_agrees_with_material_and_drop_amount() {
+    fn every_block_drops_at_least_one_item() {
         for &block in ALL_BLOCKS {
-            match block.material() {
-                Some(material) => {
-                    assert_eq!(
-                        block.drops(),
-                        Some((Item::Raw(material), block.drop_amount()))
-                    );
-                }
-                None => assert_eq!(
-                    block.drops(),
-                    None,
-                    "{block:?} has no material, so it must drop nothing"
-                ),
-            }
+            let (item, amount) = block.drops();
+            assert_eq!(item, Item::Raw(block.material()));
+            assert!(
+                amount >= 1,
+                "{block:?} drops nothing, so mining it is a tax"
+            );
         }
     }
 
+    /// Each world's filler pays out its own material, and the three worlds agree
+    /// on that rule. The filler is the block the player breaks most often — most
+    /// of a fresh grid *is* filler — so one that yielded nothing would make the
+    /// bulk of the game's swings pay nothing.
     #[test]
-    fn filler_blocks_drop_nothing() {
-        // Netherrack and Endstone are the "dirt" of their worlds: they fill the
-        // grid and cost time, but yield no material.
-        assert_eq!(Block::Netherrack.material(), None);
-        assert_eq!(Block::Endstone.material(), None);
+    fn every_world_filler_drops_its_own_material() {
+        assert_eq!(Block::Stone.material(), Material::Stone);
+        assert_eq!(Block::Netherrack.material(), Material::Netherrack);
+        assert_eq!(Block::Endstone.material(), Material::Endstone);
     }
 
     #[test]
