@@ -78,10 +78,9 @@ impl Mine {
 
     /// Returns this mine's `(width, height)` in blocks.
     ///
-    /// Looks the dimensions up in `MINE_SIZES` by
-    /// [`size_level`](Mine::size_level). Because `size_level` is a `u32` while
-    /// the table has only 10 entries, any out-of-range level is clamped to the
-    /// largest size rather than panicking.
+    /// Looks the dimensions up in `MINE_SIZES` by `size_level`. Because
+    /// `size_level` is a `u32` while the table has only 10 entries, any
+    /// out-of-range level is clamped to the largest size rather than panicking.
     pub fn get_size(&self) -> (u8, u8) {
         let index = self.size_level as usize;
         if index < MINE_SIZES.len() {

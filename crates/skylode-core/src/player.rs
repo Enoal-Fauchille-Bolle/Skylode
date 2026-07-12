@@ -1,9 +1,12 @@
 //! Player progression state.
 //!
 //! The [`Player`] aggregates everything about the person mining: their current
-//! [`level`](Player::level) and [`experience`](Player::experience), their
-//! [`pickaxe`](Player::pickaxe), and their [`prestige`](Player::prestige)
+//! level and experience, their pickaxe, their inventory, and their prestige
 //! count. It owns the level-up curve and experience bookkeeping.
+//!
+//! Every field is private and reached through an accessor, so the level-up
+//! invariant — banked experience never covers another level — cannot be broken
+//! from outside.
 
 use crate::{inventory::Inventory, pickaxe::Pickaxe};
 
