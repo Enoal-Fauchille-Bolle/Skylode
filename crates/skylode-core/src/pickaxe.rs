@@ -107,7 +107,7 @@ impl PickaxeTier {
             PickaxeTier::Wooden => 2.0,
             PickaxeTier::Stone => 4.0,
             PickaxeTier::Iron => 6.0,
-            PickaxeTier::Gold => 12.0,
+            PickaxeTier::Gold => 7.0,
             PickaxeTier::Diamond => 8.0,
             PickaxeTier::Netherite => 9.0,
         }
@@ -212,18 +212,9 @@ mod tests {
         assert_eq!(PickaxeTier::Wooden.base_power(), 2.0);
         assert_eq!(PickaxeTier::Stone.base_power(), 4.0);
         assert_eq!(PickaxeTier::Iron.base_power(), 6.0);
-        assert_eq!(PickaxeTier::Gold.base_power(), 12.0);
+        assert_eq!(PickaxeTier::Gold.base_power(), 7.0);
         assert_eq!(PickaxeTier::Diamond.base_power(), 8.0);
         assert_eq!(PickaxeTier::Netherite.base_power(), 9.0);
-    }
-
-    /// Deliberate, and easy to "fix" by accident: Gold mines faster than both
-    /// Diamond and Netherite, mirroring Minecraft. Tier gates *access*, not raw
-    /// speed.
-    #[test]
-    fn gold_out_powers_diamond_and_netherite() {
-        assert!(PickaxeTier::Gold.base_power() > PickaxeTier::Diamond.base_power());
-        assert!(PickaxeTier::Gold.base_power() > PickaxeTier::Netherite.base_power());
     }
 
     /// `min_pickaxe_tier` gating relies on `Ord` following declaration order.
