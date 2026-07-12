@@ -13,6 +13,8 @@
 //!   (hardness, required pickaxe tier, drops).
 //! - [`material`]: the raw resources that blocks yield when mined, and the two
 //!   denominations — raw and Compressed — the player holds them in.
+//! - [`inventory`]: what the player is carrying, and the compression they
+//!   convert it with.
 //! - [`mine`]: a generated grid of blocks the player digs through, sized by
 //!   level.
 //! - [`pickaxe`]: the player's tool, its tier and mining power.
