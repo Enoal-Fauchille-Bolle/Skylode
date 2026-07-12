@@ -11,7 +11,8 @@
 //!   blocks/materials belong to each.
 //! - [`block`]: individual placeable/mineable blocks and their properties
 //!   (hardness, required pickaxe tier, drops).
-//! - [`material`]: the raw resources that blocks yield when mined.
+//! - [`material`]: the raw resources that blocks yield when mined, and the two
+//!   denominations — raw and Compressed — the player holds them in.
 //! - [`mine`]: a generated grid of blocks the player digs through, sized by
 //!   level.
 //! - [`pickaxe`]: the player's tool, its tier and mining power.
