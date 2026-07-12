@@ -108,10 +108,16 @@ impl PickaxeTier {
     /// Returns the flat mining power contributed by the tier alone, before
     /// enchantments.
     ///
-    /// Note the curve is not strictly monotonic: `Gold` (12) out-powers
-    /// `Diamond` (8) and `Netherite` (9), mirroring Minecraft, where Gold mines
-    /// fast but is otherwise weak. Tier still gates *which* blocks are
-    /// mineable via [`Block::min_pickaxe_tier`](crate::block::Block::min_pickaxe_tier).
+    /// The curve is **strictly monotone**, and deliberately not Minecraft's,
+    /// where Gold out-mines Diamond. A tier jump already costs the player their
+    /// Efficiency, so it is meant to be a *dip*: slower for a while, then better
+    /// than ever. If the base power itself went backwards — Gold above Diamond —
+    /// that dip would become a permanent regression, and the player would be
+    /// right to refuse the upgrade. The 1:1 fidelity to Minecraft is kept for
+    /// hardness only. See `docs/DECISIONS.md`.
+    ///
+    /// Tier also gates *which* blocks are mineable, via
+    /// [`Block::min_pickaxe_tier`](crate::block::Block::min_pickaxe_tier).
     pub fn base_power(&self) -> f32 {
         match self {
             PickaxeTier::Wooden => 2.0,
@@ -225,6 +231,29 @@ mod tests {
         assert_eq!(PickaxeTier::Gold.base_power(), 7.0);
         assert_eq!(PickaxeTier::Diamond.base_power(), 8.0);
         assert_eq!(PickaxeTier::Netherite.base_power(), 9.0);
+    }
+
+    /// The load-bearing property of the whole tier ladder, and the reason we
+    /// broke with Minecraft: a stronger tier must never mine slower than a weaker
+    /// one. Minecraft's Gold out-speeds Diamond, and porting that here would turn
+    /// the tier-jump dip — which is meant to be temporary, paid back once
+    /// Efficiency is re-climbed — into a permanent downgrade the player should
+    /// rationally refuse.
+    ///
+    /// Nothing else guards this. `each_tier_has_its_balanced_base_power` pins the
+    /// six numbers, but a rebalance that edits all six could quietly reintroduce a
+    /// dent and still pass it.
+    #[test]
+    fn base_power_never_goes_backwards_up_the_ladder() {
+        for pair in ALL_TIERS.windows(2) {
+            let (tier, next) = (pair[0], pair[1]);
+            assert!(
+                next.base_power() > tier.base_power(),
+                "{next:?} ({}) mines slower than {tier:?} ({}), so taking the upgrade would be a mistake",
+                next.base_power(),
+                tier.base_power()
+            );
+        }
     }
 
     /// `min_pickaxe_tier` gating relies on `Ord` following declaration order.
