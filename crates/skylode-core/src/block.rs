@@ -6,26 +6,34 @@
 //! [`World`] it belongs to, and the minimum
 //! [`PickaxeTier`] required to break it.
 //!
-//! Many resources come in two forms: an *ore* variant (drops a single item)
-//! and a compressed *block* variant (drops `ITEMS_PER_BLOCK` items), mirroring
-//! Minecraft's 9-ingots-per-block convention.
+//! Many resources come in two forms: an *ore* variant (drops a single item) and
+//! a *dense* variant (`IronBlock`, `Cobblestone`, …) which is tougher and drops
+//! [`RAW_PER_DENSE_BLOCK`] items, mirroring Minecraft's nine-ingots-per-block
+//! convention.
+//!
+//! A dense block is **not** a Compressed unit. This module deals in cells you
+//! swing a pickaxe at; a Compressed unit is a denomination the player mints in
+//! their inventory, worth a hundred raw, that no block in the ground contains.
+//! Nine versus a hundred, mined versus minted — see [`Item`].
 
-use crate::material::Material;
+use crate::material::{Item, Material};
 use crate::pickaxe::PickaxeTier;
 use crate::world::World;
 
-/// Number of raw items a compressed *block* form yields when mined.
+/// Number of raw items a *dense* block yields when mined.
 ///
-/// Matches Minecraft's crafting ratio: 9 ingots/gems compress into one block,
-/// so breaking that block returns 9.
-const ITEMS_PER_BLOCK: u32 = 9;
+/// Matches Minecraft's crafting ratio: nine ingots or gems make one block, so
+/// breaking that block returns nine. Unrelated to
+/// [`RAW_PER_COMPRESSED`](crate::material::RAW_PER_COMPRESSED) (100), which is
+/// the inventory denomination — different ratio, different concept.
+pub const RAW_PER_DENSE_BLOCK: u32 = 9;
 
 /// A single mineable block.
 ///
 /// Variants are grouped as `<Resource>Ore` / `<Resource>Block` pairs where a
-/// compressed form exists, plus standalone blocks (Netherrack, Obsidian, …)
-/// that have no dual form. The whole enum is `Copy` because a block is just a
-/// lightweight tag with no owned data.
+/// dense form exists, plus standalone blocks (Netherrack, Obsidian, …) that have
+/// no dual form. The whole enum is `Copy` because a block is just a lightweight
+/// tag with no owned data.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Block {
     // --- Overworld ---
@@ -86,8 +94,9 @@ impl Block {
     /// Hardness is measured in the same units as a pickaxe's
     /// [`mining_power`](crate::pickaxe::Pickaxe::mining_power): a block breaks
     /// once accumulated mining power reaches its hardness. Values roughly track
-    /// Minecraft (Stone `1.5`, Obsidian `50.0`), with the compressed *block*
-    /// forms being tougher than their ore counterparts.
+    /// Minecraft (Stone `1.5`, Obsidian `50.0`), with the *dense* forms being
+    /// tougher than their ore counterparts — that toughness is what they cost
+    /// you for the nine items they give back.
     pub fn hardness(self) -> f32 {
         match self {
             Self::Stone => 1.5,
@@ -174,8 +183,8 @@ impl Block {
         }
     }
 
-    /// Amount of raw material dropped, before Fortune. Compressed block forms
-    /// yield `ITEMS_PER_BLOCK`; everything else yields 1.
+    /// Amount of raw material dropped, before Fortune. Dense forms yield
+    /// [`RAW_PER_DENSE_BLOCK`]; everything else yields 1.
     pub fn drop_amount(self) -> u32 {
         match self {
             Self::Cobblestone
@@ -186,9 +195,28 @@ impl Block {
             | Self::RedstoneBlock
             | Self::EmeraldBlock
             | Self::DiamondBlock
-            | Self::NetheriteBlock => ITEMS_PER_BLOCK,
+            | Self::NetheriteBlock => RAW_PER_DENSE_BLOCK,
             _ => 1,
         }
+    }
+
+    /// What this block *contains*, before Fortune, or `None` for a filler block
+    /// that yields nothing.
+    ///
+    /// Always an [`Item::Raw`], and that is the point of stating it as an `Item`
+    /// at all: nothing in the ground is worth a hundred. A Compressed unit is
+    /// minted, a hundred raw at a time, and never dug up.
+    ///
+    /// This is the block's own drop table, not the outcome of a mining tick. The
+    /// [`Excavator`] enchant can *substitute* a Compressed unit for what came out
+    /// of the ground, but that is a property of the pickaxe swinging, not of the
+    /// rock being swung at — it belongs to the mining loop, which starts here and
+    /// then applies the enchants.
+    ///
+    /// [`Excavator`]: crate::enchant::EnchantType::Excavator
+    pub fn drops(self) -> Option<(Item, u32)> {
+        self.material()
+            .map(|material| (Item::Raw(material), self.drop_amount()))
     }
 }
 
@@ -231,8 +259,14 @@ pub(crate) const ALL_BLOCKS: &[Block] = &[
 mod tests {
     use super::*;
 
-    /// The `(ore, compressed)` pairs the enum's grouping promises.
-    const PAIRS: &[(Block, Block)] = &[
+    /// The `(ore, dense)` pairs the enum's grouping promises.
+    ///
+    /// Cobblestone is the odd one out: it is not "a block of Stone" the way
+    /// `IronBlock` is a block of Iron. But mechanically it plays exactly that
+    /// role — a tougher cell that returns nine Stone — which is why the concept
+    /// is named *dense* rather than *block form*. The name has to be true of
+    /// every row in this table.
+    const DENSE_FORMS: &[(Block, Block)] = &[
         (Block::Stone, Block::Cobblestone),
         (Block::CoalOre, Block::CoalBlock),
         (Block::IronOre, Block::IronBlock),
@@ -253,47 +287,94 @@ mod tests {
         );
     }
 
-    /// An ore and its compressed form are two shapes of one resource, so they
-    /// must agree on everything that identifies the resource. Only the two
-    /// quantities that express "compressed" may differ.
+    /// An ore and its dense form are two shapes of one resource, so they must
+    /// agree on everything that identifies the resource. Only the two quantities
+    /// that express "dense" — hardness and yield — may differ.
     #[test]
-    fn ore_and_compressed_forms_describe_the_same_resource() {
-        for &(ore, compressed) in PAIRS {
+    fn ore_and_dense_forms_describe_the_same_resource() {
+        for &(ore, dense) in DENSE_FORMS {
             assert_eq!(
                 ore.material(),
-                compressed.material(),
-                "{ore:?} and {compressed:?} drop different materials"
+                dense.material(),
+                "{ore:?} and {dense:?} drop different materials"
             );
             assert_eq!(
                 ore.world(),
-                compressed.world(),
-                "{ore:?} and {compressed:?} live in different worlds"
+                dense.world(),
+                "{ore:?} and {dense:?} live in different worlds"
             );
             assert_eq!(
                 ore.min_pickaxe_tier(),
-                compressed.min_pickaxe_tier(),
-                "{ore:?} and {compressed:?} need different pickaxe tiers"
+                dense.min_pickaxe_tier(),
+                "{ore:?} and {dense:?} need different pickaxe tiers"
             );
         }
     }
 
-    /// The whole point of the compressed form: harder to break, but worth nine
-    /// times as much. Either half alone would make it pointless or free.
+    /// The whole point of the dense form: harder to break, but worth nine times
+    /// as much. Either half alone would make it pointless or free.
     #[test]
-    fn compressed_forms_are_tougher_and_drop_nine() {
-        for &(ore, compressed) in PAIRS {
+    fn dense_forms_are_tougher_and_drop_nine() {
+        for &(ore, dense) in DENSE_FORMS {
             assert!(
-                compressed.hardness() > ore.hardness(),
-                "{compressed:?} ({}) is not tougher than {ore:?} ({})",
-                compressed.hardness(),
+                dense.hardness() > ore.hardness(),
+                "{dense:?} ({}) is not tougher than {ore:?} ({})",
+                dense.hardness(),
                 ore.hardness()
             );
             assert_eq!(ore.drop_amount(), 1, "{ore:?} should drop a single item");
             assert_eq!(
-                compressed.drop_amount(),
-                ITEMS_PER_BLOCK,
-                "{compressed:?} should drop a full block's worth"
+                dense.drop_amount(),
+                RAW_PER_DENSE_BLOCK,
+                "{dense:?} should drop a full block's worth"
             );
+        }
+    }
+
+    /// The separation this module exists to keep: a *dense block* sits in the
+    /// ground and pays out raw items; a *Compressed unit* is minted by the player
+    /// and is worth a hundred. If a block ever *contained* one, the two would have
+    /// merged back into a single muddled concept, and the ground would be paying
+    /// out a hundred to one where it means to pay nine.
+    ///
+    /// This constrains the drop *table*, not the mining loop. The Excavator
+    /// enchant is allowed to hand the player a Compressed unit — it substitutes
+    /// the drop after the fact, which is the pickaxe's doing. What it may not do
+    /// is come from the rock.
+    #[test]
+    fn no_block_contains_a_compressed_unit() {
+        for &block in ALL_BLOCKS {
+            if let Some((item, amount)) = block.drops() {
+                assert!(
+                    matches!(item, Item::Raw(_)),
+                    "{block:?} contains {item}; blocks hold raw items and nothing else"
+                );
+                assert!(
+                    amount <= RAW_PER_DENSE_BLOCK,
+                    "{block:?} drops {amount} items, more than a dense block's worth"
+                );
+            }
+        }
+    }
+
+    /// `drops` is the accessor the mining loop will call, so it must agree with
+    /// the two it is built from rather than drifting into a third answer.
+    #[test]
+    fn drops_agrees_with_material_and_drop_amount() {
+        for &block in ALL_BLOCKS {
+            match block.material() {
+                Some(material) => {
+                    assert_eq!(
+                        block.drops(),
+                        Some((Item::Raw(material), block.drop_amount()))
+                    );
+                }
+                None => assert_eq!(
+                    block.drops(),
+                    None,
+                    "{block:?} has no material, so it must drop nothing"
+                ),
+            }
         }
     }
 

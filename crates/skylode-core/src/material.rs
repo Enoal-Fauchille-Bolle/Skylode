@@ -29,8 +29,8 @@ pub const RAW_PER_COMPRESSED: u32 = 100;
 ///
 /// Materials are the "currency" of progression: blocks drop them, and the
 /// player spends/accumulates them. The set is deliberately smaller than the
-/// [`Block`](crate::block::Block) set because ore and compressed-block variants
-/// collapse onto the same material.
+/// [`Block`](crate::block::Block) set because a resource's ore and dense-block
+/// variants collapse onto the same material.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub enum Material {
     Stone,
