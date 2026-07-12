@@ -242,17 +242,41 @@ the effect scaling per level (blob radius, row band `k`, Haste factor, Excavator
 proc rate), and for Nuke the cooldown curve. Values are set and balanced during
 implementation, not fixed here.
 
+## Compression
+
+The inventory holds a material in two denominations: **raw**, as mined, and
+**Compressed**, in bundles of 100. `1 Compressed Iron = 100 Iron`.
+
+Compressing is a **player action**, not a display format. The inventory never
+converts behind the player's back; they choose when to trade 100 raw for one
+Compressed unit, and they can trade back. The conversion is **free and lossless in
+both directions**, which is what keeps a run un-brickable: whatever shape a
+player's stock is in, one action puts it in the shape a cost wants.
+
+The one thing that mints a Compressed unit without paying 100 raw for it is the
+**Excavator** enchant, which is exactly why it is worth having.
+
+A Compressed unit is **not** a *dense block*. A dense block (`Iron Block`,
+`Cobblestone`) is a grid cell you mine: tougher than the ore, and it drops 9 raw.
+A Compressed unit is worth 100, is minted in the inventory, and no pickaxe ever
+produces one. Nine versus a hundred, mined versus minted.
+
 ## Upgrade costs
 
-Every pickaxe upgrade costs a mix of compressed blocks and raw ore, for example
-`6 Compressed Iron + 50 Iron`. Compression is a denomination for readability:
-small composite numbers read better than one large number like `650 Iron`. It is
-not inventory management, since stacks are unlimited.
+Every pickaxe upgrade costs a mix of Compressed and raw ore, for example
+`6 Compressed Iron + 50 Iron`. The denomination is there for readability: small
+composite numbers read better than one large number like `650 Iron`.
 
-- **1 Compressed ore = 100 raw ore** (a fixed bundle). The denomination is named
-  `Compressed <ore>` (for example Compressed Iron).
+**Costs are paid in the denomination they are quoted in.** A player sitting on 650
+raw Iron cannot buy `6 Compressed Iron + 50 Iron` — the value is there, the
+denomination is not, and they must compress first. That refusal is deliberate: it
+is what makes compressing a step in the upgrade path rather than a cosmetic
+button. It is also cheap to clear, one free action, so it is a beat and not a
+wall. The UI is expected to tell the two failures apart — "compress first" and "go
+mine more" are different messages, and only one of them is bad news.
+
 - **Cost curve shape:** costs grow geometrically per step (`cost(n) = base *
-  growth^n`), split across a compressed part and a raw remainder. The base and
+  growth^n`), split across a Compressed part and a raw remainder. The base and
   growth constants are tunables set at implementation time, not fixed here.
 - On PikaNetwork, upgrades are identified by Minecraft enchantment, level, and
   material (for example "Efficiency V Stone Pickaxe"). Our naming convention is to

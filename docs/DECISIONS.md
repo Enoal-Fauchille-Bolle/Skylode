@@ -21,8 +21,11 @@ or [SYSTEMS.md](SYSTEMS.md) rather than repeating it here.
 | `base_tier` speed is a monotone custom curve | Minecraft's tool speeds are non-monotone (gold beats diamond); the 1:1 principle is kept only for hardness. See [MECHANICS.md](MECHANICS.md#pickaxe-progression). |
 | Fortune capped at 10 | Past 10, ore is abundant enough that more Fortune is pointless (matches Pika). |
 | Obsidian / Crying Obsidian and the enchant materials are post-tier enhancements, not full tiers | Keeps the tier list clean. |
-| Composite upgrade costs (compressed plus raw) | Readability. Compression is a denomination, not inventory management. |
+| Composite upgrade costs (Compressed plus raw) | Readability: `6 Compressed Iron + 50 Iron` reads better than `650 Iron`, and the player can check it in their head. |
 | Compression ratio: 1 Compressed ore = 100 raw | Round, readable, matches the doc cost examples. |
+| Compression is a manual player action, free and lossless both ways (100 raw <-> 1 Compressed) | Revises the earlier "denomination, not inventory management" call: a Compressed unit is real inventory state, not a display format. Free and reversible so it can never soft-lock a run. See [MECHANICS.md](MECHANICS.md#compression). |
+| Costs are paid in the denomination they are quoted in: 650 raw Iron does *not* buy `6 Compressed Iron + 50 Iron` | Makes compressing a step in the upgrade path instead of a cosmetic button. The refusal costs one action to clear, since compression is free, so the friction is a beat, not a wall. |
+| A *dense block* and a *Compressed unit* are different things, and both stay | A dense block (`IronBlock`, `Cobblestone`) is a mineable, tougher grid cell dropping 9 raw. A Compressed unit is minted by the player, worth 100 raw, and is never mined nor a `Block`. Nine versus a hundred, mined versus minted. |
 | Cost curve shape: geometric growth, constants tuned at implementation | Balanced in live play, not fixed up front. |
 | Single ore quality (common/uncommon removed) | Extra complexity for little MVP value. |
 | Dirt removed; game starts at Stone | Dirt had no compelling function. |
@@ -59,7 +62,7 @@ or [SYSTEMS.md](SYSTEMS.md) rather than repeating it here.
 | Paid ranks | Monetization gate, meaningless offline. Replaced by progression gates (level and prestige rank). |
 | Money / currency economy | Chose ore-only for simplicity and theme. |
 | Common / uncommon ore qualities | Extra complexity for little MVP value; not in the referenced era. |
-| Compression as inventory management | No stack limit, so it would be pure friction. Kept only as a cost denomination. |
+| ~~Compression as inventory management~~ | **Reversed** — see Accepted. Originally rejected as pure friction, on the grounds that unlimited stacks left it nothing to solve. Reinstated as a manual, free, reversible action, with costs quoted and paid in an exact denomination: the point is not storage, it is a beat in the upgrade path. |
 | PvP / multiplayer | Out of scope for a solo MVP. |
 | Skyblock island building | Not the part of SkyMines we want. |
 | Web fullstack front-end | TUI fits learning Rust, offline shareability, and scope control better. |
