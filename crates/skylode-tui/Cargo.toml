@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 skylode-core = { path = "../skylode-core" }
+
+[lints]
+workspace = true
