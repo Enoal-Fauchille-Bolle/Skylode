@@ -38,7 +38,10 @@ type(scope)!: subject
 ```
 
 - The subject is one line of 72 characters at most, imperative mood, lowercase,
-  with no trailing period (for example `feat(core): add fortune multiplier`).
+  with no trailing period (for example `feat(core): add fortune multiplier`). It
+  may end with a closing parenthesis when it names code that way
+  (`refactor(core): shut the free upgrade paths behind pub(crate)`), as long as
+  the parentheses it opens are the ones it closes.
 - A body is optional; separate it from the subject with a blank line.
 - The scope is optional; use it when the affected area is obvious (`core`, `tui`,
   `docs`).
@@ -68,7 +71,7 @@ with `git config --unset core.hooksPath`.
 - **`commit-msg`** validates the commit message against the rules above: type
   from the closed list, optional lowercase scope, optional breaking-change `!`,
   subject in the imperative mood and 72 characters at most, no trailing period,
-  body separated by a blank line.
+  balanced parentheses, body separated by a blank line.
 
 Both hooks step aside where enforcing them would only get in the way:
 

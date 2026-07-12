@@ -95,16 +95,30 @@ if printf "%s" "$subject" | grep -Eq '  +'; then
     exit 1
 fi
 
+# Everything below speaks about the description rather than the whole subject,
+# so that the parentheses around the scope are never mistaken for the writer's.
+description="${subject#*: }"
+first_word="${description%% *}"
+
 # Last character must be a letter or a number: this is what rules out the
-# trailing period, and any other stray punctuation with it.
-if ! printf "%s" "$subject" | grep -Eq '[a-zA-Z0-9]$'; then
-    printf "${RED_BOLD}Subject must end with a letter or a number (no trailing period).${RESET}\n"
+# trailing period, and any other stray punctuation with it. A closing
+# parenthesis is the one exception, because code named in the subject ends that
+# way ('behind pub(crate)').
+if ! printf "%s" "$description" | grep -Eq '[a-zA-Z0-9]\)?$'; then
+    printf "${RED_BOLD}Subject must end with a letter, a number or ')' (no trailing period).${RESET}\n"
     exit 1
 fi
 
-# Extract the description and its first word to check lowercase and imperative mood
-description="${subject#*: }"
-first_word="${description%% *}"
+# That exception only holds for a parenthesis the description itself opened, so
+# the two counts must match: a stray ')' is a typo, not code, and so is a '('
+# left open. Counting is enough here; a subject short enough to fit in 72
+# characters cannot plausibly close its parentheses out of order.
+opens="$(printf "%s" "$description" | tr -cd '(' | wc -c | tr -d '[:space:]')"
+closes="$(printf "%s" "$description" | tr -cd ')' | wc -c | tr -d '[:space:]')"
+if [ "$opens" -ne "$closes" ]; then
+    printf "${RED_BOLD}Subject has unbalanced parentheses (%s '(' for %s ')').${RESET}\n" "$opens" "$closes"
+    exit 1
+fi
 
 # Check that the first word is strictly lowercase
 if printf "%s" "$first_word" | grep -q '[A-Z]'; then
