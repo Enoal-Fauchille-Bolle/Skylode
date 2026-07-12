@@ -34,7 +34,7 @@ cargo run -p skylode-tui  # run the front-end (currently a stub)
 This project follows [Conventional Commits](https://www.conventionalcommits.org):
 
 ```text
-type(scope): subject
+type(scope)!: subject
 ```
 
 - The subject is one line of 72 characters at most, imperative mood, lowercase,
@@ -42,6 +42,8 @@ type(scope): subject
 - A body is optional; separate it from the subject with a blank line.
 - The scope is optional; use it when the affected area is obvious (`core`, `tui`,
   `docs`).
+- The `!` is optional and marks a breaking change; it goes after the scope, just
+  before the colon (`feat(core)!: make every block drop its own material`).
 - Types: `feat`, `fix`, `docs`, `refactor`, `chore`, `style`, `test`, `build`,
   `ci`. The list is closed: the `commit-msg` hook rejects anything else.
 
@@ -64,8 +66,9 @@ with `git config --unset core.hooksPath`.
   warnings` over the workspace, and refuses the commit on the first failure. It
   is the slow one, since it compiles.
 - **`commit-msg`** validates the commit message against the rules above: type
-  from the closed list, optional lowercase scope, subject in the imperative mood
-  and 72 characters at most, no trailing period, body separated by a blank line.
+  from the closed list, optional lowercase scope, optional breaking-change `!`,
+  subject in the imperative mood and 72 characters at most, no trailing period,
+  body separated by a blank line.
 
 Both hooks step aside where enforcing them would only get in the way:
 

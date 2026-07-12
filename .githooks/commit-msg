@@ -1,7 +1,8 @@
 #!/usr/bin/env sh
 # Git commit-msg hook
 # Validates Conventional Commits as specified in CONTRIBUTING.md:
-#   type(scope): subject
+#   type(scope)!: subject
+# The scope and the breaking-change '!' are both optional.
 # One line, imperative, lowercase, no trailing period, 72 characters at most.
 # A body is allowed when separated from the subject by a blank line.
 
@@ -64,11 +65,14 @@ if [ "$len" -gt 72 ]; then
     exit 1
 fi
 
-# Conventional Commits format, with an optional lowercase scope.
-if ! printf "%s" "$subject" | grep -Eq "^($TYPES)(\([a-z0-9][a-z0-9-]*\))?: .+$"; then
-    printf "${RED_BOLD}Subject does not match the format: <type>(<scope>): <subject>${RESET}\n"
+# Conventional Commits format, with an optional lowercase scope and an optional
+# '!' marking a breaking change. The '!' sits after the scope and before the
+# colon, which is where Conventional Commits puts it: 'feat(core)!: ...'.
+if ! printf "%s" "$subject" | grep -Eq "^($TYPES)(\([a-z0-9][a-z0-9-]*\))?!?: .+$"; then
+    printf "${RED_BOLD}Subject does not match the format: <type>(<scope>)!: <subject>${RESET}\n"
     printf "${WHITE_BOLD}  types: $TYPES${RESET}\n"
     printf "${WHITE_BOLD}  scope is optional and lowercase, e.g. 'feat(core): add fortune multiplier'${RESET}\n"
+    printf "${WHITE_BOLD}  '!' is optional and marks a breaking change, e.g. 'feat(core)!: make every block drop its own material'${RESET}\n"
     exit 1
 fi
 
