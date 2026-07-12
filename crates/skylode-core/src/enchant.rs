@@ -46,8 +46,17 @@ pub enum EnchantType {
     /// Clears an entire mine at once.
     /// Ranges from 0 to (TODO: determine max level).
     Nuke,
-    /// Grants a chance to drop a Compressed Ore.
+    /// Grants a chance to drop a [`Compressed`] unit, or an Emerald, in place of
+    /// the raw ore.
+    ///
+    /// The only thing in the game that mints a Compressed unit without paying its
+    /// 100 raw, which is what makes it a windfall rather than a prettier drop. It
+    /// substitutes the drop *after* it leaves the block, so no block gains a
+    /// Compressed unit of its own — see [`Block::drops`].
     /// Ranges from 0 to (TODO: determine max level).
+    ///
+    /// [`Compressed`]: crate::material::Item::Compressed
+    /// [`Block::drops`]: crate::block::Block::drops
     Excavator,
     /// Increases mining speed permanently.
     /// Ranges from 0 to (TODO: determine max level).
