@@ -8,8 +8,7 @@
 //!
 //! Many resources come in two forms: an *ore* variant (drops a single item) and
 //! a *dense* variant (`IronBlock`, `Cobblestone`, …) which is tougher and drops
-//! [`RAW_PER_DENSE_BLOCK`] items, mirroring Minecraft's nine-ingots-per-block
-//! convention.
+//! nine, mirroring Minecraft's nine-ingots-per-block convention.
 //!
 //! A dense block is **not** a Compressed unit. This module deals in cells you
 //! swing a pickaxe at; a Compressed unit is a denomination the player mints in
@@ -23,10 +22,13 @@ use crate::world::World;
 /// Number of raw items a *dense* block yields when mined.
 ///
 /// Matches Minecraft's crafting ratio: nine ingots or gems make one block, so
-/// breaking that block returns nine. Unrelated to
-/// [`RAW_PER_COMPRESSED`](crate::material::RAW_PER_COMPRESSED) (100), which is
-/// the inventory denomination — different ratio, different concept.
-pub const RAW_PER_DENSE_BLOCK: u32 = 9;
+/// breaking that block returns nine. Private, and it stays that way: this is a
+/// balance number, and callers who want to know what a block is worth should ask
+/// the block, via [`Block::drops`]. Unrelated to
+/// [`RAW_PER_COMPRESSED`](crate::material::RAW_PER_COMPRESSED) (100), which *is*
+/// public, because it is a denomination the UI must know in order to render a
+/// price — different ratio, different concept, different audience.
+const RAW_PER_DENSE_BLOCK: u32 = 9;
 
 /// A single mineable block.
 ///
@@ -191,7 +193,11 @@ impl Block {
 
     /// Amount of raw material dropped, before Fortune. Dense forms yield
     /// [`RAW_PER_DENSE_BLOCK`]; everything else yields 1.
-    pub fn drop_amount(self) -> u32 {
+    ///
+    /// Private: it is half an answer. [`drops`](Block::drops) is the whole one,
+    /// and pairing the count with the item is what keeps a caller from asking for
+    /// the amount and forgetting to ask what it is an amount *of*.
+    fn drop_amount(self) -> u32 {
         match self {
             Self::Cobblestone
             | Self::CoalBlock

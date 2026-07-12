@@ -154,7 +154,12 @@ impl Enchants {
     /// `pickaxe_tier` is needed because
     /// [`Efficiency`](EnchantType::Efficiency)'s cap depends on it; pass `None`
     /// for the tier-less default of 5.
-    pub fn upgrade(&mut self, kind: EnchantType, pickaxe_tier: Option<PickaxeTier>) {
+    ///
+    /// `pub(crate)` for the same reason as
+    /// [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe::upgrade): it is free. An
+    /// enchant level is bought with the world's enchant material plus a mix of
+    /// earlier mines' ore, and none of that is checked here.
+    pub(crate) fn upgrade(&mut self, kind: EnchantType, pickaxe_tier: Option<PickaxeTier>) {
         let level = self.get_level(kind);
         if level < kind.max_level(pickaxe_tier) {
             self.levels.insert(kind, level + 1);
@@ -166,7 +171,12 @@ impl Enchants {
     /// Removes the entry outright rather than storing a 0, which keeps the
     /// "absent == level 0" invariant true: [`iter`](Enchants::iter) must only
     /// ever yield enchantments the pickaxe actually has.
-    pub fn reset_level(&mut self, kind: EnchantType) {
+    ///
+    /// `pub(crate)`: this exists to serve the tier jump, which cashes a maxed
+    /// Efficiency in for the next tier. Wiping an enchant outside that trade is
+    /// a pure loss to the player, and nothing outside the core should be able to
+    /// inflict it.
+    pub(crate) fn reset_level(&mut self, kind: EnchantType) {
         self.levels.remove(&kind);
     }
 

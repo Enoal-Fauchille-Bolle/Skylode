@@ -82,7 +82,17 @@ impl Pickaxe {
     /// nothing. They must not fall through to phase 2, which would reset
     /// Efficiency with no tier left to gain in exchange — a permanent downgrade
     /// from 235 mining power back to 10.
-    pub fn upgrade(&mut self) {
+    ///
+    /// `pub(crate)` because it is **free**: it consults no inventory and debits
+    /// nothing. A front-end that could call it could walk a fresh player to a
+    /// maxed Netherite pickaxe in thirty calls. The paid path (phase 5) will check
+    /// solvency, debit, and then delegate here.
+    // Dead outside the tests until the phase-5 purchase path calls it. `expect`
+    // rather than `allow`, so the lint fires again — and this line can go — the
+    // moment a real caller appears; `cfg_attr` because the tests *do* call it, and
+    // an unconditional expectation would go unfulfilled in the test build.
+    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-5 economy"))]
+    pub(crate) fn upgrade(&mut self) {
         let efficiency = EnchantType::Efficiency;
 
         if self.enchants.get_level(efficiency) < efficiency.max_level(Some(self.tier)) {
@@ -118,7 +128,7 @@ impl PickaxeTier {
     ///
     /// The ladder is deliberately a *partial* function. Modelling it as a total
     /// one — with Netherite mapping to itself — reads as "there is always a next
-    /// tier", which let [`Pickaxe::upgrade`] treat the top of the ladder as an
+    /// tier", which let `Pickaxe::upgrade` treat the top of the ladder as an
     /// ordinary step and wipe the player's Efficiency for nothing. `None` forces
     /// every caller to say what happens when there is no next tier.
     pub fn next(self) -> Option<PickaxeTier> {

@@ -53,8 +53,13 @@ impl Mine {
         mine
     }
 
-    /// Resets the mine to its initial state, filling the grid with the main
-    pub fn reset(&mut self) {
+    /// Resets the mine to its initial state, refilling the grid.
+    ///
+    /// `pub(crate)`: refilling a mine is something the *rules* do — on batch
+    /// reset, when the last block falls — not something a front-end may ask for.
+    /// A UI able to call this could hand the player an infinite mine by refilling
+    /// it on demand.
+    pub(crate) fn reset(&mut self) {
         self.grid.clear();
         let (width, height) = self.get_size();
         // Fill the grid with the main block for now
@@ -87,7 +92,14 @@ impl Mine {
     }
 
     /// Increases the mine's size level by 1 and resets the grid to the new size.
-    pub fn upgrade_size_level(&mut self) {
+    ///
+    /// `pub(crate)` because it is **free**. A mine enlargement is paid for in the
+    /// mine's own ore, and the transaction that debits it does not exist yet
+    /// (phase 5). Until it does, this is a door onto a 20x10 mine at no cost, and
+    /// it stays shut to anything outside the core. The paid entry point will wrap
+    /// this one rather than replace it.
+    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-5 economy"))]
+    pub(crate) fn upgrade_size_level(&mut self) {
         self.size_level += 1;
         self.reset();
     }
