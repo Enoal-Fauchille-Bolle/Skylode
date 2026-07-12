@@ -40,6 +40,7 @@ or [SYSTEMS.md](SYSTEMS.md) rather than repeating it here.
 | Mine is a 2D grid, and the grid is the model | Spatial enchants need block positions. `block_count` derived, `capacity = W * H`. |
 | Mine size is per-mine, 3x3 to 20x10 max, upgraded with the mine's own ore | A self-funded growth goal per mine; the terminal is sized for the 20x10 max. Revises the earlier "fixed 20x10, no size upgrades" decision. |
 | Mixed-content mines allowed at MVP | Obsidian + Crying, End Stone + Amethyst. The targeted cell's material decides the drop. |
+| Every block drops something; each world's filler drops its own material (Stone, Netherrack, End Stone) | The filler is the block the player breaks most often, so one that paid nothing would make the bulk of their swings a tax. The three worlds now agree on the rule, and `Block::material` is total — no `None` branch for a case that cannot happen. |
 | Batch reset: deplete to 0, then full instant refill | Matches SkyMines cube regeneration. |
 | Five special enchants: Explosive, Jackhammer, Nuke, Excavator, Haste | Trimmed set for a uniform 2D grid. See [MECHANICS.md](MECHANICS.md#enchants). |
 | Haste enchant = permanent multiplier | Multiplicative, distinct from additive Efficiency, so no conflict. |
