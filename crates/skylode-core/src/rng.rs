@@ -20,11 +20,19 @@ use std::num::NonZeroU32;
 ///
 /// Wraps [`ChaCha8Rng`] rather than `rand`'s `StdRng`, and the choice is load-
 /// bearing: `StdRng` is explicitly *not* guaranteed to keep its algorithm across
-/// `rand` releases, while `rand_chacha` guarantees reproducibility. Since the
-/// generator's position is destined for the save file, an algorithm that may
-/// silently change underneath us would turn every existing save into a different
-/// run. This wrapper is also the only place in the core that names a `rand` type,
-/// so the dependency cannot leak into the rules.
+/// `rand` releases, while `rand_chacha` guarantees reproducibility.
+///
+/// What a changed algorithm would cost is worth stating precisely, because it is
+/// not corruption. The save stores a *position in a sequence*; it would still parse,
+/// still pass its HMAC, still load without a word. But the position would now index
+/// a different sequence, and the run would quietly continue on other dice. Nothing
+/// breaks loudly — which is the problem. Every balance test pinned to a seed would
+/// silently stop meaning what it meant, and "send me your save, I will reproduce
+/// your bug" would stop being true. `the_sequence_is_pinned_to_a_golden_vector` is
+/// what turns that silence into a failing test.
+///
+/// This wrapper is also the only place in the core that names a `rand` type, so the
+/// dependency cannot leak into the rules.
 #[derive(Debug, Clone)]
 pub struct Rng(ChaCha8Rng);
 
