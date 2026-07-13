@@ -111,6 +111,10 @@ mod tests {
         (0..count).map(|_| rng.0.random::<u32>()).collect()
     }
 
+    /// The founding property, and the one every other guarantee is built on: a
+    /// generator is only worth seeding if the seed fully determines what comes out.
+    /// Lose this and balance tests cannot assert anything, and a reloaded run stops
+    /// being the same run.
     #[test]
     fn the_same_seed_replays_the_same_sequence() {
         assert_eq!(draws(7, 1000), draws(7, 1000));
