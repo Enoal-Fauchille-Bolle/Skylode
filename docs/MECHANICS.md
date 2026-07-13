@@ -294,9 +294,17 @@ system (no purchases, no tiers). The full auto-miner system (tiers, like idle-ga
 
 ### Offline accrual
 
-The game does not run in the background. On launch it replays elapsed time. Store
-`last_seen`; on start, compute `elapsed = now - last_seen`, simulate the basic
-auto-miner over `elapsed` (capped), and credit the result.
+The game does not run in the background. Store `last_seen`; on start, compute
+`elapsed = now - last_seen`, cap it, and credit what the basic auto-miner would have
+produced over that span.
+
+This is a **multiplication, not a replay**. The MVP auto-miner is a flat passive rate
+(see above), so its output over an absence is `rate × elapsed` — there is nothing a
+tick-by-tick simulation would discover that the closed form does not already give,
+and 7 days of absence would mean stepping over 12 million ticks to find it out. The
+seeded PRNG earns its keep on the interactive tick loop and in balance tests, not
+here. Should the auto-miner ever gain state that compounds (post-MVP tiers), this is
+the decision to revisit.
 
 Two independent offline levers:
 

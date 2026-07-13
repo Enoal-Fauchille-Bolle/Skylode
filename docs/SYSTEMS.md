@@ -24,7 +24,8 @@ The `data` blob (see [Integrity](#integrity-hmac) below) serializes one cohesive
 game-state struct. The fields, derived from the mechanics:
 
 - `version`: schema version, for migrations.
-- `prng`: the seeded PRNG state (so ticks and offline replay are reproducible).
+- `prng`: the seeded PRNG state — a *position in a sequence*, not just the seed, so a
+  reloaded run continues its dice rather than rerolling them.
 - `last_seen`: wall-clock time of the last write, for offline accrual.
 - `pickaxe`: tier, Efficiency, Fortune, and each enchant's level.
 - `inventory`: a map from ore (raw and Compressed) to count.
@@ -104,8 +105,15 @@ The core advances on a fixed timestep of 20 ticks per second (see
 mining, the auto-miner, timers (boosts, cube regeneration), XP accrual, and enchant
 procs, all from the seeded PRNG so a run is reproducible. Rendering is decoupled:
 the TUI redraws on change at roughly 30 fps, reading the core state without
-driving it. On launch, offline time is credited by replaying elapsed ticks
-(capped) before the interactive loop starts.
+driving it.
+
+Offline time is **not** replayed tick by tick. The MVP auto-miner is a flat passive
+rate (see [MECHANICS.md](MECHANICS.md#auto-miner)), so what it produces over an
+absence is a multiplication, not a simulation — and stepping 432 000 ticks to apply
+one is work no player waits for and no test needs. Credit it in closed form on
+launch, from the capped elapsed time (see
+[offline accrual](MECHANICS.md#offline-accrual)). The tick loop drives the
+*interactive* session only.
 
 ### Core modules
 

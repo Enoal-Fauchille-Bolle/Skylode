@@ -48,7 +48,7 @@ or [SYSTEMS.md](SYSTEMS.md) rather than repeating it here.
 | Prestige: yes | The endgame reset loop, absent from SkyMines. See [MECHANICS.md](MECHANICS.md#prestige). |
 | Prestige currency: Amethyst; condition: reach the End and accumulate it | Ties the last dimension to the reset loop; Amethyst is dual-use (enchants or prestige). |
 | Prestige is a deep reset (including XP), keeping only prestige rank and its global multiplier | Re-walking the progression is the point; the multiplier makes it fast. |
-| Tick rate: 20 per second | Minecraft one-to-one; rendering decoupled; offline replayed. |
+| Tick rate: 20 per second | Minecraft one-to-one; rendering decoupled. Drives the interactive session only — offline is credited in closed form, not replayed. |
 | Seeded PRNG in the save | Reproducible ticks and tests while keeping real enchant bursts. |
 | Offline accrual: yes, cap 7 days, 100% rate, clamp backward and log, wall clock | See [MECHANICS.md](MECHANICS.md#offline-accrual). |
 | No daily login rewards | Daily quests considered post-MVP instead. |
