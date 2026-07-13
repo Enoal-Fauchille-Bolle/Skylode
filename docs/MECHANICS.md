@@ -87,9 +87,11 @@ moves to other levers.
 ### Randomness
 
 All randomness (enchant procs, Excavator drops, mixed-mine cell types) draws from
-a seeded PRNG whose state lives in the save file (`rand`, for example
-`StdRng::seed_from_u64`), not from OS entropy. This keeps ticks, offline replay,
-and `#[test]` balance runs reproducible while enchants still fire in real bursts.
+a seeded PRNG whose state lives in the save file — `rand_chacha::ChaCha8Rng`, seeded
+via `seed_from_u64` — and never from OS entropy. This keeps ticks and `#[test]`
+balance runs reproducible while enchants still fire in real bursts. `ChaCha8Rng`
+rather than `StdRng` because only the former guarantees the same sequence across
+`rand` releases; see [SYSTEMS.md](SYSTEMS.md#tech-stack).
 
 ## Mine representation and interaction
 

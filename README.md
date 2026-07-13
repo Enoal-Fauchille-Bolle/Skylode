@@ -53,7 +53,8 @@ All of the following are planned, not yet implemented:
 - Language: Rust.
 - TUI: `ratatui` and `crossterm`.
 - Serialization: `serde` and `serde_json`.
-- RNG: `rand` (seeded, state in the save, for deterministic ticks).
+- RNG: `rand` and `rand_chacha` (a seeded `ChaCha8Rng`, state in the save, for
+  deterministic ticks).
 - Integrity: `sha2` and `hmac`.
 
 More detail in [docs/SYSTEMS.md](docs/SYSTEMS.md).

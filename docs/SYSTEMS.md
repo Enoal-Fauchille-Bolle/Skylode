@@ -78,8 +78,13 @@ extractable. It catches hand-editing and corruption, not determined cheating.
 - TUI: `ratatui` and `crossterm` (event loop and rendering).
 - Serialization: `serde` and `serde_json` (save file).
 - Time: `std::time::SystemTime`.
-- RNG: `rand`, a seeded PRNG whose state lives in the save, for deterministic
-  ticks.
+- RNG: `rand` plus `rand_chacha`, a seeded PRNG whose state lives in the save, for
+  deterministic ticks. Specifically `ChaCha8Rng`, **not** `StdRng`: `rand` does not
+  guarantee `StdRng`'s algorithm across releases, and an algorithm that changes
+  under a save that stores a position in its sequence turns every existing run into
+  a different one. `rand_chacha` guarantees reproducibility; that guarantee is the
+  whole reason it is here. Both crates are taken with `default-features = false`,
+  which strips OS entropy out of the core entirely.
 - Atomic file write: `tempfile` (temp plus persist/rename).
 - Integrity: `sha2` and `hmac`.
 - Distribution: a single static binary (`cargo build --release`), cross-platform
