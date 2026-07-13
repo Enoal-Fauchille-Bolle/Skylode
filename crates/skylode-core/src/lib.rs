@@ -20,6 +20,7 @@
 //! - [`pickaxe`]: the player's tool, its tier and mining power.
 //! - [`enchant`]: enchantments that modify a pickaxe's behaviour.
 //! - [`player`]: the player's progression state (level, experience, pickaxe).
+//! - [`rng`]: the seeded, replayable source of every draw the rules make.
 //! - [`error`]: what the rules refuse, and why.
 
 pub mod block;
@@ -30,4 +31,5 @@ pub mod material;
 pub mod mine;
 pub mod pickaxe;
 pub mod player;
+pub mod rng;
 pub mod world;

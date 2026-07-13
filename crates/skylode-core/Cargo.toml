@@ -4,6 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# `default-features = false` drops `thread_rng` and `os_rng`, so ambient OS
+# entropy is not merely unused in the core: it is not compiled in. Determinism is
+# enforced by the compiler rather than by discipline. See `rng.rs`.
+#
+# `alloc` is what gates `rand::distr::weighted`; `unbiased` removes the residual
+# bias `random_range` accepts by default (one sample in 2^96 for `u32`). The flag
+# is cheap here, but it also *changes the draw sequence*, so it has to be decided
+# now: turning it on later would desynchronise every existing save.
+rand = { version = "0.9", default-features = false, features = ["alloc", "unbiased"] }
+rand_chacha = { version = "0.9", default-features = false }
 
 [lints]
 workspace = true
