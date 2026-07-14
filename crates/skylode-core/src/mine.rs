@@ -53,7 +53,7 @@ impl Mine {
         let mut mine = Mine {
             main_block,
             secondary_blocks,
-            size_level: 1,
+            size_level: 0,
             grid: Vec::new(),
         };
         Self::reset(&mut mine);
