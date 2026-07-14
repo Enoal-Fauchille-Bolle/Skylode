@@ -176,9 +176,11 @@ mod tests {
     }
 
     /// `size_level` is a `u32` but the table has only 10 rows, so every level
-    /// past the end must clamp to the largest mine. Indexing straight into the
-    /// table would panic instead — and this is reachable, since nothing caps the
-    /// field.
+    /// past the end must clamp to the largest mine rather than panic on the
+    /// index. `upgrade_size_level` can no longer produce such a level — but the
+    /// field is plain data, and phase 9 will read it straight back out of a save
+    /// file, so the clamp guards a save the player edited or a disk corrupted.
+    /// This test builds those levels the way a deserialiser would.
     #[test]
     fn size_levels_past_the_table_clamp_to_the_largest_mine() {
         let largest = mine_at(9).get_size();
