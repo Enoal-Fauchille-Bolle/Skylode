@@ -5,6 +5,7 @@
 //! the top of the `MINE_SIZES` table.
 
 use crate::block::Block;
+use crate::error::CoreError;
 
 /// Dimensions `(width, height)` for each of the 10 mine size levels.
 ///
@@ -22,6 +23,12 @@ const MINE_SIZES: [(u8, u8); 10] = [
     (18, 9),
     (20, 10),
 ];
+
+/// The highest size level the table describes.
+///
+/// Derived from `MINE_SIZES` rather than written out, so extending the table
+/// raises the ceiling and no second place has to be remembered.
+const MAX_SIZE_LEVEL: u32 = MINE_SIZES.len() as u32 - 1;
 
 /// A generated mine: a pool of possible blocks plus the laid-out grid the
 /// player mines through.
@@ -78,9 +85,14 @@ impl Mine {
 
     /// Returns this mine's `(width, height)` in blocks.
     ///
-    /// Looks the dimensions up in `MINE_SIZES` by `size_level`. Because
-    /// `size_level` is a `u32` while the table has only 10 entries, any
-    /// out-of-range level is clamped to the largest size rather than panicking.
+    /// Looks the dimensions up in `MINE_SIZES` by `size_level`, clamping anything
+    /// past the table to the largest size rather than panicking.
+    ///
+    /// [`upgrade_size_level`](Mine::upgrade_size_level) is the only thing that
+    /// writes the field, and it stops at [`MAX_SIZE_LEVEL`], so a live mine cannot
+    /// reach the clamp. It stays because the field is a plain `u32` that phase 9
+    /// will read back out of a save file: a hand-edited or corrupted save must
+    /// give the player a 20x10 mine, not a panicking core.
     pub fn get_size(&self) -> (u8, u8) {
         let index = self.size_level as usize;
         if index < MINE_SIZES.len() {
@@ -90,7 +102,14 @@ impl Mine {
         }
     }
 
-    /// Increases the mine's size level by 1 and resets the grid to the new size.
+    /// Increases the mine's size level by 1 and resets the grid to the new size,
+    /// or refuses if the mine is already the largest the table describes.
+    ///
+    /// The refusal is the point. Without it the level keeps climbing while
+    /// [`get_size`](Mine::get_size) clamps, so levels 10, 11, 12… each move the
+    /// mine's state and hand back **no extra blocks** — once the enlargement is
+    /// paid for in the mine's own ore, that is a purchase that charges the player
+    /// for nothing.
     ///
     /// `pub(crate)` because it is **free**. A mine enlargement is paid for in the
     /// mine's own ore, and the transaction that debits it does not exist yet
@@ -98,9 +117,15 @@ impl Mine {
     /// it stays shut to anything outside the core. The paid entry point will wrap
     /// this one rather than replace it.
     #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-5 economy"))]
-    pub(crate) fn upgrade_size_level(&mut self) {
+    pub(crate) fn upgrade_size_level(&mut self) -> Result<(), CoreError> {
+        if self.size_level >= MAX_SIZE_LEVEL {
+            return Err(CoreError::MineSizeMaxed {
+                level: MAX_SIZE_LEVEL,
+            });
+        }
         self.size_level += 1;
         self.reset();
+        Ok(())
     }
 }
 
@@ -185,7 +210,7 @@ mod tests {
     fn upgrading_the_size_level_increases_the_grid_dimensions() {
         let mut mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
         let (initial_width, initial_height) = mine.get_size();
-        mine.upgrade_size_level();
+        assert!(mine.upgrade_size_level().is_ok());
         let (new_width, new_height) = mine.get_size();
         assert!(new_width > initial_width);
         assert!(new_height >= initial_height);
@@ -195,9 +220,41 @@ mod tests {
     fn size_level_is_correctly_updated_when_upgrading() {
         let mut mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
         let initial_size_level = mine.get_size_level();
-        mine.upgrade_size_level();
+        assert!(mine.upgrade_size_level().is_ok());
         let new_size_level = mine.get_size_level();
         assert_eq!(new_size_level, initial_size_level + 1);
+    }
+
+    /// The whole table must be walkable, and the walk must stop exactly at the
+    /// end of it — not one level further, where `get_size` starts clamping.
+    #[test]
+    fn the_size_ladder_ends_at_the_last_row_of_the_table() {
+        let mut mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
+        while mine.get_size_level() < MAX_SIZE_LEVEL {
+            assert!(mine.upgrade_size_level().is_ok());
+        }
+        assert_eq!(mine.get_size(), MINE_SIZES[MINE_SIZES.len() - 1]);
+    }
+
+    /// The refusal that keeps a paid enlargement honest. Past the table the
+    /// dimensions stop growing while `size_level` used to keep climbing, so the
+    /// player would be sold levels 10, 11, 12… and receive not one extra block.
+    /// The refused call must also leave the level where it was: a debit followed
+    /// by a no-op is the same theft, one step later.
+    #[test]
+    fn a_mine_at_the_largest_size_refuses_to_grow_and_changes_nothing() {
+        let mut mine = mine_at(MAX_SIZE_LEVEL);
+        let size = mine.get_size();
+
+        assert_eq!(
+            mine.upgrade_size_level(),
+            Err(CoreError::MineSizeMaxed {
+                level: MAX_SIZE_LEVEL,
+            })
+        );
+
+        assert_eq!(mine.get_size_level(), MAX_SIZE_LEVEL);
+        assert_eq!(mine.get_size(), size);
     }
 
     #[test]

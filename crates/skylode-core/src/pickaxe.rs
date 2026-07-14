@@ -8,6 +8,7 @@
 //! [`Block::min_pickaxe_tier`](crate::block::Block::min_pickaxe_tier)).
 
 use crate::enchant::{EnchantType, Enchants};
+use crate::error::CoreError;
 
 /// The material tier of a pickaxe.
 ///
@@ -78,29 +79,37 @@ impl Pickaxe {
     ///    the next tier — so the player re-climbs Efficiency on a stronger base.
     ///
     /// At [`Netherite`](PickaxeTier::Netherite) Efficiency climbs to its raised
-    /// cap of 15 and the pickaxe is then fully upgraded: further calls do
-    /// nothing. They must not fall through to phase 2, which would reset
-    /// Efficiency with no tier left to gain in exchange — a permanent downgrade
-    /// from 235 mining power back to 10.
+    /// cap of 15 and the pickaxe is then fully upgraded: further calls are
+    /// **refused** with [`CoreError::PickaxeFullyUpgraded`]. They must not fall
+    /// through to phase 2, which would reset Efficiency with no tier left to gain
+    /// in exchange — a permanent downgrade from 235 mining power back to 10. The
+    /// refusal is what lets the paid path (phase 5) decline the sale instead of
+    /// charging for that downgrade.
     ///
     /// `pub(crate)` because it is **free**: it consults no inventory and debits
     /// nothing. A front-end that could call it could walk a fresh player to a
-    /// maxed Netherite pickaxe in thirty calls. The paid path (phase 5) will check
-    /// solvency, debit, and then delegate here.
+    /// maxed Netherite pickaxe in thirty calls. The paid path will check solvency,
+    /// debit, and then delegate here.
     // Dead outside the tests until the phase-5 purchase path calls it. `expect`
     // rather than `allow`, so the lint fires again — and this line can go — the
     // moment a real caller appears; `cfg_attr` because the tests *do* call it, and
     // an unconditional expectation would go unfulfilled in the test build.
     #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-5 economy"))]
-    pub(crate) fn upgrade(&mut self) {
+    pub(crate) fn upgrade(&mut self) -> Result<(), CoreError> {
         let efficiency = EnchantType::Efficiency;
 
         if self.enchants.get_level(efficiency) < efficiency.max_level(Some(self.tier)) {
-            self.enchants.upgrade(efficiency, Some(self.tier));
+            // The guard is the same one `Enchants::upgrade` re-checks, so this
+            // can only be `Ok` — propagating rather than discarding keeps that a
+            // fact the compiler enforces instead of a comment.
+            self.enchants.upgrade(efficiency, Some(self.tier))?;
         } else if let Some(next_tier) = self.tier.next() {
             self.enchants.reset_level(efficiency);
             self.tier = next_tier;
+        } else {
+            return Err(CoreError::PickaxeFullyUpgraded);
         }
+        Ok(())
     }
 }
 
@@ -171,7 +180,17 @@ mod tests {
     fn maxed_tier_pickaxe() -> Pickaxe {
         let mut pickaxe = Pickaxe::default();
         for _ in 0..(UPGRADES_PER_TIER * (ALL_TIERS.len() - 1)) {
-            pickaxe.upgrade();
+            assert!(pickaxe.upgrade().is_ok());
+        }
+        pickaxe
+    }
+
+    /// A Netherite pickaxe with Efficiency at its raised cap of 15: the end of
+    /// the upgrade path.
+    fn fully_upgraded_pickaxe() -> Pickaxe {
+        let mut pickaxe = maxed_tier_pickaxe();
+        for _ in 0..15 {
+            assert!(pickaxe.upgrade().is_ok());
         }
         pickaxe
     }
@@ -196,12 +215,12 @@ mod tests {
     fn efficiency_scales_quadratically() {
         let tier = Some(PickaxeTier::Wooden);
         let mut enchants = Enchants::new();
-        enchants.upgrade(EnchantType::Efficiency, tier);
+        assert!(enchants.upgrade(EnchantType::Efficiency, tier).is_ok());
         let level_one = Pickaxe::new(PickaxeTier::Wooden, enchants.clone());
         assert_eq!(level_one.mining_power(), 2.0 + 1.0 + 1.0);
 
         for _ in 0..4 {
-            enchants.upgrade(EnchantType::Efficiency, tier);
+            assert!(enchants.upgrade(EnchantType::Efficiency, tier).is_ok());
         }
         let level_five = Pickaxe::new(PickaxeTier::Wooden, enchants);
         assert_eq!(level_five.mining_power(), 2.0 + 25.0 + 1.0);
@@ -275,7 +294,7 @@ mod tests {
     fn upgrades_fill_efficiency_before_touching_the_tier() {
         let mut pickaxe = Pickaxe::default();
         for expected_level in 1..=5 {
-            pickaxe.upgrade();
+            assert!(pickaxe.upgrade().is_ok());
             assert_eq!(pickaxe.get_tier(), PickaxeTier::Wooden);
             assert_eq!(
                 pickaxe.enchants.get_level(EnchantType::Efficiency),
@@ -290,7 +309,7 @@ mod tests {
     fn a_capped_efficiency_is_cashed_in_for_the_next_tier() {
         let mut pickaxe = Pickaxe::default();
         for _ in 0..UPGRADES_PER_TIER {
-            pickaxe.upgrade();
+            assert!(pickaxe.upgrade().is_ok());
         }
         assert_eq!(pickaxe.get_tier(), PickaxeTier::Stone);
         assert_eq!(pickaxe.enchants.get_level(EnchantType::Efficiency), 0);
@@ -309,7 +328,7 @@ mod tests {
     fn netherite_efficiency_climbs_to_fifteen() {
         let mut pickaxe = maxed_tier_pickaxe();
         for expected_level in 1..=15 {
-            pickaxe.upgrade();
+            assert!(pickaxe.upgrade().is_ok());
             assert_eq!(pickaxe.get_tier(), PickaxeTier::Netherite);
             assert_eq!(
                 pickaxe.enchants.get_level(EnchantType::Efficiency),
@@ -324,21 +343,22 @@ mod tests {
     /// never be a *downgrade*. Wiping Efficiency at the ceiling would drop the
     /// player from 235 mining power back to 10 — permanently, since the tier can
     /// no longer climb to compensate.
+    ///
+    /// The refusal is the other half: an upgrade that silently did nothing would
+    /// look, from the till, exactly like one that worked, so the paid path would
+    /// take the player's ore and hand back the pickaxe they already had.
     #[test]
-    fn upgrading_a_fully_maxed_pickaxe_never_reduces_its_power() {
-        let mut pickaxe = maxed_tier_pickaxe();
-        for _ in 0..15 {
-            pickaxe.upgrade();
-        }
+    fn upgrading_a_fully_maxed_pickaxe_is_refused_rather_than_silently_ignored() {
+        let mut pickaxe = fully_upgraded_pickaxe();
         let maxed_power = pickaxe.mining_power();
 
-        pickaxe.upgrade();
+        assert_eq!(pickaxe.upgrade(), Err(CoreError::PickaxeFullyUpgraded));
 
         assert_eq!(pickaxe.get_tier(), PickaxeTier::Netherite);
-        assert!(
-            pickaxe.mining_power() >= maxed_power,
-            "upgrading a maxed Netherite pickaxe dropped its mining power from {maxed_power} to {}",
-            pickaxe.mining_power()
+        assert_eq!(
+            pickaxe.mining_power(),
+            maxed_power,
+            "the refused upgrade moved the pickaxe anyway"
         );
     }
 }

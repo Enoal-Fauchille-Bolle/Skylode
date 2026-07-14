@@ -9,6 +9,7 @@
 //! - [`Enchant`]: a standalone `(type, level)` pair used when an enchantment
 //!   needs to be passed around on its own.
 
+use crate::error::CoreError;
 use crate::pickaxe::PickaxeTier;
 use std::collections::HashMap;
 
@@ -147,9 +148,11 @@ impl Enchants {
     /// Increases the level of the specified enchantment by 1, up to its cap.
     ///
     /// Absent enchantments start from 0, so the first call installs them at
-    /// level 1. Calls beyond [`max_level`](EnchantType::max_level) are no-ops:
-    /// the cap is enforced here rather than left to each caller, so no code path
-    /// can hand the player a level the game has no rules for.
+    /// level 1. Calls beyond [`max_level`](EnchantType::max_level) are
+    /// **refused**, not quietly dropped: the cap is enforced here rather than
+    /// left to each caller, so no code path can hand the player a level the game
+    /// has no rules for — and the paid path can tell "bought a level" from "paid
+    /// for nothing".
     ///
     /// `pickaxe_tier` is needed because
     /// [`Efficiency`](EnchantType::Efficiency)'s cap depends on it; pass `None`
@@ -159,11 +162,18 @@ impl Enchants {
     /// [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe::upgrade): it is free. An
     /// enchant level is bought with the world's enchant material plus a mix of
     /// earlier mines' ore, and none of that is checked here.
-    pub(crate) fn upgrade(&mut self, kind: EnchantType, pickaxe_tier: Option<PickaxeTier>) {
+    pub(crate) fn upgrade(
+        &mut self,
+        kind: EnchantType,
+        pickaxe_tier: Option<PickaxeTier>,
+    ) -> Result<(), CoreError> {
+        let cap = kind.max_level(pickaxe_tier);
         let level = self.get_level(kind);
-        if level < kind.max_level(pickaxe_tier) {
-            self.levels.insert(kind, level + 1);
+        if level >= cap {
+            return Err(CoreError::EnchantAtCap { kind, cap });
         }
+        self.levels.insert(kind, level + 1);
+        Ok(())
     }
 
     /// Resets the level of the specified enchantment to 0.
@@ -248,7 +258,7 @@ mod tests {
 
         let mut installed = Enchants::new();
         for _ in 0..detached.level {
-            installed.upgrade(detached.enchant_type, None);
+            assert!(installed.upgrade(detached.enchant_type, None).is_ok());
         }
 
         let read_back = Enchant::new(
@@ -269,15 +279,15 @@ mod tests {
     #[test]
     fn upgrading_an_absent_enchant_installs_it_at_level_one() {
         let mut enchants = Enchants::new();
-        enchants.upgrade(EnchantType::Fortune, None);
+        assert!(enchants.upgrade(EnchantType::Fortune, None).is_ok());
         assert_eq!(enchants.get_level(EnchantType::Fortune), 1);
     }
 
     #[test]
     fn reset_level_leaves_the_other_enchants_alone() {
         let mut enchants = Enchants::new();
-        enchants.upgrade(EnchantType::Fortune, None);
-        enchants.upgrade(EnchantType::Haste, None);
+        assert!(enchants.upgrade(EnchantType::Fortune, None).is_ok());
+        assert!(enchants.upgrade(EnchantType::Haste, None).is_ok());
 
         enchants.reset_level(EnchantType::Fortune);
 
@@ -288,8 +298,8 @@ mod tests {
     #[test]
     fn reset_clears_every_enchant() {
         let mut enchants = Enchants::new();
-        enchants.upgrade(EnchantType::Fortune, None);
-        enchants.upgrade(EnchantType::Haste, None);
+        assert!(enchants.upgrade(EnchantType::Fortune, None).is_ok());
+        assert!(enchants.upgrade(EnchantType::Haste, None).is_ok());
 
         enchants.reset();
 
@@ -305,7 +315,7 @@ mod tests {
     #[test]
     fn iter_yields_only_active_enchants() {
         let mut enchants = Enchants::new();
-        enchants.upgrade(EnchantType::Fortune, None);
+        assert!(enchants.upgrade(EnchantType::Fortune, None).is_ok());
         enchants.reset_level(EnchantType::Fortune);
 
         assert_eq!(
@@ -368,8 +378,12 @@ mod tests {
     fn upgrade_stops_at_the_enchant_cap() {
         let cap = EnchantType::Fortune.max_level(None);
         let mut enchants = Enchants::new();
-        for _ in 0..(u32::from(cap) + 5) {
-            enchants.upgrade(EnchantType::Fortune, None);
+        for _ in 0..cap {
+            assert!(enchants.upgrade(EnchantType::Fortune, None).is_ok());
+        }
+
+        for _ in 0..5 {
+            let _ = enchants.upgrade(EnchantType::Fortune, None);
         }
 
         assert_eq!(
@@ -379,15 +393,43 @@ mod tests {
         );
     }
 
+    /// The cap must *refuse*, not shrug. A silent no-op is indistinguishable from
+    /// a successful upgrade at the call site, so the paid path (phase 5) would
+    /// happily debit the player's ore for a level they never received — the same
+    /// hole `Inventory::remove` used to have when it clamped an over-large
+    /// withdrawal to zero.
+    #[test]
+    fn upgrading_a_capped_enchant_is_refused_and_changes_nothing() {
+        let cap = EnchantType::Fortune.max_level(None);
+        let mut enchants = Enchants::new();
+        for _ in 0..cap {
+            assert!(enchants.upgrade(EnchantType::Fortune, None).is_ok());
+        }
+
+        assert_eq!(
+            enchants.upgrade(EnchantType::Fortune, None),
+            Err(CoreError::EnchantAtCap {
+                kind: EnchantType::Fortune,
+                cap,
+            })
+        );
+        assert_eq!(enchants.get_level(EnchantType::Fortune), cap);
+    }
+
     /// Efficiency is the one enchant whose ceiling moves with the tier, so the
-    /// cap `upgrade` enforces has to follow the tier it is handed.
+    /// cap `upgrade` enforces has to follow the tier it is handed — including
+    /// which of the two calls is the one that gets refused.
     #[test]
     fn the_cap_upgrade_enforces_follows_the_tier() {
         let mut wooden = Enchants::new();
         let mut netherite = Enchants::new();
         for _ in 0..15 {
-            wooden.upgrade(EnchantType::Efficiency, Some(PickaxeTier::Wooden));
-            netherite.upgrade(EnchantType::Efficiency, Some(PickaxeTier::Netherite));
+            let _ = wooden.upgrade(EnchantType::Efficiency, Some(PickaxeTier::Wooden));
+            assert!(
+                netherite
+                    .upgrade(EnchantType::Efficiency, Some(PickaxeTier::Netherite))
+                    .is_ok()
+            );
         }
 
         assert_eq!(wooden.get_level(EnchantType::Efficiency), 5);

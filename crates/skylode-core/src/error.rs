@@ -1,20 +1,27 @@
 //! Errors returned by fallible core operations.
 //!
 //! The workspace lints warn on `unwrap`, `expect` and `panic`, so an operation
-//! the player can legitimately get wrong — spending what they do not have —
-//! returns a [`CoreError`] rather than trapping.
+//! the player can legitimately get wrong — spending what they do not have,
+//! buying a level that does not exist — returns a [`CoreError`] rather than
+//! trapping.
 //!
 //! Errors carry *numbers*, not just a kind. A refusal the UI can only render as
 //! "you can't afford that" is a dead end; one that knows the player is 40 Iron
 //! short can say so, and can offer the missing step.
+//!
+//! **A refusal changes nothing.** Every operation returning a [`CoreError`] is a
+//! no-op on the failing path: no partial debit, no half-applied upgrade. The
+//! economy leans on this — a purchase checks, debits, then upgrades, and any of
+//! the three refusing must leave the player exactly where they were.
 
+use crate::enchant::EnchantType;
 use crate::material::Item;
 use std::fmt;
 
 /// Something the rules would not allow.
 ///
-/// One variant today; the concerns still to be built (locked mines, a pickaxe
-/// tier too low, an upgrade already maxed) belong here too as they land.
+/// The gates still to be built (a locked mine, a pickaxe tier too low for a
+/// block) belong here too, and land with the systems that enforce them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreError {
     /// The inventory holds fewer than `needed` of `item`.
@@ -32,6 +39,35 @@ pub enum CoreError {
         /// How many the inventory actually held.
         held: u32,
     },
+    /// The enchant already sits at the highest level the game has rules for.
+    ///
+    /// Carries the `cap` because it is not a property of the enchant alone:
+    /// Efficiency stops at 5 on every tier but Netherite, where it climbs to 15
+    /// (see [`EnchantType::max_level`]). "Fortune is capped" is a fact; "Fortune
+    /// is capped at 10" is one the player can plan around.
+    EnchantAtCap {
+        /// The enchant that has nowhere left to climb.
+        kind: EnchantType,
+        /// The cap it is sitting at, for the tier it was asked about.
+        cap: u8,
+    },
+    /// A Netherite pickaxe with a maxed Efficiency: the upgrade path is spent.
+    ///
+    /// The refusal is load-bearing, not cosmetic. The tier ladder ends at
+    /// Netherite, and the upgrade step that trades a maxed Efficiency for the
+    /// next tier has no tier left to buy — taking it anyway would wipe Efficiency
+    /// for nothing and drop the player from 235 mining power back to 10,
+    /// *permanently*. See [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe).
+    PickaxeFullyUpgraded,
+    /// The mine already fills the largest grid the size table holds.
+    ///
+    /// Size levels past the table buy no blocks: the dimensions stop growing.
+    /// Refusing rather than incrementing is what keeps a paid upgrade from
+    /// charging for nothing once the economy lands.
+    MineSizeMaxed {
+        /// The largest size level, which the mine is already at.
+        level: u32,
+    },
 }
 
 impl fmt::Display for CoreError {
@@ -39,6 +75,13 @@ impl fmt::Display for CoreError {
         match self {
             Self::InsufficientItems { item, needed, held } => {
                 write!(f, "need {needed} {item}, have {held}")
+            }
+            Self::EnchantAtCap { kind, cap } => {
+                write!(f, "{} is already at its cap of {cap}", kind.name())
+            }
+            Self::PickaxeFullyUpgraded => write!(f, "the pickaxe is fully upgraded"),
+            Self::MineSizeMaxed { level } => {
+                write!(f, "the mine is already at its largest size, level {level}")
             }
         }
     }
@@ -62,5 +105,29 @@ mod tests {
             held: 0,
         };
         assert_eq!(err.to_string(), "need 6 Compressed Iron, have 0");
+    }
+
+    /// A cap the player cannot see is a wall they keep walking into. The message
+    /// names the number, so the Upgrades screen can say why the button is dead
+    /// without knowing anything about Efficiency's tier-dependent ceiling.
+    #[test]
+    fn a_capped_enchant_names_the_cap_it_is_sitting_at() {
+        let err = CoreError::EnchantAtCap {
+            kind: EnchantType::Fortune,
+            cap: 10,
+        };
+        assert_eq!(err.to_string(), "Fortune is already at its cap of 10");
+    }
+
+    #[test]
+    fn a_spent_pickaxe_and_a_maxed_mine_say_so() {
+        assert_eq!(
+            CoreError::PickaxeFullyUpgraded.to_string(),
+            "the pickaxe is fully upgraded"
+        );
+        assert_eq!(
+            CoreError::MineSizeMaxed { level: 9 }.to_string(),
+            "the mine is already at its largest size, level 9"
+        );
     }
 }
