@@ -82,7 +82,24 @@ levers shift (see [post-instamine progression](#post-instamine-progression)).
 
 Fortune multiplies the drop count per broken block. It is capped at **10**: past
 that point ore is abundant enough that more Fortune adds nothing, so the player
-moves to other levers.
+moves to other levers. Fortune multiplies the **loot** and only the loot — see XP,
+below.
+
+### XP
+
+XP is granted **per item the block contained, before Fortune**: 1 for an ore cell,
+9 for a dense one — `Block::drops`, not what the player walks away with. Fortune
+and Excavator multiply or substitute the loot; neither touches the experience.
+
+That "before Fortune" is what holds the two progression axes apart. Levels open
+worlds, ore opens pickaxes. If Fortune multiplied XP as well as loot, a single
+investment would advance both axes at once, and *"neither axis alone carries
+progression"* would quietly stop being true. Fortune is a yield lever, and stays
+one.
+
+The rule still pays richness its due: a dense cell contains nine, so it grants
+nine XP. Enriching a mine speeds up levelling as well as income — see
+[mine richness](#mine-richness).
 
 ### Randomness
 
