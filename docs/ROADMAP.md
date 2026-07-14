@@ -15,8 +15,12 @@ rationale behind these choices, see [DECISIONS.md](DECISIONS.md).
   (Lapis, Quartz, Amethyst).
 - Five special enchants (Explosive, Jackhammer, Nuke, Excavator, Haste), leveled
   per dimension.
-- Mixed-content mines (Obsidian + Crying, End Stone + Amethyst).
+- Mixed-content mines (Obsidian + Crying, End Stone + Amethyst) — which is
+  [richness](MECHANICS.md#mine-richness) at level 0.
 - Per-mine size, 3x3 to 20x10, upgraded with the mine's own ore.
+- Per-mine richness: the weight of the mine's valuable cell (Iron Ore to Iron
+  Block, End Stone to Amethyst). Bought as a permanent ceiling, dialled freely
+  below it. The dial is only shown on the two mines where it is a real choice.
 - Haste boosts (Redstone).
 - One basic auto-miner with offline accrual.
 - Prestige (Amethyst cost, deep reset, permanent global multiplier).
@@ -47,4 +51,7 @@ rationale behind these choices, see [DECISIONS.md](DECISIONS.md).
   (15, 30), offline cap (7 days), dip magnitude, cost-curve constants, compression
   ratio (100), autosave interval (10 seconds), enchant level caps per dimension,
   enchant proc rates and cooldowns, mine-size upgrade costs, prestige multiplier
-  scale, batch-reset threshold (0).
+  scale, batch-reset threshold (0), and for richness: the number of levels, the
+  weight curve `p(level)`, the weight cap (around 50%, and *strictly* below 100% —
+  that bound is an invariant, not a tunable), and how fast the cost mix shifts from
+  the common material to the rare one.

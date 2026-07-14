@@ -54,8 +54,11 @@ Dropped or changed items are recorded in [DECISIONS.md](DECISIONS.md).
 1. Mine the selected ore cube with the pickaxe (hold Space). Ores and mining XP
    accumulate.
 2. Ores pile up in the inventory (Fortune multiplies yield).
-3. Spend ores to upgrade the pickaxe (Efficiency inside a tier, then jump tier)
-   and to grow the mine (paid in that mine's own ore).
+3. Spend ores to upgrade the pickaxe (Efficiency inside a tier, then jump tier),
+   and to **grow** and **enrich** the mine — its two tracks, both paid in that
+   mine's own material. Size scales the spatial enchants; richness raises the
+   weight of the mine's valuable cell (Iron Ore to Iron Block, End Stone to
+   Amethyst), so each cell is worth more.
 4. A tier jump unlocks harder mines but temporarily lowers mining speed (the
    "dip", a deliberate decision point).
 5. Mining levels up. New levels unlock new worlds (Nether, then End) with new
@@ -80,10 +83,13 @@ Tab or number keys:
   status strip below the grid (break-progress bar, mining power, active boost, and
   the mining-level / XP bar).
 - **Mines:** choose the world and cube. Worlds are gated by mining level and mines
-  by pickaxe tier; shows unlocked versus locked, and each mine's size.
+  by pickaxe tier; shows unlocked versus locked, and each mine's size and richness.
+  This is also where the **richness dial** lives — drawn only on the two mines where
+  it is a real choice (Obsidian, End), and hidden on the nine where its only sensible
+  position is the top.
 - **Inventory:** ores and amounts (raw and Compressed, no stack limit).
 - **Upgrades:** the full pickaxe roadmap (every tier and Efficiency/Fortune step
   with its composite cost, current position highlighted, future steps visible for
-  planning), plus enchant levels and mine-size upgrades. Quality-of-life:
-  affordability markers, buy times N, buy max.
+  planning), plus enchant levels and both mine tracks (size and richness).
+  Quality-of-life: affordability markers, buy times N, buy max.
 - **Stats:** progression, mining level, prestige rank, milestones.

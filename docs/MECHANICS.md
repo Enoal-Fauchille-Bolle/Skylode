@@ -67,9 +67,9 @@ on different math layers, so they stack without conflict.
 ### One block at a time
 
 There is a single `break_progress` counter. The targeted block is a random
-remaining cell of the mine grid. On break, the next random cell is picked. In a
-mixed-content mine the targeted cell's material decides the drop (see
-[mixed content](#mixed-content)).
+remaining cell of the mine grid. On break, the next random cell is picked. Every
+mine holds two kinds of cell, so the targeted cell's material always decides the
+drop (see [mine richness](#mine-richness)).
 
 ### Instamine
 
@@ -124,18 +124,106 @@ smaller mines occupy less of the same area. The minimum terminal is about **80x2
 (40x10 for the biggest grid, plus borders, the status strip, and margins); smaller
 shows an "enlarge your terminal" screen.
 
-### Mixed content
+Size is one of a mine's **two** upgrade tracks; the other is
+[richness](#mine-richness). Both are throughput, which is exactly why they must
+multiply *different* things or they would be two names for one number. Size is what
+makes the **spatial enchants** scale — a Jackhammer clears a 20-wide row instead of
+a 5-wide one, a Nuke clears 200 cells instead of 25. Richness is what makes each
+cell worth more, so it scales with **Fortune**. Which track to buy first therefore
+depends on which enchants the player has invested in, and that is a decision rather
+than a division.
 
-A mine can hold more than one material, with rarity weights (for example Obsidian
-common with Crying Obsidian rare, or End Stone common with Amethyst rare). The
-targeted cell's material decides its drop. A true Vein Miner (following connected
-same-type blocks) is **not** planned: it was dropped rather than parked.
+### Mine richness
+
+A mine is a **common cell** and a **cell of value**, held in rarity weights. The
+Iron mine is Iron Ore with Iron Block; the Obsidian mine is Obsidian with Crying
+Obsidian; the End mine is End Stone with Amethyst. The targeted cell's material
+decides its drop. **Richness is the weight of the cell of value**, and it is the
+mine's second upgrade track.
+
+This is not a system bolted on top of mixed content — it *is* mixed content, made
+mutable. A mine at richness 0 is precisely the mixed mine as first specified;
+buying richness shifts weight from the common cell to the valuable one. One
+mechanic, one cost model, and it reaches every mine in the game, including the two
+that have no dense form.
+
+It is also the only way the **dense blocks** enter the game at all. `Iron Block`,
+`Cobblestone` and their siblings are tougher cells worth nine raw (see
+[compression](#compression)); with no richness track, no mine would ever contain
+one, and the whole dense form would be decoration.
+
+**Buy the ceiling, set the dial.** A richness *level* is bought: permanent,
+geometric in cost, one-way. Below that ceiling the player moves a *dial* freely and
+for free. This is the [compression](#compression) rule again, and it is here for the
+same reason: whatever shape a run is in, one free action puts it in the shape the
+player's current goal wants. A purchase may slow a run down; it must never be able
+to strand it.
+
+**Two flavours, deliberately.** Where the valuable cell is the *dense form of the
+same material* — nine mines: Stone, Coal, Iron, Gold, Lapis, Redstone, Emerald,
+Diamond, Ancient Debris — `Iron Ore` and `Iron Block` both drop Iron. Enriching
+there is **pure gain**: at the current hardness values a dense cell pays nine for a
+hardness of five, against one for a hardness of three, so it is worth roughly five
+times as much iron per second. The dial has exactly one sensible position, the top,
+and a dial with one position is not a dial: the UI does not draw it.
+
+Where the valuable cell is a *different material* — two mines: Obsidian/Crying
+Obsidian, End Stone/Amethyst — enriching is a **substitution**: more of the rare,
+less of the common. There the dial is a genuine choice, and the UI draws it. Those
+two are the endgame mines, so the only mines where richness carries a decision are
+the mines where a decision is worth having. The rules stay uniform across all
+eleven; only the interface branches.
+
+**The End mine is the sharpest case.** End Stone funds that mine's own growth;
+Amethyst funds prestige and the End enchant cap. The dial arbitrates between them —
+*grow, or harvest*. Since Amethyst is already dual-use, the End mine becomes a
+three-way call on the scarcest resource in the game: cash out (prestige), power up
+(enchant cap), or reinvest (richness).
+
+**The common cell never disappears.** The weight of the valuable cell is capped
+strictly **below 100%**. This is an invariant, not a tunable, and it does two jobs
+at once:
+
+- **It cannot brick a run.** If the End mine could be enriched to 100% Amethyst it
+  would stop dropping End Stone, and End Stone is what pays to grow it. Below the
+  cap, the common income only ever *slows*: it never reaches zero, so the player
+  always accumulates, and can always eventually afford anything. A purchase that
+  hurts is a mistake; a purchase that strands is a bug.
+- **It cannot run away.** The production gain from richness is bounded by the cap,
+  while the cost curve is geometric and unbounded. The cost always wins in the end —
+  including on the mines where richness is paid partly in the very material it
+  produces (see [mine upgrade costs](#mine-upgrade-costs)).
+
+A true Vein Miner (following connected same-type blocks) is **not** planned: it was
+dropped rather than parked.
 
 ### Batch reset
 
 The mine depletes to 0, then fully and instantly refills. This matches SkyMines,
 where a cube regenerates as a whole. The 0 threshold is a tunable if the tail ever
 drags.
+
+### Mines persist
+
+Every mine keeps its own grid, holes included. Leaving a mine and coming back finds
+it exactly as it was left. Regenerating a mine on entry would hand out a free batch
+reset: break the four Amethyst cells out of two hundred, leave, come back to a full
+grid, break them again. Depleting the mine *is* the price of the refill, and
+switching screens must not pay it for you.
+
+The same rule governs the richness dial. Moving it re-rolls the composition of the
+**remaining** cells at once — the player sees the change immediately — but it leaves
+the holes exactly where they are. One rule covers both, and every free action added
+later has to answer to it:
+
+> **No free action may ever put a broken block back.**
+
+What this leaves open is cosmetic rather than economic: a player can wiggle the dial
+to re-roll the *geometry* of what remains, until the valuable cells happen to sit
+under an Explosive. It costs nothing but patience. This is knowingly accepted for
+the MVP — the game is single-player and offline, with no leaderboard, so the only
+person a re-roller cheats is themselves — and it closes by deferring the dial to the
+next regeneration if it ever proves to matter.
 
 ### Break feedback
 
@@ -168,9 +256,9 @@ second enchant material.
 | Overworld | Emerald | Fortune upgrades. Later: currency of a special shop (to be decided) |
 | Overworld | Lapis | enchant material (Overworld tier of enchants). True to Minecraft, where lapis is the enchanting currency |
 | Nether | Ancient Debris | Netherite tier upgrades |
-| Nether | Obsidian, Crying Obsidian | pickaxe enhancement past Netherite. Same mine (Obsidian common, Crying rare) |
+| Nether | Obsidian, Crying Obsidian | pickaxe enhancement past Netherite. Same mine (Obsidian common, Crying rare). The enhancement consumes both, so where the recipe wants a ratio of the two, the richness dial has an *optimum* rather than a maximum |
 | Nether | Quartz | enchant material (Nether tier of enchants) |
-| End | End Stone, Amethyst | mixed mine (End Stone common, Amethyst rare). Amethyst is the top enchant material and the prestige currency |
+| End | End Stone, Amethyst | one mine (End Stone common, Amethyst rare), and the sharpest [richness](#mine-richness) dial in the game. End Stone funds the mine's own growth; Amethyst is the top enchant material and the prestige currency |
 
 Redstone (speed), Emerald (Fortune), and the enchant materials (Lapis, Quartz,
 Amethyst) each own a distinct function, so no two ores are redundant.
@@ -284,6 +372,30 @@ mine more" are different messages, and only one of them is bad news.
   material (for example "Efficiency V Stone Pickaxe"). Our naming convention is to
   be decided.
 
+### Mine upgrade costs
+
+Both mine tracks — [size](#mine-size) and [richness](#mine-richness) — are paid **in
+that mine's own material**, on the same geometric curve, so every mine funds its own
+growth out of what it produces.
+
+On the two mines that hold two materials, the richness cost is a **mix that shifts
+as it climbs**: mostly End Stone at the low levels, increasingly Amethyst at the
+high ones. The cost curve therefore tracks the mine's own production curve — each
+level is paid mostly in whatever the mine currently makes most of.
+
+That shift trades one brake for a better one. Paying purely in the common material
+would be self-limiting by arithmetic: enriching dries up the currency that buys
+enrichment. Paying the top levels in the rare material instead puts richness in
+**direct competition with prestige**, which is what the player is farming Amethyst
+for in the first place. The brake stops being a mechanic and becomes a decision, and
+a decision is worth more. The compounding this invites — Amethyst buys richness buys
+Amethyst — is closed by the [richness cap](#mine-richness): a bounded production gain
+against an unbounded cost curve.
+
+The nine single-material mines have nothing to mix, but they show the same shape in
+the other denomination: raw early, increasingly Compressed as the level climbs,
+exactly as the pickaxe costs already read.
+
 ## Auto-miner and offline progression
 
 ### Auto-miner
@@ -332,6 +444,10 @@ and value, not speed:
   the **spatial enchants scale**. A Jackhammer clears a 20-wide row instead of a
   5-wide one; a Nuke clears 200 blocks instead of 25. Spatial enchants are the
   main throughput multiplier once instamine is reached.
+- **[Mine richness](#mine-richness):** more value per cell. This lever *strengthens*
+  at instamine, because the extra hardness of a dense cell stops costing anything —
+  one block per tick whatever it is made of — so a dense cell becomes a flat nine
+  for one. It also stacks multiplicatively with Fortune.
 - **Fortune:** more drops per block, up to the cap of 10.
 - **Ore value:** the End's Amethyst is the highest-value ore, mined toward
   prestige.
@@ -349,7 +465,10 @@ source.
   prestige), which creates a real spending choice.
 - **Condition:** reach the End (level 30) and accumulate enough Amethyst.
 - **Deep reset:** pickaxe (back to Wooden), Efficiency, Fortune, ore inventory,
-  mine sizes, enchant levels, and the mining level (XP) all reset to the start.
+  mine sizes, **mine richness**, enchant levels, and the mining level (XP) all reset
+  to the start. Richness goes with size because it is the second track of the same
+  object, funded in the same currency: keeping it would make the first prestige
+  nearly painless on mines, and re-walking the progression is the point.
 - **Persists:** the prestige rank and its permanent global multiplier (ore yield,
   mining speed, and XP gain). The multiplier scale per rank is a tunable.
 - **Gate role:** the prestige rank may also gate late content, replacing paid
