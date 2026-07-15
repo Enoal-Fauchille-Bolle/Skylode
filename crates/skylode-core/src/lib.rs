@@ -17,6 +17,8 @@
 //!   convert it with.
 //! - [`mine`]: a generated grid of blocks the player digs through, sized by
 //!   level.
+//! - [`mine_kind`]: the twelve canonical mines and their identity (block pool,
+//!   world, gating tier, materials).
 //! - [`pickaxe`]: the player's tool, its tier and mining power.
 //! - [`enchant`]: enchantments that modify a pickaxe's behaviour.
 //! - [`player`]: the player's progression state (level, experience, pickaxe).
@@ -30,6 +32,7 @@ pub mod error;
 pub mod inventory;
 pub mod material;
 pub mod mine;
+pub mod mine_kind;
 pub mod pickaxe;
 pub mod player;
 pub mod rng;

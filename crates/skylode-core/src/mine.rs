@@ -6,6 +6,7 @@
 
 use crate::block::Block;
 use crate::error::CoreError;
+use crate::mine_kind::MineKind;
 
 /// Dimensions `(width, height)` for each of the 10 mine size levels.
 ///
@@ -30,15 +31,18 @@ const MINE_SIZES: [(u8, u8); 10] = [
 /// raises the ceiling and no second place has to be remembered.
 const MAX_SIZE_LEVEL: u32 = MINE_SIZES.len() as u32 - 1;
 
-/// A generated mine: a pool of possible blocks plus the laid-out grid the
-/// player mines through.
+/// A generated mine: its [`MineKind`] identity plus the laid-out grid the player
+/// mines through.
+///
+/// The kind is what a mine *is* — "the Iron mine" — and it answers every question
+/// about the block pool ([`common_block`](MineKind::common_block) /
+/// [`value_block`](MineKind::value_block)), the world, and the gating tier, so the
+/// grid does not have to carry them. What the grid carries is the run's *state*:
+/// which cells are still standing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mine {
-    /// The main block of the mine, which is always the first in the pool.
-    main_block: Block,
-    /// The secondary blocks of the mine, which can appear alongside the main
-    /// block.
-    secondary_blocks: Vec<Block>,
+    /// Which of the twelve canonical mines this is; the source of its block pool.
+    kind: MineKind,
     /// Size tier of the mine; indexes into `MINE_SIZES` via
     /// [`get_size`](Mine::get_size).
     size_level: u32,
@@ -47,17 +51,20 @@ pub struct Mine {
 }
 
 impl Mine {
-    /// Creates a new mine with the given blocks and size level.
-    /// The grid is filled with the main block and the secondary blocks.
-    pub fn new(main_block: Block, secondary_blocks: Vec<Block>) -> Self {
+    /// Creates a fresh, full mine of the given [`MineKind`] at its smallest size.
+    pub fn new(kind: MineKind) -> Self {
         let mut mine = Mine {
-            main_block,
-            secondary_blocks,
+            kind,
             size_level: 0,
             grid: Vec::new(),
         };
         Self::reset(&mut mine);
         mine
+    }
+
+    /// Returns which of the twelve canonical mines this is.
+    pub fn kind(&self) -> MineKind {
+        self.kind
     }
 
     /// Resets the mine to its initial state, refilling the grid.
@@ -69,8 +76,11 @@ impl Mine {
     pub(crate) fn reset(&mut self) {
         self.grid.clear();
         let (width, height) = self.get_size();
-        // Fill the grid with the main block for now
-        self.grid = vec![vec![self.main_block; width as usize]; height as usize];
+        // Fill the grid entirely with the common block for now. Weighting some
+        // cells toward the kind's value block is mine richness, the next phase-2
+        // task; until it lands, a fresh mine is uniform common cells.
+        let common = self.kind.common_block();
+        self.grid = vec![vec![common; width as usize]; height as usize];
     }
 
     /// Returns a copy of the mine's grid of blocks.
@@ -133,12 +143,11 @@ impl Mine {
 mod tests {
     use super::*;
 
-    /// A mine at the given size level. The block pool and grid are irrelevant to
+    /// A mine at the given size level. The kind and grid are irrelevant to
     /// sizing, which reads `size_level` alone.
     fn mine_at(size_level: u32) -> Mine {
         Mine {
-            main_block: Block::default(),
-            secondary_blocks: Vec::new(),
+            kind: MineKind::default(),
             size_level,
             grid: Vec::new(),
         }
@@ -193,24 +202,31 @@ mod tests {
         }
     }
 
+    /// A fresh mine is uniform: every cell is the kind's common block. The value
+    /// block only enters the grid once richness weighting lands (the next phase-2
+    /// task), so until then a full mine is all common cells.
     #[test]
-    fn new_mine_starts_full_of_the_main_block() {
-        let main_block = Block::Stone;
-        let secondary_blocks = vec![Block::CoalOre, Block::IronOre];
-        let mine = Mine::new(main_block, secondary_blocks);
+    fn new_mine_starts_full_of_the_common_block() {
+        let mine = Mine::new(MineKind::Iron);
+        let common = MineKind::Iron.common_block();
         let (width, height) = mine.get_size();
         for row in &mine.grid {
             assert_eq!(row.len(), width as usize);
             for &block in row {
-                assert_eq!(block, main_block);
+                assert_eq!(block, common);
             }
         }
         assert_eq!(mine.grid.len(), height as usize);
     }
 
     #[test]
+    fn a_mine_reports_its_kind() {
+        assert_eq!(Mine::new(MineKind::Quartz).kind(), MineKind::Quartz);
+    }
+
+    #[test]
     fn upgrading_the_size_level_increases_the_grid_dimensions() {
-        let mut mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
+        let mut mine = Mine::new(MineKind::Stone);
         let (initial_width, initial_height) = mine.get_size();
         assert!(mine.upgrade_size_level().is_ok());
         let (new_width, new_height) = mine.get_size();
@@ -220,7 +236,7 @@ mod tests {
 
     #[test]
     fn size_level_is_correctly_updated_when_upgrading() {
-        let mut mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
+        let mut mine = Mine::new(MineKind::Stone);
         let initial_size_level = mine.get_size_level();
         assert!(mine.upgrade_size_level().is_ok());
         let new_size_level = mine.get_size_level();
@@ -231,7 +247,7 @@ mod tests {
     /// end of it — not one level further, where `get_size` starts clamping.
     #[test]
     fn the_size_ladder_ends_at_the_last_row_of_the_table() {
-        let mut mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
+        let mut mine = Mine::new(MineKind::Stone);
         while mine.get_size_level() < MAX_SIZE_LEVEL {
             assert!(mine.upgrade_size_level().is_ok());
         }
@@ -260,15 +276,16 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_the_grid_and_refills_with_main_block() {
-        let mut mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
+    fn reset_clears_the_grid_and_refills_with_the_common_block() {
+        let mut mine = Mine::new(MineKind::Stone);
+        let common = MineKind::Stone.common_block();
         mine.grid[0][0] = Block::IronOre; // Modify the grid
         mine.reset();
         let (width, height) = mine.get_size();
         for row in &mine.grid {
             assert_eq!(row.len(), width as usize);
             for &block in row {
-                assert_eq!(block, Block::Stone);
+                assert_eq!(block, common);
             }
         }
         assert_eq!(mine.grid.len(), height as usize);
@@ -276,7 +293,7 @@ mod tests {
 
     #[test]
     fn get_grid_returns_a_copy_of_the_grid() {
-        let mine = Mine::new(Block::Stone, vec![Block::CoalOre]);
+        let mine = Mine::new(MineKind::Stone);
         let grid_copy = mine.get_grid();
         assert_eq!(grid_copy, mine.grid);
         // Modify the copy and ensure the original grid is unaffected
