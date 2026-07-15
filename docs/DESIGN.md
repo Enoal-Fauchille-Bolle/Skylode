@@ -8,6 +8,8 @@ documents:
   offline, prestige.
 - [SYSTEMS.md](SYSTEMS.md): save system, tech stack, architecture.
 - [ROADMAP.md](ROADMAP.md): MVP scope, post-MVP, open questions.
+- [PHASES.md](PHASES.md): the dependency-ordered build plan for the core, phase by
+  phase.
 - [DECISIONS.md](DECISIONS.md): settled decisions and rejected ideas.
 
 **Status:** pre-MVP design.

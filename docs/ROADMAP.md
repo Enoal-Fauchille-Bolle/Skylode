@@ -1,7 +1,8 @@
 # Skylode - Roadmap
 
 Scope for the first playable version and what is deliberately deferred. For the
-rationale behind these choices, see [DECISIONS.md](DECISIONS.md).
+rationale behind these choices, see [DECISIONS.md](DECISIONS.md); for the order the
+core is built in, see [PHASES.md](PHASES.md).
 
 ## MVP
 
