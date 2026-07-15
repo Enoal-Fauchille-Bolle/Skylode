@@ -10,20 +10,9 @@
 //! exists inside the inventory — the world produces materials, and only ever
 //! drops them raw.
 
+use crate::tunables::RAW_PER_COMPRESSED;
 use crate::world::World;
 use std::fmt;
-
-/// How many raw items one Compressed unit is worth.
-///
-/// 100 is round enough that the player can do the arithmetic in their head: an
-/// upgrade priced at 650 Iron is quoted as `6 Compressed Iron + 50 Iron`, which
-/// reads better than the single large number. See `docs/DECISIONS.md`.
-///
-/// Not to be confused with `RAW_PER_DENSE_BLOCK` (9), which is what *mining* a
-/// dense block yields. The two are unrelated ratios for unrelated things; see
-/// [`Item`].
-// TODO(phase-1): move to the `tunables` module with the other open constants.
-pub const RAW_PER_COMPRESSED: u32 = 100;
 
 /// A raw resource obtained by mining blocks.
 ///

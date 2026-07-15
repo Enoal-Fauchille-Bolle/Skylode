@@ -10,7 +10,8 @@
 //! [`decompress`]: Inventory::decompress
 
 use crate::error::CoreError;
-use crate::material::{Item, Material, RAW_PER_COMPRESSED};
+use crate::material::{Item, Material};
+use crate::tunables::RAW_PER_COMPRESSED;
 use std::collections::HashMap;
 
 /// The player's stock, as a sparse map from [`Item`] to count.

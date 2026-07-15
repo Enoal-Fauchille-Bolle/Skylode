@@ -25,7 +25,7 @@ use crate::world::World;
 /// breaking that block returns nine. Private, and it stays that way: this is a
 /// balance number, and callers who want to know what a block is worth should ask
 /// the block, via [`Block::drops`]. Unrelated to
-/// [`RAW_PER_COMPRESSED`](crate::material::RAW_PER_COMPRESSED) (100), which *is*
+/// [`RAW_PER_COMPRESSED`](crate::tunables::RAW_PER_COMPRESSED) (100), which *is*
 /// public, because it is a denomination the UI must know in order to render a
 /// price — different ratio, different concept, different audience.
 const RAW_PER_DENSE_BLOCK: u32 = 9;

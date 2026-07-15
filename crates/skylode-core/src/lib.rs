@@ -21,6 +21,7 @@
 //! - [`enchant`]: enchantments that modify a pickaxe's behaviour.
 //! - [`player`]: the player's progression state (level, experience, pickaxe).
 //! - [`rng`]: the seeded, replayable source of every draw the rules make.
+//! - [`tunables`]: the open balance constants the design left to implementation.
 //! - [`error`]: what the rules refuse, and why.
 
 pub mod block;
@@ -32,4 +33,5 @@ pub mod mine;
 pub mod pickaxe;
 pub mod player;
 pub mod rng;
+pub mod tunables;
 pub mod world;
