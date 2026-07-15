@@ -19,7 +19,7 @@
 //!   belongs in a table beside that type, where its variants are in scope — moving
 //!   it here would only invert a dependency and scatter the enum's own truth.
 //!
-//! Most of these have no consumer yet: the phases that will read them (2, 5, 6, 7)
+//! Most of these have no consumer yet: the phases that will read them (5, 6, 7)
 //! are not written. They are `pub` regardless — a `pub` item in a library is never
 //! flagged `dead_code`, so the module can state the game's full tuning surface up
 //! front without a litter of `#[expect(dead_code)]`.
@@ -69,15 +69,6 @@ pub const OFFLINE_CAP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// dense block yields. The two are unrelated ratios for unrelated things; see
 /// [`Item`](crate::material::Item).
 pub const RAW_PER_COMPRESSED: u32 = 100;
-
-// --- Mine (phase 2) ---
-
-/// Remaining-block count at which a mine refills its whole grid at once.
-///
-/// Zero: the batch reset fires only on a fully cleared mine. A higher threshold
-/// would refill early and hand out blocks the player never broke — the same free
-/// batch reset the richness dial is carefully built to forbid.
-pub const BATCH_RESET_THRESHOLD: u32 = 0;
 
 // --- Economy (phase 5) ---
 
