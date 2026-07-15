@@ -198,19 +198,34 @@ Amethyst funds prestige and the End enchant cap. The dial arbitrates between the
 three-way call on the scarcest resource in the game: cash out (prestige), power up
 (enchant cap), or reinvest (richness).
 
-**The common cell never disappears.** The weight of the valuable cell is capped
-strictly **below 100%**. This is an invariant, not a tunable, and it does two jobs
-at once:
+**The dial, not a weight cap, is what keeps a run from stranding.** An earlier
+version of this design capped the valuable cell's weight strictly below 100% and
+called it a load-bearing invariant — the reasoning being that a 100%-Amethyst End
+mine would stop dropping the End Stone that pays to grow it, and brick the run. But
+the dial is *free and reversible*: a player who over-enriched simply slides the
+setting back down, refills mostly common cells, harvests the End Stone, and slides
+back up. The rescue is always one free action away, so no weight cap is needed to
+prevent a brick — the dial already does it. This is the same **no free action may
+put a broken block back** rule at work: free to re-shape the *remaining* grid,
+never free to un-break what is gone.
 
-- **It cannot brick a run.** If the End mine could be enriched to 100% Amethyst it
-  would stop dropping End Stone, and End Stone is what pays to grow it. Below the
-  cap, the common income only ever *slows*: it never reaches zero, so the player
-  always accumulates, and can always eventually afford anything. A purchase that
-  hurts is a mistake; a purchase that strands is a bug.
-- **It cannot run away.** The production gain from richness is bounded by the cap,
-  while the cost curve is geometric and unbounded. The cost always wins in the end —
-  including on the mines where richness is paid partly in the very material it
-  produces (see [mine upgrade costs](#mine-upgrade-costs)).
+Two consequences follow, and neither depends on a strict-sub-100% cap:
+
+- **It still cannot brick a run.** Whatever a mine is enriched to, richness setting
+  0 is always reachable for free and is mostly common cells, so the growth currency
+  is always one dial-move away. A purchase that hurts is a mistake; a purchase that
+  strands is a bug — and the free dial is what rules the bug out.
+- **It still cannot run away.** The production gain from richness is bounded (a
+  finite value-cell weight, whatever it is), while the cost curve is geometric and
+  unbounded, so the cost always wins in the end — including on the mines where
+  richness is paid partly in the very material it produces (see
+  [mine upgrade costs](#mine-upgrade-costs)).
+
+The actual weight of the valuable cell per richness level is therefore an ordinary
+**tunable**, not an invariant: the core computes it from a provisional formula
+(`value_weight`), and phase 10 balance sets its final shape. The one structural rule
+the core does enforce is far weaker — the two cell weights are never *both* zero, so
+the composition always describes a valid distribution.
 
 A true Vein Miner (following connected same-type blocks) is **not** planned: it was
 dropped rather than parked.
