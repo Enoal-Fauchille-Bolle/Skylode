@@ -161,7 +161,7 @@ mine's second upgrade track.
 This is not a system bolted on top of mixed content — it *is* mixed content, made
 mutable. A mine at richness 0 is precisely the mixed mine as first specified;
 buying richness shifts weight from the common cell to the valuable one. One
-mechanic, one cost model, and it reaches every mine in the game, including the two
+mechanic, one cost model, and it reaches every mine in the game, including the three
 that have no dense form.
 
 It is also the only way the **dense blocks** enter the game at all. `Iron Block`,
@@ -184,12 +184,13 @@ hardness of five, against one for a hardness of three, so it is worth roughly fi
 times as much iron per second. The dial has exactly one sensible position, the top,
 and a dial with one position is not a dial: the UI does not draw it.
 
-Where the valuable cell is a *different material* — two mines: Obsidian/Crying
-Obsidian, End Stone/Amethyst — enriching is a **substitution**: more of the rare,
-less of the common. There the dial is a genuine choice, and the UI draws it. Those
-two are the endgame mines, so the only mines where richness carries a decision are
-the mines where a decision is worth having. The rules stay uniform across all
-eleven; only the interface branches.
+Where the valuable cell is a *different material* — three mines: Netherrack/Quartz
+Ore, Obsidian/Crying Obsidian, End Stone/Amethyst — enriching is a **substitution**:
+more of the rare, less of the common. There the dial is a genuine choice, and the UI
+draws it. Two of the three are the endgame mines (Obsidian and End), where the
+decision carries the most weight; the Quartz mine trades its own growth currency
+(Netherrack) against the Nether's enchant material. The rules stay uniform across
+all twelve; only the interface branches.
 
 **The End mine is the sharpest case.** End Stone funds that mine's own growth;
 Amethyst funds prestige and the End enchant cap. The dial arbitrates between them —
@@ -213,6 +214,36 @@ at once:
 
 A true Vein Miner (following connected same-type blocks) is **not** planned: it was
 dropped rather than parked.
+
+### The canonical mines
+
+Twelve mines, one per resource the economy needs. Each is a common cell plus a cell
+of value; the world it sits in, the pickaxe tier that gates it, and the materials it
+yields all follow from that pair (both cells of a mine always share a world and a
+gating tier). This is the list the `MineKind` registry encodes.
+
+| World | Mine | Common cell | Value cell | Flavour |
+| --- | --- | --- | --- | --- |
+| Overworld | Stone | Stone | Cobblestone | same material |
+| Overworld | Coal | Coal Ore | Coal Block | same material |
+| Overworld | Iron | Iron Ore | Iron Block | same material |
+| Overworld | Gold | Gold Ore | Gold Block | same material |
+| Overworld | Lapis | Lapis Ore | Lapis Block | same material |
+| Overworld | Redstone | Redstone Ore | Redstone Block | same material |
+| Overworld | Emerald | Emerald Ore | Emerald Block | same material |
+| Overworld | Diamond | Diamond Ore | Diamond Block | same material |
+| Nether | Quartz | Netherrack | Quartz Ore | two materials |
+| Nether | Ancient Debris | Ancient Debris | Netherite Block | same material |
+| Nether | Obsidian | Obsidian | Crying Obsidian | two materials |
+| End | End | End Stone | Amethyst | two materials |
+
+The eight Overworld mines are pure same-material (ore + dense form): an Overworld
+ore mine never has filler as its common cell, or unlocking it would drop the player
+into breaking mostly-valueless Stone (see [DECISIONS.md](DECISIONS.md)). The Nether
+Quartz mine is the one place Netherrack — otherwise the sole material with no
+economic function — earns a role: it is that mine's common cell and its growth
+currency, with Quartz Ore as the value. Netherrack and Quartz are both soft-gated
+(Wooden pickaxe) but sit behind the Nether's level-15 XP gate.
 
 ### Batch reset
 
