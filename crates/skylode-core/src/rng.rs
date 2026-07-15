@@ -91,10 +91,6 @@ impl Rng {
     /// than Obsidian. `None` when the weights cannot describe a distribution —
     /// empty, or summing to zero — which is a caller's mistake to fix, not a
     /// value to guess at.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "awaiting the phase-2 mine generation")
-    )]
     pub(crate) fn weighted(&mut self, weights: &[u32]) -> Option<usize> {
         WeightedIndex::new(weights)
             .ok()

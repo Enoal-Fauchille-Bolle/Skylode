@@ -7,6 +7,7 @@
 use crate::block::Block;
 use crate::error::CoreError;
 use crate::mine_kind::MineKind;
+use crate::rng::Rng;
 
 /// Dimensions `(width, height)` for each of the 10 mine size levels.
 ///
@@ -31,6 +32,46 @@ const MINE_SIZES: [(u8, u8); 10] = [
 /// raises the ceiling and no second place has to be remembered.
 const MAX_SIZE_LEVEL: u32 = MINE_SIZES.len() as u32 - 1;
 
+/// The highest richness level a mine can reach: 10 rungs, `0..=9`.
+///
+/// Richness is a *curve*, not an irregular table like `MINE_SIZES`, so it is a
+/// formula ([`value_weight`]) plus this bound rather than a laid-out array. The
+/// count is provisional; phase 10 balance sets the final shape.
+const MAX_RICHNESS_LEVEL: u32 = 9;
+
+/// Weight (out of 100) of the *value* cell at richness `0`: the "mixed mine as
+/// first specified". Non-zero, so a mine at richness 0 already sprinkles in its
+/// value cell — the only way the dense blocks ever enter the game. Provisional.
+const RICHNESS_BASE_WEIGHT: u32 = 10;
+
+/// How much the value cell's weight climbs per richness rung. With
+/// [`RICHNESS_BASE_WEIGHT`] and [`MAX_RICHNESS_LEVEL`] this ramps the value
+/// weight from 10% at richness 0 to 91% at the top. Provisional.
+const RICHNESS_WEIGHT_STEP: u32 = 9;
+
+/// The weight (out of 100) of the value cell at a given richness setting.
+///
+/// A **formula**, not a table: unlike the two-dimensional, hand-tuned
+/// `MINE_SIZES`, richness is a single monotone one-dimensional curve, which a
+/// formula states directly — and which the [`tunables`](crate::tunables) doctrine
+/// prefers ("a curve is its parameters, not a table"). Kept in `mine` beside
+/// `MINE_SIZES` rather than in `tunables` because it is composition local to the
+/// mine, read nowhere else.
+///
+/// Deliberately **not** capped below 100%. An earlier design bounded it there as
+/// an anti-brick invariant, but the richness *dial* is free and reversible: a
+/// player who over-enriched a mine slides the setting back down to harvest the
+/// common cell again, so the dial — not a weight cap — is what keeps a run from
+/// stranding. The only real constraint is that the two weights never both be
+/// zero, which holds because the base weight is non-zero.
+///
+/// Clamps `setting` like [`get_size`](Mine::get_size) clamps `size_level`: phase 9
+/// reads this field straight back out of a save that may be hand-edited or
+/// corrupted, and it must yield a valid composition rather than run off the ramp.
+fn value_weight(setting: u32) -> u32 {
+    RICHNESS_BASE_WEIGHT + setting.min(MAX_RICHNESS_LEVEL) * RICHNESS_WEIGHT_STEP
+}
+
 /// A generated mine: its [`MineKind`] identity plus the laid-out grid the player
 /// mines through.
 ///
@@ -46,19 +87,34 @@ pub struct Mine {
     /// Size tier of the mine; indexes into `MINE_SIZES` via
     /// [`get_size`](Mine::get_size).
     size_level: u32,
+    /// The richness *ceiling*: how high the dial may be pushed. Bought (phase 5),
+    /// permanent, one-way. It has no writer yet — the paid upgrade path does not
+    /// exist — so it stays 0 until phase 5 lands; it is read through
+    /// [`get_richness_level`](Mine::get_richness_level).
+    richness_level: u32,
+    /// The richness *dial*: `<= richness_level`, set freely and for free, and the
+    /// only field that actually shapes the grid. It is the weight the composition
+    /// gives the [value cell](MineKind::value_block) — see [`value_weight`].
+    richness_setting: u32,
     /// The 2D grid of blocks that the player actually mines, row by row.
     grid: Vec<Vec<Block>>,
 }
 
 impl Mine {
     /// Creates a fresh, full mine of the given [`MineKind`] at its smallest size.
-    pub fn new(kind: MineKind) -> Self {
+    ///
+    /// Takes `&mut Rng` because the grid is drawn, not filled: even a richness-0
+    /// mine is a weighted mix of common and value cells, and every draw in the
+    /// game comes from the seeded generator so runs stay reproducible.
+    pub fn new(kind: MineKind, rng: &mut Rng) -> Self {
         let mut mine = Mine {
             kind,
             size_level: 0,
+            richness_level: 0,
+            richness_setting: 0,
             grid: Vec::new(),
         };
-        Self::reset(&mut mine);
+        mine.reset(rng);
         mine
     }
 
@@ -67,20 +123,50 @@ impl Mine {
         self.kind
     }
 
+    /// Returns the richness *ceiling* — the highest the dial may be set. Bought,
+    /// permanent, one-way; 0 until the phase-5 upgrade path exists to raise it.
+    pub fn get_richness_level(&self) -> u32 {
+        self.richness_level
+    }
+
+    /// Returns the richness *dial*: the value cell's weight in the composition.
+    pub fn get_richness_setting(&self) -> u32 {
+        self.richness_setting
+    }
+
     /// Resets the mine to its initial state, refilling the grid.
+    ///
+    /// Each cell is drawn independently between the kind's
+    /// [common](MineKind::common_block) and [value](MineKind::value_block) blocks,
+    /// weighted by the richness dial: the value cell's weight is
+    /// [`value_weight(richness_setting)`](value_weight), the common cell takes the
+    /// rest. The draws come from the seeded [`Rng`] so a run refills the same way
+    /// on any machine and after any reload.
     ///
     /// `pub(crate)`: refilling a mine is something the *rules* do — on batch
     /// reset, when the last block falls — not something a front-end may ask for.
     /// A UI able to call this could hand the player an infinite mine by refilling
     /// it on demand.
-    pub(crate) fn reset(&mut self) {
-        self.grid.clear();
+    pub(crate) fn reset(&mut self, rng: &mut Rng) {
         let (width, height) = self.get_size();
-        // Fill the grid entirely with the common block for now. Weighting some
-        // cells toward the kind's value block is mine richness, the next phase-2
-        // task; until it lands, a fresh mine is uniform common cells.
         let common = self.kind.common_block();
-        self.grid = vec![vec![common; width as usize]; height as usize];
+        let value = self.kind.value_block();
+        let value_w = value_weight(self.richness_setting);
+        // [common, value]; both are > 0 for every setting, so `weighted` never
+        // returns `None` — but a `None` (and the impossible index) falls back to
+        // the common cell rather than reaching for `unwrap`/`expect`, which the
+        // workspace lints deny.
+        let weights = [100 - value_w, value_w];
+        self.grid = (0..height)
+            .map(|_| {
+                (0..width)
+                    .map(|_| match rng.weighted(&weights) {
+                        Some(1) => value,
+                        _ => common,
+                    })
+                    .collect()
+            })
+            .collect();
     }
 
     /// Returns a copy of the mine's grid of blocks.
@@ -127,14 +213,14 @@ impl Mine {
     /// it stays shut to anything outside the core. The paid entry point will wrap
     /// this one rather than replace it.
     #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-5 economy"))]
-    pub(crate) fn upgrade_size_level(&mut self) -> Result<(), CoreError> {
+    pub(crate) fn upgrade_size_level(&mut self, rng: &mut Rng) -> Result<(), CoreError> {
         if self.size_level >= MAX_SIZE_LEVEL {
             return Err(CoreError::MineSizeMaxed {
                 level: MAX_SIZE_LEVEL,
             });
         }
         self.size_level += 1;
-        self.reset();
+        self.reset(rng);
         Ok(())
     }
 }
@@ -143,14 +229,42 @@ impl Mine {
 mod tests {
     use super::*;
 
-    /// A mine at the given size level. The kind and grid are irrelevant to
-    /// sizing, which reads `size_level` alone.
+    /// A generator on a fixed seed. The composition tests only need *a*
+    /// reproducible sequence, not a particular one.
+    fn rng() -> Rng {
+        Rng::from_seed(42)
+    }
+
+    /// A mine at the given size level, richness 0. The kind and grid are
+    /// irrelevant to sizing, which reads `size_level` alone.
     fn mine_at(size_level: u32) -> Mine {
         Mine {
             kind: MineKind::default(),
             size_level,
+            richness_level: 0,
+            richness_setting: 0,
             grid: Vec::new(),
         }
+    }
+
+    /// A fully-drawn mine of a given kind, size and richness setting. Builds the
+    /// struct directly (as a deserialiser would) so a test can dial in a richness
+    /// the phase-5 purchase path cannot yet produce, then fills the grid.
+    fn built(kind: MineKind, size_level: u32, richness_setting: u32, rng: &mut Rng) -> Mine {
+        let mut mine = Mine {
+            kind,
+            size_level,
+            richness_level: richness_setting,
+            richness_setting,
+            grid: Vec::new(),
+        };
+        mine.reset(rng);
+        mine
+    }
+
+    /// How many cells of `block` the grid holds.
+    fn count(mine: &Mine, block: Block) -> usize {
+        mine.grid.iter().flatten().filter(|&&b| b == block).count()
     }
 
     #[test]
@@ -202,33 +316,49 @@ mod tests {
         }
     }
 
-    /// A fresh mine is uniform: every cell is the kind's common block. The value
-    /// block only enters the grid once richness weighting lands (the next phase-2
-    /// task), so until then a full mine is all common cells.
+    /// A fresh mine is a *weighted mix*, not a uniform block: at richness 0 the
+    /// value cell already appears (its weight is non-zero), which is the only way
+    /// the dense blocks enter the game at all — but the common cell dominates. A
+    /// large mine and a fixed seed make the proportions stable to assert.
     #[test]
-    fn new_mine_starts_full_of_the_common_block() {
-        let mine = Mine::new(MineKind::Iron);
+    fn new_mine_is_a_weighted_mix_dominated_by_the_common_block() {
+        let mine = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut rng());
         let common = MineKind::Iron.common_block();
+        let value = MineKind::Iron.value_block();
         let (width, height) = mine.get_size();
+
+        assert_eq!(mine.grid.len(), height as usize);
         for row in &mine.grid {
             assert_eq!(row.len(), width as usize);
             for &block in row {
-                assert_eq!(block, common);
+                assert!(block == common || block == value, "stray block {block:?}");
             }
         }
-        assert_eq!(mine.grid.len(), height as usize);
+
+        let (commons, values) = (count(&mine, common), count(&mine, value));
+        assert!(
+            values >= 1,
+            "richness 0 must still sprinkle in the value cell"
+        );
+        assert!(
+            commons > values,
+            "the common cell must dominate at richness 0 ({commons} vs {values})"
+        );
     }
 
     #[test]
     fn a_mine_reports_its_kind() {
-        assert_eq!(Mine::new(MineKind::Quartz).kind(), MineKind::Quartz);
+        assert_eq!(
+            Mine::new(MineKind::Quartz, &mut rng()).kind(),
+            MineKind::Quartz
+        );
     }
 
     #[test]
     fn upgrading_the_size_level_increases_the_grid_dimensions() {
-        let mut mine = Mine::new(MineKind::Stone);
+        let mut mine = Mine::new(MineKind::Stone, &mut rng());
         let (initial_width, initial_height) = mine.get_size();
-        assert!(mine.upgrade_size_level().is_ok());
+        assert!(mine.upgrade_size_level(&mut rng()).is_ok());
         let (new_width, new_height) = mine.get_size();
         assert!(new_width > initial_width);
         assert!(new_height >= initial_height);
@@ -236,9 +366,9 @@ mod tests {
 
     #[test]
     fn size_level_is_correctly_updated_when_upgrading() {
-        let mut mine = Mine::new(MineKind::Stone);
+        let mut mine = Mine::new(MineKind::Stone, &mut rng());
         let initial_size_level = mine.get_size_level();
-        assert!(mine.upgrade_size_level().is_ok());
+        assert!(mine.upgrade_size_level(&mut rng()).is_ok());
         let new_size_level = mine.get_size_level();
         assert_eq!(new_size_level, initial_size_level + 1);
     }
@@ -247,9 +377,9 @@ mod tests {
     /// end of it — not one level further, where `get_size` starts clamping.
     #[test]
     fn the_size_ladder_ends_at_the_last_row_of_the_table() {
-        let mut mine = Mine::new(MineKind::Stone);
+        let mut mine = Mine::new(MineKind::Stone, &mut rng());
         while mine.get_size_level() < MAX_SIZE_LEVEL {
-            assert!(mine.upgrade_size_level().is_ok());
+            assert!(mine.upgrade_size_level(&mut rng()).is_ok());
         }
         assert_eq!(mine.get_size(), MINE_SIZES[MINE_SIZES.len() - 1]);
     }
@@ -265,7 +395,7 @@ mod tests {
         let size = mine.get_size();
 
         assert_eq!(
-            mine.upgrade_size_level(),
+            mine.upgrade_size_level(&mut rng()),
             Err(CoreError::MineSizeMaxed {
                 level: MAX_SIZE_LEVEL,
             })
@@ -276,29 +406,138 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_the_grid_and_refills_with_the_common_block() {
-        let mut mine = Mine::new(MineKind::Stone);
+    fn reset_rebuilds_the_whole_grid_from_the_block_pool() {
+        let mut mine = built(MineKind::Stone, 3, 0, &mut rng());
         let common = MineKind::Stone.common_block();
-        mine.grid[0][0] = Block::IronOre; // Modify the grid
-        mine.reset();
+        let value = MineKind::Stone.value_block();
+        mine.grid[0][0] = Block::IronOre; // a block from neither pool
+        mine.reset(&mut rng());
         let (width, height) = mine.get_size();
+        assert_eq!(mine.grid.len(), height as usize);
         for row in &mine.grid {
             assert_eq!(row.len(), width as usize);
             for &block in row {
-                assert_eq!(block, common);
+                assert!(block == common || block == value, "stray block {block:?}");
             }
         }
-        assert_eq!(mine.grid.len(), height as usize);
     }
 
     #[test]
     fn get_grid_returns_a_copy_of_the_grid() {
-        let mine = Mine::new(MineKind::Stone);
+        let mine = Mine::new(MineKind::Stone, &mut rng());
         let grid_copy = mine.get_grid();
         assert_eq!(grid_copy, mine.grid);
         // Modify the copy and ensure the original grid is unaffected
         let mut modified_copy = grid_copy.clone();
         modified_copy[0][0] = Block::IronOre;
         assert_ne!(modified_copy, mine.grid);
+    }
+
+    /// A fresh mine reports richness 0 on both tracks: the ceiling has no buyer
+    /// yet, and the dial sits at the floor.
+    #[test]
+    fn a_fresh_mine_has_no_richness() {
+        let mine = Mine::new(MineKind::Iron, &mut rng());
+        assert_eq!(mine.get_richness_level(), 0);
+        assert_eq!(mine.get_richness_setting(), 0);
+    }
+
+    /// The formula's shape: a non-zero floor (richness 0 is still mixed), a linear
+    /// climb, and a clamp past the top rung — so the value weight never reaches
+    /// 100%, which keeps the common weight (`100 - value`) strictly positive and
+    /// the two-way distribution non-degenerate at every setting.
+    #[test]
+    fn value_weight_ramps_then_clamps_and_never_starves_the_common_cell() {
+        assert_eq!(value_weight(0), 10);
+        assert_eq!(value_weight(1), 19);
+        assert_eq!(value_weight(MAX_RICHNESS_LEVEL), 91);
+        for setting in [MAX_RICHNESS_LEVEL + 1, 100, u32::MAX] {
+            assert_eq!(
+                value_weight(setting),
+                value_weight(MAX_RICHNESS_LEVEL),
+                "settings past the top rung must clamp"
+            );
+        }
+        for setting in 0..=(MAX_RICHNESS_LEVEL + 2) {
+            let value = value_weight(setting);
+            assert!(
+                value < 100,
+                "value weight {value} would starve the common cell"
+            );
+        }
+    }
+
+    /// Richness *is* the weight of the value cell: pushing the dial up puts more
+    /// value cells in the grid. Same seed, same mine, only the setting differs.
+    #[test]
+    fn richness_setting_shifts_weight_toward_the_value_cell() {
+        let value = MineKind::Iron.value_block();
+        let poor = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut rng());
+        let rich = built(
+            MineKind::Iron,
+            MAX_SIZE_LEVEL,
+            MAX_RICHNESS_LEVEL,
+            &mut rng(),
+        );
+        assert!(
+            count(&rich, value) > count(&poor, value),
+            "a richer dial must yield more value cells ({} vs {})",
+            count(&rich, value),
+            count(&poor, value)
+        );
+    }
+
+    /// Every setting — including ones past the top rung, as a corrupt save might
+    /// hold — must fill the grid completely from the two-block pool. This is the
+    /// only structural invariant richness carries: the composition always
+    /// describes a valid distribution, so `weighted` never returns `None` and no
+    /// cell is left unset.
+    #[test]
+    fn every_setting_yields_a_full_grid_from_the_pool() {
+        let (common, value) = (
+            MineKind::Amethyst.common_block(),
+            MineKind::Amethyst.value_block(),
+        );
+        for setting in 0..=(MAX_RICHNESS_LEVEL + 3) {
+            let mine = built(MineKind::Amethyst, 5, setting, &mut rng());
+            let (width, height) = mine.get_size();
+            assert_eq!(mine.grid.len(), height as usize);
+            for row in &mine.grid {
+                assert_eq!(row.len(), width as usize);
+                for &block in row {
+                    assert!(
+                        block == common || block == value,
+                        "setting {setting}: stray block {block:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The determinism contract, at the grid level: the same seed refills the
+    /// same mine identically, and different seeds do not. Without this a reloaded
+    /// run would re-roll its mines, and balance tests could assert nothing.
+    #[test]
+    fn the_same_seed_reproduces_the_same_grid() {
+        let a = built(
+            MineKind::Amethyst,
+            MAX_SIZE_LEVEL,
+            5,
+            &mut Rng::from_seed(7),
+        );
+        let b = built(
+            MineKind::Amethyst,
+            MAX_SIZE_LEVEL,
+            5,
+            &mut Rng::from_seed(7),
+        );
+        let c = built(
+            MineKind::Amethyst,
+            MAX_SIZE_LEVEL,
+            5,
+            &mut Rng::from_seed(8),
+        );
+        assert_eq!(a.grid, b.grid, "same seed must refill identically");
+        assert_ne!(a.grid, c.grid, "different seeds must differ");
     }
 }
