@@ -96,8 +96,16 @@ pub struct Mine {
     /// only field that actually shapes the grid. It is the weight the composition
     /// gives the [value cell](MineKind::value_block) — see [`value_weight`].
     richness_setting: u32,
-    /// The 2D grid of blocks that the player actually mines, row by row.
-    grid: Vec<Vec<Block>>,
+    /// The 2D grid the player actually mines, row by row: `Some(block)` is a cell
+    /// still standing, `None` a hole where one was broken.
+    ///
+    /// The `None` **is** the hole mask, fused into the composition rather than
+    /// kept beside it as a parallel `Vec<Vec<bool>>`. Two structures could
+    /// disagree — a mask sized for a 3x3 over a grown 20x10 grid — and every
+    /// reset and enlargement would have to remember to resize both. Fused, that
+    /// state is unrepresentable, and the compiler makes every reader of a cell
+    /// answer the question "is it still there?".
+    grid: Vec<Vec<Option<Block>>>,
 }
 
 impl Mine {
@@ -143,6 +151,9 @@ impl Mine {
     /// rest. The draws come from the seeded [`Rng`] so a run refills the same way
     /// on any machine and after any reload.
     ///
+    /// Every cell comes back `Some`: this is the one and only path that puts a
+    /// broken block back, and it is paid for by having emptied the mine.
+    ///
     /// `pub(crate)`: refilling a mine is something the *rules* do — on batch
     /// reset, when the last block falls — not something a front-end may ask for.
     /// A UI able to call this could hand the player an infinite mine by refilling
@@ -160,18 +171,101 @@ impl Mine {
         self.grid = (0..height)
             .map(|_| {
                 (0..width)
-                    .map(|_| match rng.weighted(&weights) {
-                        Some(1) => value,
-                        _ => common,
+                    .map(|_| {
+                        Some(match rng.weighted(&weights) {
+                            Some(1) => value,
+                            _ => common,
+                        })
                     })
                     .collect()
             })
             .collect();
     }
 
-    /// Returns a copy of the mine's grid of blocks.
-    pub fn get_grid(&self) -> Vec<Vec<Block>> {
+    /// Returns a copy of the mine's grid, row by row: `Some(block)` for a cell
+    /// still standing, `None` for a hole.
+    pub fn get_grid(&self) -> Vec<Vec<Option<Block>>> {
         self.grid.clone()
+    }
+
+    /// Returns how many cells the mine holds when full: `width * height`.
+    ///
+    /// Read from `MINE_SIZES` through [`get_size`](Mine::get_size), never from the
+    /// length of the grid. This is the mine's *nominal* size — what
+    /// [`remaining_count`](Mine::remaining_count) is a fraction of when the UI
+    /// draws a completion bar — and it must stay true of a grid dug down to
+    /// nothing, which is exactly when a length-derived answer would be wrong.
+    pub fn capacity(&self) -> usize {
+        let (width, height) = self.get_size();
+        usize::from(width) * usize::from(height)
+    }
+
+    /// Returns how many cells are still standing.
+    ///
+    /// Counted on every call, never stored. A stored counter would be a second
+    /// place the truth lives: one break that forgets to decrement it, and the mine
+    /// claims blocks the grid does not have — or batch-resets on a grid that still
+    /// holds some. Derived, that bug is unwritable. The walk is over at most
+    /// [`capacity`](Mine::capacity) = 200 cells, so even called every tick at
+    /// 20 tps it costs nothing worth a second source of truth.
+    pub fn remaining_count(&self) -> usize {
+        self.grid
+            .iter()
+            .flatten()
+            .filter(|cell| cell.is_some())
+            .count()
+    }
+
+    /// Returns whether every cell has been broken.
+    ///
+    /// Its own method rather than a `remaining_count() == 0` at each call site
+    /// because it is a *rule*, not an observation: emptying the mine is what earns
+    /// the batch reset, and the threshold is deliberately not a tunable — any
+    /// non-zero value would be the free partial reset the richness design forbids.
+    pub fn is_empty(&self) -> bool {
+        self.remaining_count() == 0
+    }
+
+    /// Returns the block at `(x, y)`, or `None` if the cell is a hole **or** off
+    /// the grid.
+    ///
+    /// The two cases fuse deliberately. The callers are the spatial enchants
+    /// (Explosive, Jackhammer, Nuke), which sweep a shape over the grid and ask
+    /// one question of each cell: is there something to mine here? A blast at the
+    /// corner overhangs the edge exactly the way it overhangs a hole it already
+    /// dug, and neither is a mistake — so both answer "nothing here", and the
+    /// shape clips itself at the border with no bounds check written by hand.
+    pub fn get(&self, x: u8, y: u8) -> Option<Block> {
+        *self.grid.get(usize::from(y))?.get(usize::from(x))?
+    }
+
+    /// Breaks the cell at `(x, y)`, leaving a hole, and returns the block that
+    /// stood there — or `None` if it was already a hole or off the grid.
+    ///
+    /// Returns the block because the caller has to know what to drop: the grid is
+    /// the only record of what was standing, and taking it out is what destroys
+    /// that record.
+    ///
+    /// A no-op rather than a refusal on a hole, for the same reason
+    /// [`get`](Mine::get) fuses the cases: an area enchant almost always covers
+    /// ground it has already cleared. `Option::take` also makes the double-break
+    /// harmless by construction — the second call finds `None` and hands back
+    /// `None`, so no drop can be paid twice for one block.
+    ///
+    /// `pub(crate)` for the reason
+    /// [`upgrade_size_level`](Mine::upgrade_size_level) is: it is **free**. It
+    /// costs no progress and consults no mining power, so a front-end able to call
+    /// it could empty a mine into the inventory on demand. The phase-2 tick will
+    /// wrap it behind `break_progress >= hardness`.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "awaiting phase-2 progressive breaking")
+    )]
+    pub(crate) fn take(&mut self, x: u8, y: u8) -> Option<Block> {
+        self.grid
+            .get_mut(usize::from(y))?
+            .get_mut(usize::from(x))?
+            .take()
     }
 
     /// Returns the mine's size level, which indexes into `MINE_SIZES`.
@@ -262,9 +356,13 @@ mod tests {
         mine
     }
 
-    /// How many cells of `block` the grid holds.
+    /// How many standing cells of `block` the grid holds. Holes count as neither.
     fn count(mine: &Mine, block: Block) -> usize {
-        mine.grid.iter().flatten().filter(|&&b| b == block).count()
+        mine.grid
+            .iter()
+            .flatten()
+            .filter(|&&cell| cell == Some(block))
+            .count()
     }
 
     #[test]
@@ -330,8 +428,11 @@ mod tests {
         assert_eq!(mine.grid.len(), height as usize);
         for row in &mine.grid {
             assert_eq!(row.len(), width as usize);
-            for &block in row {
-                assert!(block == common || block == value, "stray block {block:?}");
+            for &cell in row {
+                assert!(
+                    cell == Some(common) || cell == Some(value),
+                    "stray cell {cell:?}"
+                );
             }
         }
 
@@ -410,14 +511,17 @@ mod tests {
         let mut mine = built(MineKind::Stone, 3, 0, &mut rng());
         let common = MineKind::Stone.common_block();
         let value = MineKind::Stone.value_block();
-        mine.grid[0][0] = Block::IronOre; // a block from neither pool
+        mine.grid[0][0] = Some(Block::IronOre); // a block from neither pool
         mine.reset(&mut rng());
         let (width, height) = mine.get_size();
         assert_eq!(mine.grid.len(), height as usize);
         for row in &mine.grid {
             assert_eq!(row.len(), width as usize);
-            for &block in row {
-                assert!(block == common || block == value, "stray block {block:?}");
+            for &cell in row {
+                assert!(
+                    cell == Some(common) || cell == Some(value),
+                    "stray cell {cell:?}"
+                );
             }
         }
     }
@@ -429,7 +533,7 @@ mod tests {
         assert_eq!(grid_copy, mine.grid);
         // Modify the copy and ensure the original grid is unaffected
         let mut modified_copy = grid_copy.clone();
-        modified_copy[0][0] = Block::IronOre;
+        modified_copy[0][0] = Some(Block::IronOre);
         assert_ne!(modified_copy, mine.grid);
     }
 
@@ -504,10 +608,10 @@ mod tests {
             assert_eq!(mine.grid.len(), height as usize);
             for row in &mine.grid {
                 assert_eq!(row.len(), width as usize);
-                for &block in row {
+                for &cell in row {
                     assert!(
-                        block == common || block == value,
-                        "setting {setting}: stray block {block:?}"
+                        cell == Some(common) || cell == Some(value),
+                        "setting {setting}: stray cell {cell:?}"
                     );
                 }
             }
@@ -539,5 +643,115 @@ mod tests {
         );
         assert_eq!(a.grid, b.grid, "same seed must refill identically");
         assert_ne!(a.grid, c.grid, "different seeds must differ");
+    }
+
+    /// A drawn mine has no holes in it: every one of its `capacity` cells stands.
+    /// This is what makes `remaining_count` a measure of progress at all.
+    #[test]
+    fn a_fresh_mine_is_full_to_its_capacity() {
+        let mine = built(MineKind::Iron, 4, 0, &mut rng());
+        assert_eq!(mine.capacity(), 10 * 6);
+        assert_eq!(mine.remaining_count(), mine.capacity());
+        assert!(!mine.is_empty());
+    }
+
+    /// `capacity` is the mine's *nominal* size and must not drift with the digging:
+    /// it is the denominator the UI shows progress against, so a `capacity` that
+    /// shrank as blocks fell would leave the player forever at 100%. Each break
+    /// takes exactly one cell off `remaining_count` — no more, no less.
+    #[test]
+    fn capacity_is_the_nominal_size_not_the_blocks_left() {
+        let mut mine = built(MineKind::Stone, 2, 0, &mut rng());
+        let capacity = mine.capacity();
+
+        for broken in 1..=3 {
+            assert!(mine.take(broken - 1, 0).is_some());
+            assert_eq!(mine.capacity(), capacity, "capacity must not move");
+            assert_eq!(mine.remaining_count(), capacity - usize::from(broken));
+        }
+    }
+
+    /// The break, end to end: `take` hands back the block that `get` was reporting
+    /// — the caller needs it to know what to drop, and the grid is the only record
+    /// of what stood there — and leaves a hole behind it.
+    #[test]
+    fn taking_a_cell_returns_the_block_and_leaves_a_hole() {
+        let mut mine = built(MineKind::Iron, 3, 0, &mut rng());
+        let standing = mine.get(2, 1);
+        assert!(standing.is_some(), "a fresh mine stands at (2, 1)");
+
+        assert_eq!(mine.take(2, 1), standing);
+        assert_eq!(mine.get(2, 1), None, "the cell must now be a hole");
+    }
+
+    /// Breaking a hole, or swinging off the edge, is a no-op and not a refusal:
+    /// an area enchant almost always covers ground it has already cleared, and the
+    /// corner of the grid clips the same way. The load-bearing half is
+    /// `remaining_count`, which must not move — a second `take` that paid a second
+    /// drop for one block would be free ore.
+    #[test]
+    fn taking_a_hole_or_a_cell_off_the_grid_yields_nothing() {
+        let mut mine = built(MineKind::Stone, 3, 0, &mut rng());
+        assert!(mine.take(0, 0).is_some());
+        let remaining = mine.remaining_count();
+
+        assert_eq!(mine.take(0, 0), None, "breaking a hole must yield nothing");
+        let (width, height) = mine.get_size();
+        assert_eq!(mine.take(width, 0), None);
+        assert_eq!(mine.take(0, height), None);
+
+        assert_eq!(
+            mine.remaining_count(),
+            remaining,
+            "no-op breaks must not consume a block"
+        );
+    }
+
+    /// Emptying the grid is what earns the batch reset, so `is_empty` has to turn
+    /// over exactly when the last cell falls — not one break early, not never.
+    #[test]
+    fn a_mine_emptied_cell_by_cell_reports_empty() {
+        let mut mine = built(MineKind::Amethyst, 0, 0, &mut rng());
+        let (width, height) = mine.get_size();
+
+        for y in 0..height {
+            for x in 0..width {
+                assert!(!mine.is_empty(), "still standing at ({x}, {y})");
+                assert!(mine.take(x, y).is_some());
+            }
+        }
+
+        assert!(mine.is_empty());
+        assert_eq!(mine.remaining_count(), 0);
+    }
+
+    /// Off the grid reads as `None` on every side, which is what lets the spatial
+    /// enchants sweep a shape across a corner without a single bounds check.
+    #[test]
+    fn get_off_the_grid_is_none_on_every_side() {
+        let mine = built(MineKind::Iron, 0, 0, &mut rng());
+        let (width, height) = mine.get_size();
+
+        assert!(mine.get(width - 1, height - 1).is_some(), "the far corner");
+        assert_eq!(mine.get(width, 0), None, "past the right edge");
+        assert_eq!(mine.get(0, height), None, "past the bottom edge");
+        assert_eq!(mine.get(u8::MAX, u8::MAX), None, "far outside");
+    }
+
+    /// The refill is the *only* thing that puts broken blocks back, and the mine
+    /// must have been emptied to earn it — see the "no free action may ever put a
+    /// broken block back" rule in MECHANICS.md. This pins the half `reset` owns:
+    /// once called, not one hole survives.
+    #[test]
+    fn reset_fills_the_holes_back_in() {
+        let mut mine = built(MineKind::Stone, 1, 0, &mut rng());
+        assert!(mine.take(0, 0).is_some());
+        assert!(mine.take(1, 0).is_some());
+        assert!(mine.remaining_count() < mine.capacity());
+
+        mine.reset(&mut rng());
+
+        assert_eq!(mine.remaining_count(), mine.capacity());
+        assert!(mine.get(0, 0).is_some());
     }
 }
