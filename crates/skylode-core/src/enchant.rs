@@ -59,7 +59,10 @@ pub enum EnchantType {
     /// [`Compressed`]: crate::material::Item::Compressed
     /// [`Block::drops`]: crate::block::Block::drops
     Excavator,
-    /// Increases mining speed permanently.
+    /// Multiplies mining speed permanently, by
+    /// `1 + HASTE_PER_LEVEL * level` — linear, where
+    /// [`Efficiency`](EnchantType::Efficiency) is quadratic, so the two compound
+    /// instead of racing. See [`HASTE_PER_LEVEL`](crate::tunables::HASTE_PER_LEVEL).
     /// Ranges from 0 to (TODO: determine max level).
     Haste,
 }

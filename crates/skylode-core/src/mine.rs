@@ -613,7 +613,7 @@ impl Mine {
 mod tests {
     use super::*;
     use crate::block::ALL_BLOCKS;
-    use crate::enchant::Enchants;
+    use crate::enchant::{EnchantType, Enchants};
     use crate::pickaxe::{Pickaxe, PickaxeTier};
 
     /// A generator on a fixed seed. The composition tests only need *a*
@@ -1307,6 +1307,53 @@ mod tests {
                 power < block.hardness() * TICKS_PER_HARDNESS,
                 "a starter pickaxe ({power}) one-shots {block:?} at hardness {}",
                 block.hardness()
+            );
+        }
+    }
+
+    /// The ceiling of the game, and the counterpart to the floor above: the best
+    /// pickaxe the player can build *with permanent upgrades alone* one-shots the
+    /// ores and the dense blocks, and still cannot touch Ancient Debris or
+    /// Obsidian.
+    ///
+    /// That gap is the staging `docs/MECHANICS.md` promises, and it is what the
+    /// temporary Redstone boost (phase 5) is for. It is worth a test because it is
+    /// the only place the two halves of the mining-power formula are checked
+    /// against the hardness table they exist to beat: lose Haste's multiplier and
+    /// 235 stalls below the dense blocks, leaving the endgame with nothing to
+    /// instamine; let it multiply too much and the boost has no work left to do and
+    /// no reason to exist.
+    ///
+    /// Reads Haste's cap rather than fixing one, so phase 4's real per-world caps
+    /// re-ask the question instead of silently drifting past it.
+    #[test]
+    fn a_hasted_netherite_instamines_the_dense_blocks_but_not_the_obsidian() {
+        let tier = PickaxeTier::Netherite;
+        let mut enchants = Enchants::new();
+        for _ in 0..EnchantType::Efficiency.max_level(Some(tier)) {
+            assert!(
+                enchants
+                    .upgrade(EnchantType::Efficiency, Some(tier))
+                    .is_ok()
+            );
+        }
+        for _ in 0..EnchantType::Haste.max_level(None) {
+            assert!(enchants.upgrade(EnchantType::Haste, None).is_ok());
+        }
+        let power = Pickaxe::new(tier, enchants).mining_power();
+
+        for block in [Block::IronOre, Block::IronBlock] {
+            assert!(
+                power >= block.hardness() * TICKS_PER_HARDNESS,
+                "a maxed hasted pickaxe ({power}) cannot one-shot {block:?}, so the \
+                 endgame has nothing left to reach for"
+            );
+        }
+        for block in [Block::AncientDebris, Block::Obsidian] {
+            assert!(
+                power < block.hardness() * TICKS_PER_HARDNESS,
+                "a maxed hasted pickaxe ({power}) already one-shots {block:?}, which \
+                 is the Redstone boost's job — it now has none"
             );
         }
     }

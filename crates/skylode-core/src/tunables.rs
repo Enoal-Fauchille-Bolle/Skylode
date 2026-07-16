@@ -26,6 +26,34 @@
 
 use std::time::Duration;
 
+// --- Enchants (phase 3) ---
+
+/// How much of the pickaxe's speed one level of
+/// [`Haste`](crate::enchant::EnchantType::Haste) adds back: level `n` multiplies
+/// mining power by `1 + HASTE_PER_LEVEL * n`.
+///
+/// A curve parameter, like [`COST_GROWTH`] — the factor, not a table of factors —
+/// which is why it lives here and not beside [`EnchantType`](crate::enchant::EnchantType)
+/// under this module's second rule. That rule is about values that are *one per
+/// variant*, and Haste's **cap** is exactly that: it stays in `enchant::max_level`,
+/// where phase 4 will make it depend on the world. The factor is keyed by nothing
+/// and needs no variant in scope.
+///
+/// **Linear, where Efficiency's `level² + 1` is quadratic**, and that asymmetry is
+/// the design, not an open question. The two act on different layers — Efficiency
+/// adds into the sum, Haste scales it — so their curves compound rather than add. A
+/// second quadratic against the first would grow with the fourth power of
+/// investment, clear the hardness table's top end in a few levels, and leave
+/// Efficiency — the lever the whole upgrade path is built to climb — a rounding
+/// error beside it. Haste is worth buying because it multiplies what Efficiency
+/// built, not because it out-races it.
+///
+/// Provisional; phase 10 balance sets the final value. Must stay strictly above
+/// zero: at `0.0` the enchant is sold for nothing, and below it a level the player
+/// *paid for* would make them slower. The shape is settled even though the number
+/// is not.
+pub const HASTE_PER_LEVEL: f32 = 0.2;
+
 // --- Progression (phase 6) ---
 
 /// Mining level that unlocks the Nether.
@@ -117,5 +145,13 @@ mod tests {
     #[test]
     fn the_offline_cap_is_positive() {
         const { assert!(!OFFLINE_CAP.is_zero()) }
+    }
+
+    /// A Haste level the player bought must be worth something. At `0.0` the
+    /// enchant multiplies by 1 and is sold for nothing; negative, it is an upgrade
+    /// that slows the pickaxe down.
+    #[test]
+    fn a_level_of_haste_is_always_worth_buying() {
+        const { assert!(HASTE_PER_LEVEL > 0.0) }
     }
 }

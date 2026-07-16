@@ -9,6 +9,7 @@
 
 use crate::enchant::{EnchantType, Enchants};
 use crate::error::CoreError;
+use crate::tunables::HASTE_PER_LEVEL;
 
 /// The material tier of a pickaxe.
 ///
@@ -58,11 +59,33 @@ impl Pickaxe {
         self.tier
     }
 
+    /// The multiplier the permanent [`Haste`](EnchantType::Haste) enchant applies
+    /// to the pickaxe's speed: `1 + HASTE_PER_LEVEL * level`, so an un-hasted
+    /// pickaxe multiplies by exactly `1.0` and is left alone.
+    ///
+    /// That identity at level 0 is load-bearing, not a happy accident: every break
+    /// time this game inherits 1:1 from Minecraft is measured on a pickaxe with no
+    /// Haste, so a multiplier that missed `1.0` would silently re-time the whole
+    /// hardness table.
+    ///
+    /// **Only the permanent source.** The spec's `haste_multiplier` is a *product*
+    /// of two things (`docs/MECHANICS.md`), and the other one — the temporary
+    /// Redstone boost — is deliberately not here: it is run state carrying a
+    /// tick-based timer, not a property of the tool, and it would drag a countdown
+    /// into a struct the save serialises as an inert `(tier, enchants)` pair. Phase
+    /// 5 keeps it on the game state and folds it in where the two meet, in the
+    /// tick: `pickaxe.mining_power() * boost`.
+    fn haste_multiplier(&self) -> f32 {
+        let level = self.enchants.get_level(EnchantType::Haste);
+        1.0 + HASTE_PER_LEVEL * level as f32
+    }
+
     /// Computes the total mining power applied against block hardness.
     ///
     /// Combines the tier's [`base_power`](PickaxeTier::base_power) with an
     /// Efficiency bonus of `level² + 1`, and the squaring is what makes high
-    /// Efficiency the main long-term power lever.
+    /// Efficiency the main long-term power lever. The sum is then scaled by
+    /// [`haste_multiplier`](Pickaxe::haste_multiplier).
     ///
     /// **The bonus is earned from level 1, not level 0**, which is Minecraft's
     /// `if (i > 0)` guard in `Player.getDigSpeed`. The `+ 1` is therefore not a
@@ -71,6 +94,14 @@ impl Pickaxe {
     /// deliberate kick that stops rank 1 from feeling like nothing. Reading it as
     /// unconditional costs a fresh Wooden pickaxe 50% of its speed (3 instead of
     /// 2), and with it the 1:1 break times `Mine`'s conversion exists to preserve.
+    ///
+    /// **Haste multiplies the whole sum, Efficiency included** — the parentheses
+    /// are the design, not formatting. `base * haste + eff_bonus` type-checks just
+    /// as well and quietly turns the two enchants into rivals: Efficiency's square
+    /// would then be the one term Haste cannot touch, so past a point the player
+    /// would be choosing between them instead of compounding them. Multiplying the
+    /// sum is what lets an additive lever and a multiplicative one sit on different
+    /// layers and stack, which is the reason the game has both.
     pub fn mining_power(&self) -> f32 {
         let base = self.tier.base_power();
         let level = self.enchants.get_level(EnchantType::Efficiency);
@@ -79,7 +110,7 @@ impl Pickaxe {
         } else {
             0.0
         };
-        base + eff_bonus
+        (base + eff_bonus) * self.haste_multiplier()
     }
 
     /// Advances the pickaxe one step along its upgrade path.
@@ -188,6 +219,27 @@ mod tests {
     /// one more to spend the maxed enchant on the next tier.
     const UPGRADES_PER_TIER: usize = 6;
 
+    /// A pickaxe of `tier` carrying explicit Efficiency and Haste levels.
+    ///
+    /// Goes through `Enchants::upgrade` rather than seeding the map directly, so a
+    /// level this helper hands out is one the game would actually sell — a test
+    /// built on a level past the cap would be measuring a pickaxe no player can
+    /// hold.
+    fn enchanted(tier: PickaxeTier, efficiency: u8, haste: u8) -> Pickaxe {
+        let mut enchants = Enchants::new();
+        for _ in 0..efficiency {
+            assert!(
+                enchants
+                    .upgrade(EnchantType::Efficiency, Some(tier))
+                    .is_ok()
+            );
+        }
+        for _ in 0..haste {
+            assert!(enchants.upgrade(EnchantType::Haste, None).is_ok());
+        }
+        Pickaxe::new(tier, enchants)
+    }
+
     /// Drives a fresh pickaxe all the way to Netherite with no Efficiency.
     fn maxed_tier_pickaxe() -> Pickaxe {
         let mut pickaxe = Pickaxe::default();
@@ -271,6 +323,106 @@ mod tests {
         }
         let level_five = Pickaxe::new(PickaxeTier::Wooden, enchants);
         assert_eq!(level_five.mining_power(), 2.0 + 25.0 + 1.0);
+    }
+
+    /// **The shape of the whole formula, in one assertion**: Haste scales the
+    /// Efficiency bonus as well as the tier, because it multiplies the sum.
+    ///
+    /// The rival reading — `base * haste + eff_bonus`, scaling only the tier —
+    /// type-checks identically and is wrong in a way no other test here would
+    /// catch: it makes Efficiency's square the one term Haste cannot reach, so the
+    /// two enchants stop compounding and start competing for the same upgrade.
+    /// Levels are picked where the two formulas *disagree* (Diamond 8 + Efficiency
+    /// 5 = 34, doubled = 68; the rival gives 8×2 + 26 = 42). At Efficiency 0 or
+    /// Haste 0 they coincide, and the test would pass while proving nothing.
+    #[test]
+    fn haste_multiplies_the_efficiency_bonus_and_not_just_the_tier() {
+        let tier = PickaxeTier::Diamond;
+        let unhasted = enchanted(tier, 5, 0);
+        let hasted = enchanted(tier, 5, 5);
+
+        assert_eq!(unhasted.mining_power(), 34.0, "8 (Diamond) + 5² + 1");
+        assert_eq!(
+            hasted.mining_power(),
+            68.0,
+            "Haste 5 must double the whole 34, not just the tier — 42.0 is the \
+             reading that leaves the Efficiency bonus behind"
+        );
+        assert_eq!(
+            hasted.mining_power(),
+            unhasted.mining_power() * 2.0,
+            "hasting a pickaxe scales what it already had"
+        );
+    }
+
+    /// Haste 0 must multiply by *exactly* 1.0, at every tier and every Efficiency.
+    ///
+    /// This is the test that says adding a multiplicative layer changed nothing for
+    /// a pickaxe that has not bought into it. Every break time Skylode inherits
+    /// 1:1 from Minecraft — `mine`'s golden Obsidian-in-188-ticks among them — is
+    /// quoted on an un-hasted pickaxe, so a multiplier that missed 1.0 by a hair
+    /// would re-time the entire hardness table and every save with it.
+    #[test]
+    fn an_unhasted_pickaxe_keeps_exactly_its_additive_power() {
+        for &tier in &ALL_TIERS {
+            assert_eq!(
+                enchanted(tier, 0, 0).mining_power(),
+                tier.base_power(),
+                "{tier:?} unenchanted must be worth its base power and nothing else"
+            );
+            assert_eq!(
+                enchanted(tier, 5, 0).mining_power(),
+                tier.base_power() + 26.0,
+                "{tier:?} at Efficiency 5 must be worth base + 5² + 1"
+            );
+        }
+    }
+
+    /// Haste's rungs are evenly spaced 20% steps — `2.0, 2.4, 2.8` on a bare
+    /// Wooden pickaxe — and that is the contrast worth pinning against
+    /// `the_first_level_of_efficiency_is_a_discrete_jump`: the two speed enchants
+    /// deliberately have different first rungs. Efficiency opens with a `+2` kick
+    /// so rank 1 does not feel like nothing; Haste needs no kick, because a
+    /// multiplier is felt in proportion to the power it multiplies, and the pickaxe
+    /// that can afford Haste already has power to multiply.
+    ///
+    /// Pins the three values rather than asserting the *differences* are equal.
+    /// They are not, quite: `0.2` has no exact binary form, so the measured steps
+    /// come out `0.4000001` and `0.39999986`. Nothing in the game compares one
+    /// increment against another — the formula is affine in `level` and is read
+    /// whole — so that spread is a fact about `f32`, not about the design. Three
+    /// exact numbers state the linearity without asking the arithmetic for a
+    /// promise it cannot keep.
+    #[test]
+    fn hastes_rungs_are_evenly_spaced_linear_steps() {
+        let tier = PickaxeTier::Wooden;
+
+        assert_eq!(enchanted(tier, 0, 0).mining_power(), 2.0);
+        assert_eq!(enchanted(tier, 0, 1).mining_power(), 2.4);
+        assert_eq!(enchanted(tier, 0, 2).mining_power(), 2.8);
+    }
+
+    /// A level of Haste must never be a downgrade — the same guarantee
+    /// `base_power_never_goes_backwards_up_the_ladder` makes for the tier ladder,
+    /// and for the same reason: a lever the player can rationally refuse is a lever
+    /// that does not belong in the upgrade path. Swept from `max_level` so it keeps
+    /// holding when phase 4 gives Haste its real per-world caps.
+    #[test]
+    fn haste_never_slows_the_pickaxe() {
+        let tier = PickaxeTier::Netherite;
+        let cap = EnchantType::Haste.max_level(None);
+        assert!(cap > 0, "a Haste that cannot be earned proves nothing here");
+
+        let mut previous = enchanted(tier, 15, 0).mining_power();
+        for haste in 1..=cap {
+            let power = enchanted(tier, 15, haste).mining_power();
+            assert!(
+                power > previous,
+                "Haste {haste} ({power}) mines no faster than Haste {} ({previous})",
+                haste - 1
+            );
+            previous = power;
+        }
     }
 
     /// The ladder must be walkable end to end, and stop exactly once.
