@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Git pre-commit hook
-# Runs cargo fmt, check, and clippy on all Rust code
+# Runs cargo fmt, check, clippy, doc, and tarpaulin on all Rust code
 
 # Set up colors
 RED_BOLD="\033[1;31m"
@@ -24,28 +24,39 @@ esac
 printf "${BLUE_BOLD}Running pre-commit checks...${RESET}\n"
 
 # Run cargo fmt
-printf "${WHITE_BOLD}[1/4] Running cargo fmt...${RESET}\n"
+printf "${WHITE_BOLD}[1/5] Running cargo fmt...${RESET}\n"
 if ! cargo fmt --all -- --check; then
     printf "${RED_BOLD}cargo fmt failed. Please run 'cargo +nightly fmt' to fix formatting issues.${RESET}\n"
     exit 1
 fi
 
 # Run cargo check
-printf "${WHITE_BOLD}[2/4] Running cargo check...${RESET}\n"
+printf "${WHITE_BOLD}[2/5] Running cargo check...${RESET}\n"
 if ! cargo check --all-targets --all-features; then
     printf "${RED_BOLD}cargo check failed. Please fix the compilation errors.${RESET}\n"
     exit 1
 fi
 
 # Run cargo clippy
-printf "${WHITE_BOLD}[3/4] Running cargo clippy...${RESET}\n"
+printf "${WHITE_BOLD}[3/5] Running cargo clippy...${RESET}\n"
 if ! cargo clippy --all-targets --all-features -- -D warnings; then
     printf "${RED_BOLD}cargo clippy failed. Please fix the linting warnings.${RESET}\n"
     exit 1
 fi
 
+# Run cargo doc
+# `--no-deps` is correctness, not speed: `-D warnings` would otherwise fail the
+# commit over a rustdoc warning inside `rand`, which is not ours to fix. This
+# catches an intra-doc link to an item that was renamed or removed; it cannot
+# catch rustdoc whose prose has quietly stopped being true.
+printf "${WHITE_BOLD}[4/5] Running cargo doc...${RESET}\n"
+if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --all-features; then
+    printf "${RED_BOLD}cargo doc failed. Please fix the rustdoc warnings.${RESET}\n"
+    exit 1
+fi
+
 # Run cargo test & coverage
-printf "${WHITE_BOLD}[4/4] Running cargo tarpaulin...${RESET}\n"
+printf "${WHITE_BOLD}[5/5] Running cargo tarpaulin...${RESET}\n"
 if ! cargo tarpaulin --fail-under 70 --out Stdout; then
     printf "${RED_BOLD}cargo tarpaulin failed. Please fix the failing tests or improve coverage.${RESET}\n"
     exit 1
