@@ -37,6 +37,11 @@ core is built in, see [PHASES.md](PHASES.md).
 - Skill / research tree (global multipliers).
 - Richer End content and enchant variety.
 - Special shop (Emerald currency).
+- Publish to crates.io (the game via `cargo install`, and `skylode-core` as a
+  library). Two things block it today: neither manifest declares `description` or
+  `license`, which crates.io rejects on upload; and `skylode-tui` depends on
+  `skylode-core` by `path` alone, which cannot be published — a path dependency
+  needs a `version` for the registry to resolve it.
 - Further future: multiplayer / self-host.
 
 ## Open questions
