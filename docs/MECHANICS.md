@@ -65,9 +65,26 @@ unenchanted Wooden pickaxe is worth 2, not 3.
 
 `mining_power` is a floating-point value so multiplicative haste can be
 fractional. Each tick, `break_progress += mining_power`. When
-`break_progress >= hardness`, the block breaks, yields its drop times Fortune, and
-`break_progress` resets to 0. Efficiency (additive) and Haste (multiplicative) act
-on different math layers, so they stack without conflict.
+`break_progress >= hardness * 30`, the block breaks, yields its drop times Fortune,
+and `break_progress` resets to 0. Efficiency (additive) and Haste (multiplicative)
+act on different math layers, so they stack without conflict.
+
+The **30** is Minecraft's, and it is the conversion between two scales that are not
+the same one: `getDestroyProgress` reads `dig_speed / hardness / 30` per tick and
+breaks at `1.0`. Rearranged so the counter carries power instead of a fraction, a
+block costs `hardness * 30` and takes:
+
+```text
+ticks = ceil(30 * hardness / mining_power)
+```
+
+which reproduces the wiki's break times exactly — Stone with a Wooden pickaxe in 23
+ticks (1.15 s), Obsidian with a Diamond one in 188 (9.4 s). It is not a tunable: it
+is what makes the 1:1 hardness table worth porting, since a hardness ported 1:1
+whose break *times* are not is only a coincidence of notation. Minecraft's other
+divisor — 100, for mining without the right tool — has no counterpart here: the
+[mine gating table](#mine-gating-table) refuses a block below the required tier
+outright rather than letting the player chip at it.
 
 ### One block at a time
 
@@ -78,10 +95,20 @@ drop (see [mine richness](#mine-richness)).
 
 ### Instamine
 
-When `mining_power >= hardness`, a block breaks in a single tick. This is reached
-in the endgame with Netherite Efficiency at its cap plus the Haste enchant. Past
-instamine, single-target speed saturates at one block per tick, so the endgame
+When `mining_power >= hardness * 30`, a block breaks in a single tick. This is
+reached in the endgame with Netherite Efficiency at its cap plus the Haste enchant.
+Past instamine, single-target speed saturates at one block per tick, so the endgame
 levers shift (see [post-instamine progression](#post-instamine-progression)).
+
+Instamine is **not a special case in the code**: a power at or above the threshold
+simply satisfies the same check on its first tick. The saturation is what the
+discarded leftover buys — progress resets to 0 rather than carrying the overshoot
+into the next block, so no amount of power clears more than one cell per tick.
+
+Netherite at Efficiency 15 is worth 235, which instamines the Overworld ores (90)
+and the dense blocks (150) but not Ancient Debris (900) or Obsidian (1500): those
+are what the Haste enchant and the Redstone boost are for, which is precisely the
+staging this table is meant to have. The exact rungs are phase-10 balance.
 
 ### Fortune
 

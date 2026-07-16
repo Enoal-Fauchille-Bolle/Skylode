@@ -99,12 +99,18 @@ impl Block {
     /// Returns the hardness of the block,
     /// which determines how long it takes to mine.
     ///
-    /// Hardness is measured in the same units as a pickaxe's
-    /// [`mining_power`](crate::pickaxe::Pickaxe::mining_power): a block breaks
-    /// once accumulated mining power reaches its hardness. Values roughly track
-    /// Minecraft (Stone `1.5`, Obsidian `50.0`), with the *dense* forms being
-    /// tougher than their ore counterparts — that toughness is what they cost
-    /// you for the nine items they give back.
+    /// Hardness is **not** in the same units as a pickaxe's
+    /// [`mining_power`](crate::pickaxe::Pickaxe::mining_power); the two scales are
+    /// Minecraft's two scales, and `mine`'s `TICKS_PER_HARDNESS` is the conversion
+    /// between them. A block yields after `30 * hardness` of accumulated power, so
+    /// it takes `ceil(30 * hardness / mining_power)` ticks. Reading the two as one
+    /// scale makes every block in the game an instamine.
+    ///
+    /// The values are Minecraft's, exactly (Stone `1.5`, Obsidian `50.0`) — this is
+    /// the one table `DECISIONS.md` keeps 1:1, which is what lets the break times
+    /// come out 1:1 too and spares us re-deriving a balance pass Mojang already did.
+    /// The *dense* forms are the exception, tougher than their ore counterparts —
+    /// that toughness is what they cost you for the nine items they give back.
     pub fn hardness(self) -> f32 {
         match self {
             Self::Stone => 1.5,

@@ -55,10 +55,10 @@ impl Rng {
     /// denied by the workspace lints, and returning an `Option` would push a
     /// `None` no caller can act on onto every call site. Making the bad argument
     /// unrepresentable is the only shape that owes nobody an apology.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "awaiting the phase-2 mine generation")
-    )]
+    ///
+    /// The mine's target draw is the caller that proves the signature earns its
+    /// keep: it hands over `standing.len()`, and an empty mine is turned away by
+    /// the `NonZeroU32` constructor before it can ask for a cell that is not there.
     pub(crate) fn below(&mut self, n: NonZeroU32) -> u32 {
         self.0.random_range(0..n.get())
     }

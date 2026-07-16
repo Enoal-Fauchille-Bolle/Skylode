@@ -8,6 +8,7 @@ use crate::block::Block;
 use crate::error::CoreError;
 use crate::mine_kind::MineKind;
 use crate::rng::Rng;
+use std::num::NonZeroU32;
 
 /// Dimensions `(width, height)` for each of the 10 mine size levels.
 ///
@@ -31,6 +32,31 @@ const MINE_SIZES: [(u8, u8); 10] = [
 /// Derived from `MINE_SIZES` rather than written out, so extending the table
 /// raises the ceiling and no second place has to be remembered.
 const MAX_SIZE_LEVEL: u32 = MINE_SIZES.len() as u32 - 1;
+
+/// How much [`mining_power`](crate::pickaxe::Pickaxe::mining_power) a block costs
+/// per point of [`hardness`](Block::hardness): a cell yields at
+/// `hardness * 30`, so it takes `ceil(30 * hardness / mining_power)` ticks.
+///
+/// This is Minecraft's, and it is the **unit conversion** between two scales that
+/// are not the same one — dig speed and hardness. `getDestroyProgress` reads
+/// `dig_speed / hardness / 30` per tick, breaking at `1.0`; rearranged so the
+/// progress counter carries the power rather than a fraction, the 30 lands here.
+/// Without it the two scales are read as one, and a *fresh Wooden pickaxe
+/// instamines Stone* — there is no progressive breaking left to speak of.
+///
+/// **Not a tunable, for the reason the batch-reset threshold is not one.** It is
+/// what makes `DECISIONS.md`'s "1:1 fidelity to Minecraft is kept for hardness"
+/// true in practice: the hardness table is only worth porting one-to-one if the
+/// break *times* come out one-to-one too, and this is the factor that decides
+/// that. Moving it does not tune the game, it revokes the decision. A balance pass
+/// that wants faster mining reaches for [`base_power`](crate::pickaxe::PickaxeTier::base_power),
+/// which is already Skylode's own curve.
+///
+/// Minecraft's other divisor — `100`, for mining without the right tool — has no
+/// counterpart here and never will: phase 3's mining gate *refuses* a block below
+/// the required tier rather than letting the player chip at it. One regime, one
+/// constant.
+const TICKS_PER_HARDNESS: f32 = 30.0;
 
 /// The highest richness level a mine can reach: 10 rungs, `0..=9`.
 ///
@@ -105,7 +131,13 @@ fn draw_cell(kind: MineKind, value_w: u32, rng: &mut Rng) -> Block {
 /// [`value_block`](MineKind::value_block)), the world, and the gating tier, so the
 /// grid does not have to carry them. What the grid carries is the run's *state*:
 /// which cells are still standing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `PartialEq` but **not `Eq`**: [`break_progress`](Mine::break_ratio) is an `f32`,
+/// and `f32` is not `Eq`. Nothing is lost — the tests' `assert_eq!` only ever
+/// needed `PartialEq`, and no other type embeds a `Mine` to inherit the bound.
+/// [`dig`](Mine::dig) refusing a `NaN` mining power is what keeps the reflexivity
+/// `Eq` would have promised true in practice.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Mine {
     /// Which of the twelve canonical mines this is; the source of its block pool.
     kind: MineKind,
@@ -131,6 +163,25 @@ pub struct Mine {
     /// state is unrepresentable, and the compiler makes every reader of a cell
     /// answer the question "is it still there?".
     grid: Vec<Vec<Option<Block>>>,
+    /// Mining power accumulated against [`target`](Mine::target), in the units
+    /// [`TICKS_PER_HARDNESS`] converts to hardness.
+    ///
+    /// **One counter, not one per cell.** The progress belongs to the *aim*, not
+    /// to the grid: a player who has chipped halfway through an Obsidian has not
+    /// half-chipped the two hundred cells around it, and storing it per cell would
+    /// hand out a mine that remembers every abandoned swing forever.
+    break_progress: f32,
+    /// The cell being dug, `None` when nothing is aimed at yet.
+    ///
+    /// Held **across ticks**, and that is the whole reason it is a field. Drawing
+    /// a fresh random cell every tick would leave `break_progress` accumulating
+    /// against a different block each time — a counter measuring nothing. It is
+    /// also what the UI highlights and draws its crack glyph on.
+    ///
+    /// Coordinates, not a `Block`: the grid is the record of what stands there,
+    /// and a copy of the block would be a second one to keep in step with
+    /// [`take`](Mine::take) and the dial's redraw.
+    target: Option<(u8, u8)>,
 }
 
 impl Mine {
@@ -146,6 +197,8 @@ impl Mine {
             richness_level: 0,
             richness_setting: 0,
             grid: Vec::new(),
+            break_progress: 0.0,
+            target: None,
         };
         mine.reset(rng);
         mine
@@ -203,6 +256,15 @@ impl Mine {
     /// The free re-roll this leaves open — wiggling the dial until the value cells
     /// happen to line up under an Explosive — is knowingly accepted for the MVP:
     /// single-player, offline, no leaderboard. See `DECISIONS.md`.
+    ///
+    /// **The progress on the targeted cell is forfeit**, though the aim is not: the
+    /// cell still stands, so the player keeps pointing at it, but whatever block
+    /// they had been chipping at has been redrawn out from under them and the
+    /// progress was owed to *that* block. Left standing it would be a small
+    /// laundering — chip an Amethyst to 44 of its 45, dial down, collect the
+    /// Endstone that replaced it on the next tick for a swing's worth of work. In
+    /// practice a player must release Space to touch the dial at all, which zeroes
+    /// it anyway; this is the belt to that pair of braces.
     pub fn set_richness_setting(&mut self, setting: u32, rng: &mut Rng) -> Result<(), CoreError> {
         if setting > self.richness_level {
             return Err(CoreError::RichnessAboveCeiling {
@@ -215,6 +277,7 @@ impl Mine {
         }
 
         self.richness_setting = setting;
+        self.break_progress = 0.0;
         let (kind, value_w) = (self.kind, value_weight(setting));
         for cell in self.grid.iter_mut().flatten() {
             if cell.is_some() {
@@ -240,7 +303,14 @@ impl Mine {
     /// reset, when the last block falls — not something a front-end may ask for.
     /// A UI able to call this could hand the player an infinite mine by refilling
     /// it on demand.
+    ///
+    /// Clears the aim and its progress: every cell the player could have been
+    /// working on is gone, and at an enlargement the coordinates may not even be on
+    /// the grid any more.
     pub(crate) fn reset(&mut self, rng: &mut Rng) {
+        self.break_progress = 0.0;
+        self.target = None;
+
         let (width, height) = self.get_size();
         let (kind, value_w) = (self.kind, value_weight(self.richness_setting));
         self.grid = (0..height)
@@ -333,17 +403,147 @@ impl Mine {
     /// `pub(crate)` for the reason
     /// [`upgrade_size_level`](Mine::upgrade_size_level) is: it is **free**. It
     /// costs no progress and consults no mining power, so a front-end able to call
-    /// it could empty a mine into the inventory on demand. The phase-2 tick will
-    /// wrap it behind `break_progress >= hardness`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "awaiting phase-2 progressive breaking")
-    )]
+    /// it could empty a mine into the inventory on demand. [`dig`](Mine::dig) is
+    /// the paying wrapper, which reaches here only once `break_progress` has
+    /// covered `hardness * TICKS_PER_HARDNESS`.
     pub(crate) fn take(&mut self, x: u8, y: u8) -> Option<Block> {
         self.grid
             .get_mut(usize::from(y))?
             .get_mut(usize::from(x))?
             .take()
+    }
+
+    /// Applies one tick of mining at `mining_power`, returning the block that
+    /// broke — or `None` if this tick only chipped at it.
+    ///
+    /// The rule, and Minecraft's: progress accumulates on a single
+    /// [target](Mine::get_target) until it covers
+    /// `hardness * TICKS_PER_HARDNESS`, at which point the cell yields, the
+    /// progress returns to 0, and the next tick draws a new target.
+    ///
+    /// **Instamine is not a branch here.** A power at or above the threshold
+    /// satisfies the check on its first tick, so it falls out of the same
+    /// arithmetic — and because the leftover is *discarded* rather than carried
+    /// into the next block, single-target speed saturates at exactly one block per
+    /// tick however far past the threshold the player climbs. That saturation is
+    /// what the endgame's other levers exist to answer.
+    ///
+    /// Returns the [`Block`], not a drop, because Fortune, Excavator and XP are
+    /// the caller's to apply: the mine's business is which block stood there, and
+    /// [`Block::drops`] is the block's own table, not the outcome of a swing.
+    ///
+    /// `pub(crate)`, and this one is not about being free — it *does* charge, in
+    /// progress. It is about **rate**: nothing in core bounds how often this is
+    /// called, so a front-end holding it in a render loop would mine as fast as it
+    /// could redraw. The cadence is the phase-7 tick's to own, and until that sole
+    /// legitimate caller exists the door stays shut.
+    // Dead outside the tests until the phase-7 tick calls it; see `upgrade`'s note
+    // in `pickaxe` for why this is an `expect` and not an `allow`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
+    pub(crate) fn dig(&mut self, mining_power: f32, rng: &mut Rng) -> Option<Block> {
+        // A power that is not a positive, finite number buys nothing — and must
+        // not be added: a `NaN` would poison `break_progress` for the rest of the
+        // run, past every reset, since nothing compares to it. `NaN <= 0.0` is
+        // false, so `is_finite` is what catches it. Same doctrine as `Rng::chance`.
+        if mining_power <= 0.0 || !mining_power.is_finite() {
+            return None;
+        }
+
+        let (x, y) = self.acquire_target(rng)?;
+        let block = self.get(x, y)?;
+        self.break_progress += mining_power;
+        if self.break_progress < block.hardness() * TICKS_PER_HARDNESS {
+            return None;
+        }
+
+        let broken = self.take(x, y);
+        self.break_progress = 0.0;
+        self.target = None;
+        broken
+    }
+
+    /// Returns the cell [`dig`](Mine::dig) is working on, drawing a new one when
+    /// the last target is gone — and forfeiting the progress that was owed to it.
+    ///
+    /// The re-validation (`self.get(x, y).is_some()`) is what makes target
+    /// invalidation **structural** rather than a rule each caller remembers. A
+    /// target can vanish under the digger in more ways than `dig` can enumerate:
+    /// phase 4's area enchants will [`take`](Mine::take) whole blast shapes, and
+    /// the cell being aimed at is as likely to be in one as any other. Checking
+    /// that the cell still stands answers all of them at once, and the enchants
+    /// need not know this field exists.
+    ///
+    /// Progress resets with the target because it was *earned against a block that
+    /// is gone*. Carrying it to the next cell would let a player bank swings on an
+    /// Obsidian and spend them on a Netherrack.
+    fn acquire_target(&mut self, rng: &mut Rng) -> Option<(u8, u8)> {
+        if let Some((x, y)) = self.target
+            && self.get(x, y).is_some()
+        {
+            return Some((x, y));
+        }
+
+        self.break_progress = 0.0;
+        self.target = self.draw_target(rng);
+        self.target
+    }
+
+    /// Draws one standing cell, uniformly; `None` only when the mine is empty.
+    ///
+    /// **Collects the standing cells rather than rejection-sampling the grid**,
+    /// and the reason is the generator, not the speed. Re-drawing until a draw
+    /// misses a hole would advance the sequence a *variable* number of times,
+    /// decided by how holey the grid happens to be — and the position in that
+    /// sequence is run state that a save carries and a replay must reproduce. One
+    /// draw per target, always, is a contract a golden vector can hold.
+    ///
+    /// The walk costs at most [`capacity`](Mine::capacity) = 200 cells, which at
+    /// 20 tps is nothing — the same trade [`remaining_count`](Mine::remaining_count)
+    /// already makes to avoid a second source of truth.
+    fn draw_target(&self, rng: &mut Rng) -> Option<(u8, u8)> {
+        let standing: Vec<(u8, u8)> = self
+            .grid
+            .iter()
+            .enumerate()
+            .flat_map(|(y, row)| {
+                row.iter()
+                    .enumerate()
+                    .filter(|(_, cell)| cell.is_some())
+                    .map(move |(x, _)| (x as u8, y as u8))
+            })
+            .collect();
+
+        let count = NonZeroU32::new(standing.len() as u32)?;
+        standing.get(rng.below(count) as usize).copied()
+    }
+
+    /// Returns the cell [`dig`](Mine::dig) is currently working on, for the UI to
+    /// highlight; `None` before the first swing and right after a block falls.
+    pub fn get_target(&self) -> Option<(u8, u8)> {
+        self.target
+    }
+
+    /// Returns how far the [target](Mine::get_target) is from breaking, in
+    /// `0.0..=1.0` — the progress bar and the `.:#` crack glyph both read this.
+    ///
+    /// A *ratio*, not the raw counter, because the counter alone is meaningless to
+    /// a reader: 20 points of progress is nearly through a Netherrack and barely a
+    /// scratch on an Obsidian. Handing out the fraction keeps
+    /// [`TICKS_PER_HARDNESS`] an implementation detail of the rules rather than a
+    /// number every front-end has to know to draw a bar.
+    ///
+    /// No division by zero is reachable: the softest block in the game is
+    /// Netherrack at `0.4`. The clamp guards the tick where an instamining power
+    /// overshoots the threshold, which would otherwise report a bar past full for
+    /// the instant before the block falls.
+    pub fn break_ratio(&self) -> f32 {
+        let Some((x, y)) = self.target else {
+            return 0.0;
+        };
+        let Some(block) = self.get(x, y) else {
+            return 0.0;
+        };
+        (self.break_progress / (block.hardness() * TICKS_PER_HARDNESS)).clamp(0.0, 1.0)
     }
 
     /// Returns the mine's size level, which indexes into `MINE_SIZES`.
@@ -400,6 +600,9 @@ impl Mine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::ALL_BLOCKS;
+    use crate::enchant::Enchants;
+    use crate::pickaxe::{Pickaxe, PickaxeTier};
 
     /// A generator on a fixed seed. The composition tests only need *a*
     /// reproducible sequence, not a particular one.
@@ -416,6 +619,8 @@ mod tests {
             richness_level: 0,
             richness_setting: 0,
             grid: Vec::new(),
+            break_progress: 0.0,
+            target: None,
         }
     }
 
@@ -429,6 +634,8 @@ mod tests {
             richness_level: richness_setting,
             richness_setting,
             grid: Vec::new(),
+            break_progress: 0.0,
+            target: None,
         };
         mine.reset(rng);
         mine
@@ -987,5 +1194,301 @@ mod tests {
 
         assert_eq!(mine.remaining_count(), mine.capacity());
         assert!(mine.get(0, 0).is_some());
+    }
+
+    /// The mining power of an unenchanted pickaxe, which is its tier's base speed
+    /// and nothing else — the figure the wiki's break times are quoted against.
+    fn bare(tier: PickaxeTier) -> f32 {
+        Pickaxe::new(tier, Enchants::new()).mining_power()
+    }
+
+    /// Digs until something breaks, and says how many ticks it took.
+    fn ticks_to_break(mine: &mut Mine, power: f32, rng: &mut Rng) -> u32 {
+        for tick in 1..=100_000 {
+            if mine.dig(power, rng).is_some() {
+                return tick;
+            }
+        }
+        unreachable!("the block never broke")
+    }
+
+    /// **The golden test of the break formula**, and the only one that answers to
+    /// an authority outside this repository: Minecraft says a Diamond pickaxe
+    /// clears Obsidian in 9.4 seconds, which at 20 tps is 188 ticks. If this number
+    /// moves, Skylode has stopped being the game it claims to port.
+    ///
+    /// Three accidents make the assertion exact rather than approximate, and all
+    /// three are why *this* pairing was chosen:
+    ///
+    /// - Obsidian is the one mine whose two cells share a hardness (Obsidian and
+    ///   Crying Obsidian are both 50), so the random target cannot change the
+    ///   answer and the test needs no control over the draw.
+    /// - Diamond's `base_power` is 8.0, which is Minecraft's own speed for that
+    ///   tier — the tier curve only departs from Minecraft at Gold.
+    /// - Diamond is Obsidian's `min_pickaxe_tier`, so this is a swing the phase-3
+    ///   gate will still allow.
+    ///
+    /// It pins **both** halves of the formula at once. Drop `TICKS_PER_HARDNESS`
+    /// and the block falls on the first tick; pay Efficiency's `+ 1` at level 0 and
+    /// the pickaxe reads 9.0 instead of 8.0, landing on 167.
+    #[test]
+    fn a_diamond_pickaxe_clears_obsidian_in_the_ticks_minecraft_charges() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Obsidian, 0, 0, &mut rng);
+
+        let ticks = ticks_to_break(&mut mine, bare(PickaxeTier::Diamond), &mut rng);
+
+        assert_eq!(
+            ticks, 188,
+            "Minecraft charges 9.4s (188 ticks) for Obsidian with a Diamond pickaxe"
+        );
+    }
+
+    /// The rule the golden test is one instance of: a block yields on the tick
+    /// `ceil(30 * hardness / mining_power)` and not before.
+    ///
+    /// Reads its own target rather than fixing one, so it holds for whichever cell
+    /// the draw lands on — which is the only honest way to test a random target
+    /// without pretending to know the seed's mind.
+    #[test]
+    fn a_block_takes_the_ticks_its_hardness_and_the_pickaxe_agree_on() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Stone, 1, 0, &mut rng);
+        let power = bare(PickaxeTier::Wooden);
+
+        assert_eq!(
+            mine.dig(power, &mut rng),
+            None,
+            "a bare Wooden pickaxe must not one-shot anything in the Stone mine"
+        );
+        let Some((x, y)) = mine.get_target() else {
+            unreachable!("the first dig draws a target")
+        };
+        let Some(block) = mine.get(x, y) else {
+            unreachable!("the target is a standing cell")
+        };
+        let expected = (block.hardness() * TICKS_PER_HARDNESS / power).ceil() as u32;
+
+        let ticks = 1 + ticks_to_break(&mut mine, power, &mut rng);
+
+        assert_eq!(
+            ticks,
+            expected,
+            "{block:?} (hardness {}) at power {power}",
+            block.hardness()
+        );
+    }
+
+    /// The floor of the whole game: a starting pickaxe must have something to chip
+    /// *at*. Without `TICKS_PER_HARDNESS` a fresh Wooden pickaxe (2.0) instamines
+    /// Stone (1.5), and progressive breaking — the mechanic, the progress bar, the
+    /// crack glyph — has no observable existence for the player to progress out of.
+    ///
+    /// Walks `ALL_BLOCKS` rather than sampling: the guarantee is about the game,
+    /// not about the two blocks a test author happened to think of.
+    #[test]
+    fn a_fresh_wooden_pickaxe_instamines_nothing_in_the_game() {
+        let power = Pickaxe::default().mining_power();
+
+        for &block in ALL_BLOCKS {
+            assert!(
+                power < block.hardness() * TICKS_PER_HARDNESS,
+                "a starter pickaxe ({power}) one-shots {block:?} at hardness {}",
+                block.hardness()
+            );
+        }
+    }
+
+    /// Past instamine, single-target speed **saturates at one block per tick**, and
+    /// that saturation is a design load-bearing enough to test: it is the reason
+    /// the endgame's levers shift to area enchants and richness instead of more
+    /// speed. What enforces it is that `dig` *discards* the leftover progress
+    /// rather than subtracting the threshold from it — a carry would let a
+    /// sufficiently absurd power cascade through a whole mine in one tick.
+    #[test]
+    fn progress_never_carries_over_to_the_next_block() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Stone, 0, 0, &mut rng);
+        let capacity = mine.capacity();
+
+        for broken in 1..=4 {
+            assert!(
+                mine.dig(10_000.0, &mut rng).is_some(),
+                "tick {broken} broke nothing"
+            );
+            assert_eq!(
+                mine.remaining_count(),
+                capacity - broken,
+                "one tick took more than one block"
+            );
+        }
+    }
+
+    /// `break_progress` only means something if it accumulates against *one* block.
+    /// A target re-drawn every tick would leave the counter measuring a different
+    /// cell each time — and the UI's highlight flickering across the grid.
+    #[test]
+    fn the_target_holds_still_while_the_block_stands() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Obsidian, 1, 0, &mut rng);
+        let power = bare(PickaxeTier::Diamond);
+
+        assert_eq!(mine.dig(power, &mut rng), None);
+        let aimed = mine.get_target();
+        assert!(aimed.is_some(), "the first dig draws a target");
+
+        for tick in 2..=20 {
+            assert_eq!(mine.dig(power, &mut rng), None);
+            assert_eq!(mine.get_target(), aimed, "the aim wandered on tick {tick}");
+        }
+    }
+
+    /// On break the aim is released, so the next tick draws afresh — "on break, the
+    /// next random cell is picked". Leaving it on the hole would spend a tick
+    /// re-discovering that nothing is there.
+    #[test]
+    fn a_broken_block_frees_the_target_for_a_new_draw() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Stone, 1, 0, &mut rng);
+
+        assert!(mine.dig(10_000.0, &mut rng).is_some());
+
+        assert_eq!(mine.get_target(), None, "a fallen block stayed aimed at");
+        assert_eq!(mine.break_ratio(), 0.0);
+
+        assert!(
+            mine.dig(10_000.0, &mut rng).is_some(),
+            "the aim never re-drew"
+        );
+    }
+
+    /// A target can vanish under the digger without `dig` ever knowing: phase 4's
+    /// area enchants `take` whole blast shapes, and the aimed-at cell is as likely
+    /// to sit in one as any other. `acquire_target` re-validates instead of
+    /// trusting, so those enchants need not know this field exists — and the
+    /// progress owed to the vanished block dies with it rather than transferring
+    /// to whatever is drawn next.
+    #[test]
+    fn a_target_broken_out_from_under_the_digger_forfeits_its_progress() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Obsidian, 1, 0, &mut rng);
+        let power = bare(PickaxeTier::Diamond);
+
+        for _ in 0..100 {
+            assert_eq!(mine.dig(power, &mut rng), None);
+        }
+        let Some((x, y)) = mine.get_target() else {
+            unreachable!("100 ticks of digging leave a target")
+        };
+        assert!(mine.break_ratio() > 0.0, "100 ticks bought no progress");
+
+        // What a blast does, seen from here: the cell simply stops being there.
+        assert!(mine.take(x, y).is_some());
+        assert_eq!(
+            mine.break_ratio(),
+            0.0,
+            "the bar kept filling against a block that is gone"
+        );
+
+        assert_eq!(mine.dig(power, &mut rng), None);
+
+        assert_ne!(mine.get_target(), Some((x, y)), "the aim stayed on a hole");
+        assert_eq!(
+            mine.break_ratio(),
+            power / (50.0 * TICKS_PER_HARDNESS),
+            "the new block inherited the dead one's progress"
+        );
+    }
+
+    /// The dial redraws the block being chipped at out from under the player, and
+    /// the progress was owed to *that* block. Left standing it would launder: chip
+    /// a cell to one tick short, nudge the dial, and collect whatever replaced it
+    /// for a swing's worth of work.
+    ///
+    /// The aim itself must **not** move — the cell is still standing, and the
+    /// player is still pointing at it. Only what they had bought against its former
+    /// occupant is gone.
+    #[test]
+    fn moving_the_dial_forfeits_the_progress_on_the_targeted_cell() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Obsidian, 1, 3, &mut rng);
+        let power = bare(PickaxeTier::Diamond);
+
+        for _ in 0..50 {
+            assert_eq!(mine.dig(power, &mut rng), None);
+        }
+        let aimed = mine.get_target();
+        assert!(mine.break_ratio() > 0.0, "50 ticks bought no progress");
+
+        assert_eq!(mine.set_richness_setting(1, &mut rng), Ok(()));
+
+        assert_eq!(mine.break_ratio(), 0.0, "the dial laundered the progress");
+        assert_eq!(mine.get_target(), aimed, "the dial moved the aim");
+    }
+
+    /// A power that is not a positive, finite number is a caller's bug, and the
+    /// answer is the module's rule — **a refusal changes nothing**. Not one draw is
+    /// taken from the generator either: its position is run state, and a rejected
+    /// order must not move it.
+    ///
+    /// `NaN` is the one that matters. Added, it would sit in `break_progress`
+    /// forever — comparing false against every hardness, surviving every reset that
+    /// does not overwrite it, and quietly breaking the reflexivity of `Mine`'s
+    /// `PartialEq`. It cannot be clamped back, only refused, which is exactly the
+    /// reading `Rng::chance` already gives an unspecified probability.
+    #[test]
+    fn a_mining_power_that_is_not_a_positive_number_breaks_nothing() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Stone, 1, 0, &mut rng);
+        let untouched = mine.clone();
+        let mut unasked = rng.clone();
+
+        for power in [0.0, -5.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                mine.dig(power, &mut rng),
+                None,
+                "power {power} broke a block"
+            );
+        }
+
+        assert_eq!(mine, untouched, "a refused dig moved the mine");
+        assert_eq!(
+            draws(&mut rng),
+            draws(&mut unasked),
+            "a refused dig drew a target anyway"
+        );
+    }
+
+    /// What the progress bar and the `.:#` crack glyph read. It must climb, never
+    /// overshoot the full bar on the tick an instamining power lands, and fall back
+    /// to empty once the block is gone.
+    #[test]
+    fn break_ratio_walks_from_zero_to_one_and_stops_there() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Obsidian, 1, 0, &mut rng);
+        let power = bare(PickaxeTier::Diamond);
+
+        assert_eq!(mine.break_ratio(), 0.0, "an untouched mine shows progress");
+
+        let mut previous = 0.0;
+        for tick in 1..=187 {
+            assert_eq!(mine.dig(power, &mut rng), None);
+            let ratio = mine.break_ratio();
+            assert!(
+                ratio > previous,
+                "the bar stalled at {ratio} on tick {tick}"
+            );
+            assert!(
+                ratio <= 1.0,
+                "the bar ran past full at {ratio} on tick {tick}"
+            );
+            previous = ratio;
+        }
+
+        assert!(
+            mine.dig(power, &mut rng).is_some(),
+            "the 188th tick must land"
+        );
+        assert_eq!(mine.break_ratio(), 0.0, "the bar survived the break");
     }
 }
