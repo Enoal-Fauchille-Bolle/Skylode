@@ -19,6 +19,7 @@ or [SYSTEMS.md](SYSTEMS.md) rather than repeating it here.
 | Pickaxe: Efficiency 0..=5 per tier, dip on tier jump, then prestige | Faithful to the source loop. See [MECHANICS.md](MECHANICS.md#pickaxe-progression). |
 | Netherite Efficiency 0..=15 (no reset) | 15 is Pika's instamine point; the top tier keeps climbing past 5. |
 | `base_tier` speed is a monotone custom curve | Minecraft's tool speeds are non-monotone (gold beats diamond); the 1:1 principle is kept only for hardness. See [MECHANICS.md](MECHANICS.md#pickaxe-progression). |
+| Efficiency's `level² + 1` is earned from level 1, not level 0 | Minecraft guards the bonus behind `if (i > 0)`. The `+ 1` is what makes the first level a discrete `+2` jump, not a flat bonus every pickaxe collects; paid at level 0 it hands a fresh Wooden pickaxe 50% more speed than it earned and breaks the 1:1 times above. |
 | Fortune capped at 10 | Past 10, ore is abundant enough that more Fortune is pointless (matches Pika). |
 | Obsidian / Crying Obsidian and the enchant materials are post-tier enhancements, not full tiers | Keeps the tier list clean. |
 | Composite upgrade costs (Compressed plus raw) | Readability: `6 Compressed Iron + 50 Iron` reads better than `650 Iron`, and the player can check it in their head. |

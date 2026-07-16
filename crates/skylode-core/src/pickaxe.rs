@@ -61,12 +61,24 @@ impl Pickaxe {
     /// Computes the total mining power applied against block hardness.
     ///
     /// Combines the tier's [`base_power`](PickaxeTier::base_power) with an
-    /// Efficiency bonus of `level² + 1`. The `+ 1` means even an unenchanted
-    /// pickaxe (Efficiency 0) gets a small bonus, while the squaring makes high
-    /// Efficiency levels scale sharply — the main long-term power lever.
+    /// Efficiency bonus of `level² + 1`, and the squaring is what makes high
+    /// Efficiency the main long-term power lever.
+    ///
+    /// **The bonus is earned from level 1, not level 0**, which is Minecraft's
+    /// `if (i > 0)` guard in `Player.getDigSpeed`. The `+ 1` is therefore not a
+    /// flat bonus every pickaxe collects: it is what makes the *first* level a
+    /// discrete jump of `+2` rather than the `+1` a bare `level²` would give — a
+    /// deliberate kick that stops rank 1 from feeling like nothing. Reading it as
+    /// unconditional costs a fresh Wooden pickaxe 50% of its speed (3 instead of
+    /// 2), and with it the 1:1 break times `Mine`'s conversion exists to preserve.
     pub fn mining_power(&self) -> f32 {
         let base = self.tier.base_power();
-        let eff_bonus = (self.enchants.get_level(EnchantType::Efficiency) as f32).powi(2) + 1.0;
+        let level = self.enchants.get_level(EnchantType::Efficiency);
+        let eff_bonus = if level > 0 {
+            (level as f32).powi(2) + 1.0
+        } else {
+            0.0
+        };
         base + eff_bonus
     }
 
@@ -82,7 +94,7 @@ impl Pickaxe {
     /// cap of 15 and the pickaxe is then fully upgraded: further calls are
     /// **refused** with [`CoreError::PickaxeFullyUpgraded`]. They must not fall
     /// through to phase 2, which would reset Efficiency with no tier left to gain
-    /// in exchange — a permanent downgrade from 235 mining power back to 10. The
+    /// in exchange — a permanent downgrade from 235 mining power back to 9. The
     /// refusal is what lets the paid path (phase 5) decline the sale instead of
     /// charging for that downgrade.
     ///
@@ -202,11 +214,46 @@ mod tests {
         assert_eq!(pickaxe.enchants.get_level(EnchantType::Efficiency), 0);
     }
 
-    /// The `+ 1` in the Efficiency formula means level 0 is still worth
-    /// something: a fresh pickaxe mines at 2 (Wooden) + 0² + 1 = 3, not 2.
+    /// An unenchanted pickaxe is its tier and nothing else: a fresh one mines at
+    /// 2 (Wooden), not 3. Minecraft gates the whole `level² + 1` bonus behind
+    /// `if (i > 0)`, and reading the `+ 1` as unconditional hands every pickaxe a
+    /// free Efficiency-worth of speed it never enchanted for.
+    ///
+    /// This is the floor the rest of the game's pacing is measured from — it is
+    /// what makes `a_diamond_pickaxe_clears_obsidian_in_the_ticks_minecraft_charges`
+    /// land on the wiki's number — so it is pinned here rather than left implied
+    /// by [`efficiency_scales_quadratically`], which only ever looks above 0.
     #[test]
-    fn an_unenchanted_pickaxe_still_gets_the_flat_bonus() {
-        assert_eq!(Pickaxe::default().mining_power(), 3.0);
+    fn an_unenchanted_pickaxe_earns_no_efficiency_bonus() {
+        assert_eq!(Pickaxe::default().mining_power(), 2.0);
+    }
+
+    /// The first level of Efficiency is a *step*, not the start of a ramp: the
+    /// `+ 1` rides along with it, so level 1 is worth `1² + 1 = 2` power where a
+    /// bare `level²` would be worth 1.
+    ///
+    /// Worth its own test because the shape is easy to lose in either direction —
+    /// dropping the `+ 1` flattens the kick that stops rank 1 from feeling like
+    /// nothing, and paying it at level 0 dissolves the step entirely.
+    #[test]
+    fn the_first_level_of_efficiency_is_a_discrete_jump() {
+        let unenchanted = Pickaxe::default();
+
+        let mut enchants = Enchants::new();
+        assert!(
+            enchants
+                .upgrade(EnchantType::Efficiency, Some(PickaxeTier::Wooden))
+                .is_ok()
+        );
+        let level_one = Pickaxe::new(PickaxeTier::Wooden, enchants);
+
+        assert_eq!(unenchanted.mining_power(), 2.0);
+        assert_eq!(level_one.mining_power(), 4.0);
+        assert_eq!(
+            level_one.mining_power() - unenchanted.mining_power(),
+            2.0,
+            "the first Efficiency level must jump by 1² + 1, not by 1"
+        );
     }
 
     /// Efficiency squares, so it is the long-term lever: on the same Wooden
@@ -341,7 +388,7 @@ mod tests {
 
     /// The final tier has nowhere left to advance to, so an upgrade there must
     /// never be a *downgrade*. Wiping Efficiency at the ceiling would drop the
-    /// player from 235 mining power back to 10 — permanently, since the tier can
+    /// player from 235 mining power back to 9 — permanently, since the tier can
     /// no longer climb to compensate.
     ///
     /// The refusal is the other half: an upgrade that silently did nothing would

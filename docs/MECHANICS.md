@@ -53,10 +53,15 @@ Breaking is progressive. Each block has a fixed `hardness`. The pickaxe has a
 mining_power = (base_tier + efficiency_bonus) * haste_multiplier
 
   base_tier        = monotone per-tier speed (see pickaxes.rs)
-  efficiency_bonus = efficiency^2 + 1        (additive)
+  efficiency_bonus = efficiency^2 + 1 if efficiency > 0, else 0  (additive)
   haste_multiplier = product of haste sources (multiplicative:
                      permanent Haste enchant * temporary Redstone boost)
 ```
+
+The `efficiency > 0` guard is Minecraft's (`Player.getDigSpeed`), and it is why
+the first level of Efficiency is a discrete jump of `+2`: the `+ 1` rides along
+with the first level rather than being a flat bonus every pickaxe collects. An
+unenchanted Wooden pickaxe is worth 2, not 3.
 
 `mining_power` is a floating-point value so multiplicative haste can be
 fractional. Each tick, `break_progress += mining_power`. When
