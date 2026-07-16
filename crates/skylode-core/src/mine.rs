@@ -432,6 +432,15 @@ impl Mine {
     /// the caller's to apply: the mine's business is which block stood there, and
     /// [`Block::drops`] is the block's own table, not the outcome of a swing.
     ///
+    /// **The last block to fall takes the batch reset with it**, in the same tick:
+    /// the mine refills whole, the way a SkyMines cube regenerates. Doing it here
+    /// rather than leaving the caller a `reset_if_empty` to remember is what makes
+    /// "a mine is never left empty" an invariant instead of a convention — two
+    /// calls to chain is one call to forget, and the forgotten one strands the run
+    /// on a grid with nothing left to draw a target from. The block that earned the
+    /// reset is still what comes back: the refill happens after the take, so the
+    /// player is paid for the swing that emptied the mine.
+    ///
     /// `pub(crate)`, and this one is not about being free — it *does* charge, in
     /// progress. It is about **rate**: nothing in core bounds how often this is
     /// called, so a front-end holding it in a render loop would mine as fast as it
@@ -459,6 +468,9 @@ impl Mine {
         let broken = self.take(x, y);
         self.break_progress = 0.0;
         self.target = None;
+        if self.is_empty() {
+            self.reset(rng);
+        }
         broken
     }
 
@@ -1490,5 +1502,84 @@ mod tests {
             "the 188th tick must land"
         );
         assert_eq!(mine.break_ratio(), 0.0, "the bar survived the break");
+    }
+
+    /// "The mine depletes to 0, then fully and instantly refills" — the SkyMines
+    /// cube regeneration, and the one thing that earns the broken blocks back.
+    ///
+    /// **The same tick**, not the next one. A mine left standing empty is one
+    /// `dig` can draw no target from, so the emptiness would not be a pause before
+    /// the reward but a hole the run falls into. Doing it inside `dig` is also what
+    /// makes it an invariant rather than a convention: there is no second call for
+    /// a caller to forget.
+    #[test]
+    fn an_emptied_mine_refills_in_the_same_tick_as_its_last_block() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Stone, 0, 0, &mut rng);
+        let capacity = mine.capacity();
+
+        for broken in 1..capacity {
+            assert!(mine.dig(10_000.0, &mut rng).is_some());
+            assert_eq!(mine.remaining_count(), capacity - broken);
+        }
+
+        assert!(
+            mine.dig(10_000.0, &mut rng).is_some(),
+            "the last block must still drop"
+        );
+        assert_eq!(
+            mine.remaining_count(),
+            capacity,
+            "the mine that gave up its last block was not refilled"
+        );
+        assert!(!mine.is_empty(), "a dig left the mine standing empty");
+    }
+
+    /// The refill resets the *grid*, not the mine. What the player bought — the
+    /// size their ore paid for, the ceiling, the dial they set — must survive it,
+    /// or emptying a mine would quietly undo the progress that made emptying it
+    /// possible in the first place.
+    #[test]
+    fn a_refilled_mine_keeps_its_size_and_its_dial() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Stone, 2, 2, &mut rng);
+        let (level, size) = (mine.get_size_level(), mine.get_size());
+
+        for _ in 0..mine.capacity() {
+            assert!(mine.dig(10_000.0, &mut rng).is_some());
+        }
+
+        assert_eq!(mine.get_size_level(), level, "the refill resized the mine");
+        assert_eq!(mine.get_size(), size);
+        assert_eq!(mine.get_richness_setting(), 2, "the refill moved the dial");
+        assert_eq!(mine.get_richness_level(), 2, "the refill spent the ceiling");
+    }
+
+    /// The block handed back on the emptying tick is the one that just fell, not a
+    /// cell of the grid that replaced it. `take` runs before `reset`, and that
+    /// ordering is the whole of it: reversed, the player would be paid for a block
+    /// drawn out of a mine they had not mined — and the one they *had* mined would
+    /// vanish unpaid.
+    #[test]
+    fn the_last_block_still_drops_before_the_refill() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Amethyst, 0, 0, &mut rng);
+
+        for _ in 0..mine.capacity() - 1 {
+            assert!(mine.dig(10_000.0, &mut rng).is_some());
+        }
+        assert_eq!(mine.remaining_count(), 1, "exactly one cell must be left");
+
+        // Read it while it still stands: one tick from now it is gone.
+        let Some(last) = mine.get_grid().iter().flatten().flatten().copied().next() else {
+            unreachable!("one cell is still standing")
+        };
+
+        assert_eq!(
+            mine.dig(10_000.0, &mut rng),
+            Some(last),
+            "the emptying tick paid out a block from the fresh grid"
+        );
+        assert_eq!(mine.remaining_count(), mine.capacity());
     }
 }
