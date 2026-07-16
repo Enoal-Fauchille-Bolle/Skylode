@@ -1,0 +1,6 @@
+[alias]
+# `cargo doc` documents public items only, which hides the `pub(crate)` half of
+# the rules the rustdoc argues about, and leaves its links pointing nowhere.
+# Aliased rather than forced through `build.rustdocflags` so that plain
+# `cargo doc` keeps behaving the way every other Rust project's does.
+doc-all = "doc --document-private-items"

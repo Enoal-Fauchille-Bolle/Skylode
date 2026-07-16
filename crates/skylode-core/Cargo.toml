@@ -17,3 +17,11 @@ rand_chacha = { version = "0.9", default-features = false }
 
 [lints]
 workspace = true
+
+# docs.rs builds with its own flags, not the `doc-all` alias, so the choice to
+# document internals has to be restated here or the published page would drop
+# every link the rustdoc makes to a `pub(crate)` item. Deliberate: the rules are
+# meant to be readable, and a reader who cannot see `dig` cannot follow the
+# argument for why `set_richness_setting` is the one that is `pub`.
+[package.metadata.docs.rs]
+rustdoc-args = ["--document-private-items"]

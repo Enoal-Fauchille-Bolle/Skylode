@@ -23,3 +23,16 @@ expect_used = { level = "warn", priority = -1 }
 panic = { level = "warn", priority = -1 }
 todo = { level = "warn", priority = -1 }
 unimplemented = { level = "warn", priority = -1 }
+
+# Rustdoc lints configuration
+#
+# Public rustdoc here explains *why* an item's visibility is shaped the way it
+# is, so it necessarily names `pub(crate)` items — `set_richness_setting` is
+# `pub` precisely *unlike* `take` and `upgrade_size_level`. The lint's premise is
+# that such a link breaks for a reader who lacks `--document-private-items`; that
+# reader does not exist, because the flag is passed both locally (the `doc-all`
+# alias) and on docs.rs (`package.metadata.docs.rs`). Dropping it costs nothing
+# that matters: `broken_intra_doc_links` is a separate lint and stays on, so a
+# renamed item is still caught.
+[workspace.lints.rustdoc]
+private_intra_doc_links = "allow"
