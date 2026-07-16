@@ -182,10 +182,18 @@ impl Mine {
             .collect();
     }
 
-    /// Returns a copy of the mine's grid, row by row: `Some(block)` for a cell
-    /// still standing, `None` for a hole.
-    pub fn get_grid(&self) -> Vec<Vec<Option<Block>>> {
-        self.grid.clone()
+    /// Borrows the mine's grid, row by row: `Some(block)` for a cell still
+    /// standing, `None` for a hole.
+    ///
+    /// Lends rather than copies because the borrow is the more general contract: a
+    /// caller that genuinely needs an owned snapshot — a renderer on its own
+    /// thread, say — says `.to_vec()` and pays for it, while one that only reads
+    /// pays nothing. Handing back an owned grid bills every caller for a copy none
+    /// of them can decline. The `&` is also what keeps the grid encapsulated: a
+    /// shared borrow of a private field can be read and not written, which is
+    /// exactly the access a front-end is owed.
+    pub fn get_grid(&self) -> &[Vec<Option<Block>>] {
+        &self.grid
     }
 
     /// Returns how many cells the mine holds when full: `width * height`.
@@ -526,15 +534,28 @@ mod tests {
         }
     }
 
+    /// The grid the UI renders and the cell the rules read are one truth, so the
+    /// two ways out of it must never disagree — holes included, which is the half
+    /// worth pinning: a renderer that drew a block the rules had already taken
+    /// would be showing the player ore they cannot mine.
     #[test]
-    fn get_grid_returns_a_copy_of_the_grid() {
-        let mine = Mine::new(MineKind::Stone, &mut rng());
-        let grid_copy = mine.get_grid();
-        assert_eq!(grid_copy, mine.grid);
-        // Modify the copy and ensure the original grid is unaffected
-        let mut modified_copy = grid_copy.clone();
-        modified_copy[0][0] = Some(Block::IronOre);
-        assert_ne!(modified_copy, mine.grid);
+    fn get_grid_and_get_report_the_same_cells() {
+        let mut mine = built(MineKind::Stone, 2, 0, &mut rng());
+        assert!(mine.take(1, 1).is_some());
+
+        let (width, height) = mine.get_size();
+        let grid = mine.get_grid();
+        assert_eq!(grid.len(), usize::from(height));
+        for y in 0..height {
+            assert_eq!(grid[usize::from(y)].len(), usize::from(width));
+            for x in 0..width {
+                assert_eq!(
+                    grid[usize::from(y)][usize::from(x)],
+                    mine.get(x, y),
+                    "the two readings disagree at ({x}, {y})"
+                );
+            }
+        }
     }
 
     /// A fresh mine reports richness 0 on both tracks: the ceiling has no buyer
