@@ -68,6 +68,23 @@ pub enum CoreError {
         /// The largest size level, which the mine is already at.
         level: u32,
     },
+    /// The richness dial was pushed past the ceiling the player has bought.
+    ///
+    /// The dial moves freely and for free, but only *below* the level bought on
+    /// the mine's richness track: the ceiling is the purchase, the dial is what
+    /// the purchase entitles you to.
+    ///
+    /// Carries both numbers rather than the ceiling alone because the gap is the
+    /// actionable part. "The dial won't go there" leaves the UI a greyed-out
+    /// control and nothing to say; `requested - ceiling` lets it name the levels
+    /// still to buy. See
+    /// [`set_richness_setting`](crate::mine::Mine::set_richness_setting).
+    RichnessAboveCeiling {
+        /// The setting that was asked for.
+        requested: u32,
+        /// The highest setting the mine's bought richness level allows.
+        ceiling: u32,
+    },
 }
 
 impl fmt::Display for CoreError {
@@ -82,6 +99,12 @@ impl fmt::Display for CoreError {
             Self::PickaxeFullyUpgraded => write!(f, "the pickaxe is fully upgraded"),
             Self::MineSizeMaxed { level } => {
                 write!(f, "the mine is already at its largest size, level {level}")
+            }
+            Self::RichnessAboveCeiling { requested, ceiling } => {
+                write!(
+                    f,
+                    "richness {requested} is above the bought ceiling of {ceiling}"
+                )
             }
         }
     }
@@ -128,6 +151,21 @@ mod tests {
         assert_eq!(
             CoreError::MineSizeMaxed { level: 9 }.to_string(),
             "the mine is already at its largest size, level 9"
+        );
+    }
+
+    /// The message names both numbers, so the Upgrades screen can turn a refusal
+    /// into the next step — "buy 4 more richness levels" — rather than a dead
+    /// control.
+    #[test]
+    fn a_dial_past_its_ceiling_names_both_numbers() {
+        let err = CoreError::RichnessAboveCeiling {
+            requested: 7,
+            ceiling: 3,
+        };
+        assert_eq!(
+            err.to_string(),
+            "richness 7 is above the bought ceiling of 3"
         );
     }
 }

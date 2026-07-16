@@ -72,6 +72,31 @@ fn value_weight(setting: u32) -> u32 {
     RICHNESS_BASE_WEIGHT + setting.min(MAX_RICHNESS_LEVEL) * RICHNESS_WEIGHT_STEP
 }
 
+/// Draws one cell of a `kind` mine: its [value](MineKind::value_block) block with
+/// weight `value_w`, its [common](MineKind::common_block) block with the rest.
+///
+/// The single point where a cell's identity is decided, shared by the two things
+/// that lay cells down — [`reset`](Mine::reset), which draws a whole grid, and
+/// [`set_richness_setting`](Mine::set_richness_setting), which redraws the
+/// standing ones. Two copies of the draw could disagree, and the disagreement
+/// would read as "the dial changes the odds", which is precisely what it must not
+/// do: the dial changes `value_w` and nothing else.
+///
+/// A free function rather than a method because the redraw holds `self.grid`
+/// mutably while it calls this, and a `&self` method would be a second borrow.
+///
+/// The `None` arm is unreachable — `value_w < 100` for every setting, so both
+/// weights are positive and `weighted` always chooses — but it falls back to the
+/// common cell rather than reaching for the `unwrap`/`expect` the workspace lints
+/// deny. Erring toward the common cell is also the arm that cannot hand out free
+/// value.
+fn draw_cell(kind: MineKind, value_w: u32, rng: &mut Rng) -> Block {
+    match rng.weighted(&[100 - value_w, value_w]) {
+        Some(1) => kind.value_block(),
+        _ => kind.common_block(),
+    }
+}
+
 /// A generated mine: its [`MineKind`] identity plus the laid-out grid the player
 /// mines through.
 ///
@@ -142,6 +167,63 @@ impl Mine {
         self.richness_setting
     }
 
+    /// Moves the richness dial, redrawing the composition of the **standing**
+    /// cells at once — and leaving the holes exactly where they are. Refuses a
+    /// setting above the bought [ceiling](Mine::get_richness_level), changing
+    /// nothing.
+    ///
+    /// The holes are the whole point. One rule governs this method and the fact
+    /// that mines persist across screens — **no free action may ever put a broken
+    /// block back**. The dial is free, so if it refilled what it passed over, a
+    /// player would break the four Amethyst out of two hundred cells, nudge the
+    /// dial, and find four more: a batch reset that never paid for itself by
+    /// emptying the mine. Free to reshape what remains, never free to un-break
+    /// what is gone.
+    ///
+    /// Nothing is cached per richness level, for the same reason. A grid
+    /// remembered against each setting would hand out a full, untouched mine the
+    /// first time the player visited a rung they had never dialled to — the same
+    /// free reset, through the window. One hole mask per mine, shared by every
+    /// setting.
+    ///
+    /// **`pub`, unlike [`take`](Mine::take) and
+    /// [`upgrade_size_level`](Mine::upgrade_size_level).** Those are `pub(crate)`
+    /// because they are free *by accident* — the transaction that will charge for
+    /// them does not exist yet. Here the freedom is the design: the dial is what
+    /// guarantees an over-enriched mine can always be walked back to harvest its
+    /// common cell, so a purchase can slow a run down but never strand it. What
+    /// bounds it is the ceiling, not the visibility.
+    ///
+    /// Asking for the setting the dial already holds is a no-op that draws
+    /// nothing: the dial was not moved, so there is nothing to redraw, and the
+    /// generator's position — which is run state — must not advance for an order
+    /// that said nothing. (Until the phase-5 purchase path raises a ceiling that
+    /// is currently always 0, this is the only call that can succeed.)
+    ///
+    /// The free re-roll this leaves open — wiggling the dial until the value cells
+    /// happen to line up under an Explosive — is knowingly accepted for the MVP:
+    /// single-player, offline, no leaderboard. See `DECISIONS.md`.
+    pub fn set_richness_setting(&mut self, setting: u32, rng: &mut Rng) -> Result<(), CoreError> {
+        if setting > self.richness_level {
+            return Err(CoreError::RichnessAboveCeiling {
+                requested: setting,
+                ceiling: self.richness_level,
+            });
+        }
+        if setting == self.richness_setting {
+            return Ok(());
+        }
+
+        self.richness_setting = setting;
+        let (kind, value_w) = (self.kind, value_weight(setting));
+        for cell in self.grid.iter_mut().flatten() {
+            if cell.is_some() {
+                *cell = Some(draw_cell(kind, value_w, rng));
+            }
+        }
+        Ok(())
+    }
+
     /// Resets the mine to its initial state, refilling the grid.
     ///
     /// Each cell is drawn independently between the kind's
@@ -160,23 +242,11 @@ impl Mine {
     /// it on demand.
     pub(crate) fn reset(&mut self, rng: &mut Rng) {
         let (width, height) = self.get_size();
-        let common = self.kind.common_block();
-        let value = self.kind.value_block();
-        let value_w = value_weight(self.richness_setting);
-        // [common, value]; both are > 0 for every setting, so `weighted` never
-        // returns `None` — but a `None` (and the impossible index) falls back to
-        // the common cell rather than reaching for `unwrap`/`expect`, which the
-        // workspace lints deny.
-        let weights = [100 - value_w, value_w];
+        let (kind, value_w) = (self.kind, value_weight(self.richness_setting));
         self.grid = (0..height)
             .map(|_| {
                 (0..width)
-                    .map(|_| {
-                        Some(match rng.weighted(&weights) {
-                            Some(1) => value,
-                            _ => common,
-                        })
-                    })
+                    .map(|_| Some(draw_cell(kind, value_w, rng)))
                     .collect()
             })
             .collect();
@@ -362,6 +432,13 @@ mod tests {
         };
         mine.reset(rng);
         mine
+    }
+
+    /// A few draws off a generator, to read its *position*. Two generators that
+    /// have been asked for the same work agree here; one that was asked for a
+    /// draw the other was not does not.
+    fn draws(rng: &mut Rng) -> Vec<Option<usize>> {
+        (0..8).map(|_| rng.weighted(&[1, 1])).collect()
     }
 
     /// How many standing cells of `block` the grid holds. Holes count as neither.
@@ -757,6 +834,142 @@ mod tests {
         assert_eq!(mine.get(width, 0), None, "past the right edge");
         assert_eq!(mine.get(0, height), None, "past the bottom edge");
         assert_eq!(mine.get(u8::MAX, u8::MAX), None, "far outside");
+    }
+
+    /// The heart of the dial: it reshapes what is still standing and does **not**
+    /// touch what is gone. A dial that refilled the holes would be a free batch
+    /// reset — break the four Amethyst out of two hundred, nudge the dial, find
+    /// four more — which is the "no free action may ever put a broken block back"
+    /// rule in MECHANICS.md. `remaining_count` is the load-bearing assertion:
+    /// were one hole refilled, it would climb.
+    #[test]
+    fn moving_the_dial_rerolls_the_standing_cells_and_leaves_the_holes() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut rng);
+        mine.richness_level = MAX_RICHNESS_LEVEL; // the phase-5 purchase, by hand
+
+        let holes = [(0, 0), (3, 2), (5, 4)];
+        for (x, y) in holes {
+            assert!(mine.take(x, y).is_some());
+        }
+        let (remaining, capacity) = (mine.remaining_count(), mine.capacity());
+
+        assert_eq!(
+            mine.set_richness_setting(MAX_RICHNESS_LEVEL, &mut rng),
+            Ok(())
+        );
+
+        for (x, y) in holes {
+            assert_eq!(
+                mine.get(x, y),
+                None,
+                "the dial refilled the hole at ({x}, {y})"
+            );
+        }
+        assert_eq!(
+            mine.remaining_count(),
+            remaining,
+            "the dial must not change how many cells stand"
+        );
+        assert_eq!(mine.capacity(), capacity);
+        assert_eq!(mine.get_richness_setting(), MAX_RICHNESS_LEVEL);
+    }
+
+    /// The dial is *immediate*: the player pushes it up and the cells still
+    /// standing are richer at once — they do not wait for the next regeneration.
+    /// Sibling of `richness_setting_shifts_weight_toward_the_value_cell`, which
+    /// proves the same of a grid *built* at a setting; this one proves it of a
+    /// grid *moved* to one, which is the path a player actually takes.
+    #[test]
+    fn moving_the_dial_up_shifts_the_standing_cells_toward_the_value_block() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut rng);
+        mine.richness_level = MAX_RICHNESS_LEVEL;
+        let value = MineKind::Iron.value_block();
+        let poor = count(&mine, value);
+
+        assert_eq!(
+            mine.set_richness_setting(MAX_RICHNESS_LEVEL, &mut rng),
+            Ok(())
+        );
+
+        let rich = count(&mine, value);
+        assert!(
+            rich > poor,
+            "the dial must enrich what stands ({rich} value cells, was {poor})"
+        );
+    }
+
+    /// The dial is free, but only below what was *bought*: the ceiling is the
+    /// purchase. The refusal names both numbers so the UI can say how many levels
+    /// are still to buy — and, like every refusal in the core, it must leave the
+    /// mine exactly as it found it, grid included.
+    #[test]
+    fn a_dial_above_the_bought_ceiling_is_refused_and_changes_nothing() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Stone, 3, 1, &mut rng);
+        mine.richness_level = 2;
+        let grid = mine.grid.clone();
+
+        assert_eq!(
+            mine.set_richness_setting(3, &mut rng),
+            Err(CoreError::RichnessAboveCeiling {
+                requested: 3,
+                ceiling: 2,
+            })
+        );
+
+        assert_eq!(
+            mine.get_richness_setting(),
+            1,
+            "the dial must not have moved"
+        );
+        assert_eq!(mine.grid, grid, "a refusal must not redraw the grid");
+    }
+
+    /// Asking for the setting the dial already holds is not a move, so it draws
+    /// nothing. The grid is only half of that: the generator's *position* is run
+    /// state, and an order that said nothing must not advance it — otherwise the
+    /// sequence a save resumes would depend on how many times the player poked a
+    /// dial that never moved. Proven against a twin generator that was asked for
+    /// the same work minus the no-op.
+    #[test]
+    fn setting_the_dial_where_it_already_is_draws_nothing() {
+        let (mut dialled, mut untouched) = (rng(), rng());
+        let mut mine = built(MineKind::Iron, 2, 0, &mut dialled);
+        mine.richness_level = MAX_RICHNESS_LEVEL;
+        let grid = mine.grid.clone();
+
+        assert_eq!(mine.set_richness_setting(0, &mut dialled), Ok(()));
+
+        assert_eq!(mine.grid, grid, "a dial that did not move must not redraw");
+        let _ = built(MineKind::Iron, 2, 0, &mut untouched);
+        assert_eq!(
+            draws(&mut dialled),
+            draws(&mut untouched),
+            "the no-op advanced the generator"
+        );
+    }
+
+    /// The determinism contract, extended to the dial: a run replays its dial
+    /// moves, holes and all. Without this a reloaded save would re-roll every
+    /// grid the player had reshaped, and "send me your save, I will reproduce
+    /// your bug" would stop being true the moment a dial was touched.
+    #[test]
+    fn the_same_seed_replays_the_same_dial_moves() {
+        fn run(seed: u64) -> Mine {
+            let mut rng = Rng::from_seed(seed);
+            let mut mine = built(MineKind::Amethyst, 4, 0, &mut rng);
+            mine.richness_level = MAX_RICHNESS_LEVEL;
+            assert!(mine.take(0, 0).is_some());
+            for setting in [5, 2, MAX_RICHNESS_LEVEL] {
+                assert_eq!(mine.set_richness_setting(setting, &mut rng), Ok(()));
+            }
+            mine
+        }
+
+        assert_eq!(run(7), run(7), "same seed must replay identically");
+        assert_ne!(run(7), run(8), "different seeds must differ");
     }
 
     /// The refill is the *only* thing that puts broken blocks back, and the mine
