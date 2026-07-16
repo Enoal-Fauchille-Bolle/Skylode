@@ -212,6 +212,8 @@ pub(crate) const ALL_MINES: &[MineKind] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enchant::Enchants;
+    use crate::pickaxe::Pickaxe;
 
     #[test]
     fn all_mines_covers_every_variant() {
@@ -259,6 +261,33 @@ mod tests {
                 mine.gating_tier(),
                 mine.common_block().min_pickaxe_tier(),
                 "{mine:?}: derived gating tier disagrees with its cells"
+            );
+        }
+    }
+
+    /// The same licence as [`common_and_value_share_a_gating_tier`], restated in
+    /// terms of the gate that will actually be applied — and it is what buys
+    /// [`Mine::dig`](crate::mine::Mine) the right not to re-ask the question per
+    /// swing. The mine-level gate (phase 7) will admit a player on
+    /// [`gating_tier`](MineKind::gating_tier) alone; this pins that the pickaxe it
+    /// admits can then break *everything* the grid can draw. Without it, "no
+    /// standing cell is unmineable" would be a claim about a table rather than a
+    /// tested fact, and a future mine mixing tiers would strand a player on a cell
+    /// that never falls.
+    ///
+    /// Goes through [`Pickaxe::can_mine`] rather than comparing tiers, so it fails
+    /// if the gate itself is the thing that broke.
+    #[test]
+    fn no_mine_holds_a_cell_its_gating_tier_cannot_break() {
+        for &mine in ALL_MINES {
+            let pickaxe = Pickaxe::new(mine.gating_tier(), Enchants::new());
+            assert!(
+                pickaxe.can_mine(mine.common_block()),
+                "{mine:?}: the tier that opens it cannot break its common cell"
+            );
+            assert!(
+                pickaxe.can_mine(mine.value_block()),
+                "{mine:?}: the tier that opens it cannot break its value cell"
             );
         }
     }

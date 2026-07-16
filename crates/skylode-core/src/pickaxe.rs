@@ -3,10 +3,11 @@
 //! A [`Pickaxe`] is defined by its [`PickaxeTier`] (the base material) and its
 //! [`Enchants`]. Together they determine the
 //! [`mining_power`](Pickaxe::mining_power) applied against block
-//! [`hardness`](crate::block::Block::hardness) each tick, and which blocks the
-//! player is allowed to mine at all (see
-//! [`Block::min_pickaxe_tier`](crate::block::Block::min_pickaxe_tier)).
+//! [`hardness`](crate::block::Block::hardness) each tick, and — through the tier
+//! alone — which blocks the player is allowed to mine at all (see
+//! [`can_mine`](Pickaxe::can_mine)).
 
+use crate::block::Block;
 use crate::enchant::{EnchantType, Enchants};
 use crate::error::CoreError;
 use crate::tunables::HASTE_PER_LEVEL;
@@ -57,6 +58,43 @@ impl Pickaxe {
     /// Returns the tier of the pickaxe.
     pub fn get_tier(&self) -> PickaxeTier {
         self.tier
+    }
+
+    /// Whether this pickaxe is allowed to break `block` at all: its tier must
+    /// reach the block's [`min_pickaxe_tier`](Block::min_pickaxe_tier).
+    ///
+    /// **The comparison is `>=`, and the boundary is the rule, not an edge case.**
+    /// A block's required tier is the one that *opens* it, not the one that is
+    /// still too weak for it: a Stone pickaxe exists to earn the Iron that asks for
+    /// Stone. A `>` would lock every block to the tier above its own and leave each
+    /// rung of the ladder unable to mine the material it is named for.
+    ///
+    /// **Reads the tier and nothing else.** Efficiency and Haste buy *speed*; they
+    /// never buy *permission*, however far they are pushed — which is what keeps
+    /// tier a progression axis rather than a number the other levers can drown out.
+    /// This is one half of the two-axis gate: tier opens mines, mining level opens
+    /// worlds (phase 6), and neither alone advances the player.
+    ///
+    /// **A refusal is total, never a slowdown.** Minecraft lets the wrong tool chip
+    /// away regardless, swapping its 30 divisor for 100; Skylode has no second
+    /// regime, which is why [`TICKS_PER_HARDNESS`](crate::mine) is the mine's only
+    /// conversion constant. This predicate is the other side of that decision: below
+    /// the tier the answer is no, not "slowly". See `docs/DECISIONS.md`.
+    ///
+    /// `pub`, and it needs no gatekeeping: a predicate changes nothing, so unlike
+    /// [`upgrade`](Pickaxe::upgrade) there is no free transaction to protect. A
+    /// front-end is owed this one — it is what greys out a mine the player cannot
+    /// open yet.
+    ///
+    /// Nothing enforces it yet. The gate that bites is the *mine's*, and it lands
+    /// with the phase-7 mine selection as
+    /// `pickaxe.can_mine(kind.common_block())` — one cell answers for both, because
+    /// a mine's two cells always share a tier (see
+    /// [`MineKind::gating_tier`](crate::mine_kind::MineKind::gating_tier)). Inside a
+    /// mine the player was let into, no standing cell can fail this, which is why
+    /// [`dig`](crate::mine::Mine) does not re-ask the question per swing.
+    pub fn can_mine(&self, block: Block) -> bool {
+        self.tier >= block.min_pickaxe_tier()
     }
 
     /// The multiplier the permanent [`Haste`](EnchantType::Haste) enchant applies
@@ -474,7 +512,8 @@ mod tests {
         }
     }
 
-    /// `min_pickaxe_tier` gating relies on `Ord` following declaration order.
+    /// [`can_mine`](Pickaxe::can_mine) is a single `>=` on this `Ord`, so the whole
+    /// gate rests on it following declaration order.
     #[test]
     fn tiers_compare_in_progression_order() {
         for pair in ALL_TIERS.windows(2) {
@@ -485,6 +524,29 @@ mod tests {
                 pair[1]
             );
         }
+    }
+
+    /// The boundary *is* the rule: a block's required tier is the one that opens
+    /// it. `>` instead of `>=` type-checks, passes any test that only looks at
+    /// tiers far apart, and quietly locks every block to the rung above its own —
+    /// so the Stone pickaxe could never mine the Iron it exists to earn, and the
+    /// ladder would have no first step.
+    ///
+    /// Both sides are asserted, because either alone is satisfiable by a constant:
+    /// a `can_mine` that always says yes passes the first, always-no passes the
+    /// second.
+    #[test]
+    fn the_gate_admits_a_block_at_exactly_its_own_tier() {
+        assert_eq!(Block::IronOre.min_pickaxe_tier(), PickaxeTier::Stone);
+
+        assert!(
+            enchanted(PickaxeTier::Stone, 0, 0).can_mine(Block::IronOre),
+            "a Stone pickaxe must mine the Iron that asks for exactly Stone"
+        );
+        assert!(
+            !enchanted(PickaxeTier::Wooden, 0, 0).can_mine(Block::IronOre),
+            "a Wooden pickaxe must not reach Iron"
+        );
     }
 
     /// Phase 1 of the upgrade curve: spend upgrades on Efficiency while the cap
