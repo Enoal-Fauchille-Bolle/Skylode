@@ -3,9 +3,14 @@
 //! A [`Pickaxe`] is defined by its [`PickaxeTier`] (the base material) and its
 //! [`Enchants`]. Together they determine the
 //! [`mining_power`](Pickaxe::mining_power) applied against block
-//! [`hardness`](crate::block::Block::hardness) each tick, and — through the tier
-//! alone — which blocks the player is allowed to mine at all (see
-//! [`can_mine`](Pickaxe::can_mine)).
+//! [`hardness`](crate::block::Block::hardness) each tick, how much the block that
+//! falls is worth ([`fortune_multiplier`](Pickaxe::fortune_multiplier)), and —
+//! through the tier alone — which blocks the player is allowed to mine at all
+//! (see [`can_mine`](Pickaxe::can_mine)).
+//!
+//! Speed, yield, permission: the three are deliberately separate answers. Nothing
+//! here composes them into a swing — that is the phase-7 tick's job, which is why
+//! each is handed out as its own primitive.
 
 use crate::block::Block;
 use crate::enchant::{EnchantType, Enchants};
@@ -95,6 +100,46 @@ impl Pickaxe {
     /// [`dig`](crate::mine::Mine) does not re-ask the question per swing.
     pub fn can_mine(&self, block: Block) -> bool {
         self.tier >= block.min_pickaxe_tier()
+    }
+
+    /// What one broken block is worth in loot: the count in
+    /// [`Block::drops`](Block::drops) times `1 + level` of
+    /// [`Fortune`](EnchantType::Fortune), so an un-fortuned pickaxe multiplies by
+    /// exactly 1 and takes what the block contained.
+    ///
+    /// **The `1 +` is the whole deliverable, and it is not a rounding detail.**
+    /// `docs/MECHANICS.md` says a block "yields its drop times Fortune"; read
+    /// literally, level 0 multiplies the loot by *zero* and the game has no drops
+    /// at all. The identity at level 0 is what leaves `Block::drops` true for a
+    /// player who never enchanted — the same load-bearing role
+    /// [`haste_multiplier`](Pickaxe::haste_multiplier)'s `1.0` plays for the
+    /// hardness table.
+    ///
+    /// **A `u32`, where the speed levers are `f32`.** Loot is a count of items, so
+    /// an exact multiplier is what keeps "what do I round, and which way?" from
+    /// ever becoming a question. The cap of 10 makes the largest product `9 * 11`,
+    /// which is why no overflow check is needed here rather than merely absent.
+    ///
+    /// **It reads the block's material through no argument at all**, and that is
+    /// the design: Fortune applies to every cell equally. Minecraft exempts
+    /// anything that drops itself — every dense block, Obsidian, Ancient Debris —
+    /// which would leave the enchant inert across the whole endgame and make mine
+    /// richness *shrink* Fortune's reach instead of scaling it. `docs/DECISIONS.md`
+    /// settles the other way on both counts, so the fidelity this crate keeps 1:1
+    /// for hardness stops here.
+    ///
+    /// **Loot only, never XP.** Experience is granted per item the block
+    /// *contained* — `Block::drops`, before this multiplier ever runs. If Fortune
+    /// paid both, one purchase would advance the pickaxe axis and the level axis at
+    /// once, and the two-axis gate the whole progression rests on would collapse to
+    /// one. See `docs/DECISIONS.md`.
+    ///
+    /// Nothing multiplies anything yet: the phase-7 tick is what puts this beside a
+    /// broken block, as `inventory.add(item, n * pickaxe.fortune_multiplier())`.
+    /// `pub` and ungated — a pure function guards neither freeness nor cadence, and
+    /// a front-end needs it to quote the yield of an upgrade before it is bought.
+    pub fn fortune_multiplier(&self) -> u32 {
+        1 + u32::from(self.enchants.get_level(EnchantType::Fortune))
     }
 
     /// The multiplier the permanent [`Haste`](EnchantType::Haste) enchant applies
@@ -276,6 +321,26 @@ mod tests {
             assert!(enchants.upgrade(EnchantType::Haste, None).is_ok());
         }
         Pickaxe::new(tier, enchants)
+    }
+
+    /// A pickaxe carrying `level` of Fortune and nothing else.
+    ///
+    /// Goes through `Enchants::upgrade` for the reason [`enchanted`] does — a level
+    /// no shop would sell measures a pickaxe no player can hold — and passes `None`
+    /// because Fortune is tier-independent (see `TIER_INDEPENDENT` in `enchant`).
+    ///
+    /// Deliberately *not* a fourth parameter on [`enchanted`]: that would make every
+    /// existing call site carry a `, 0` for an enchant it does not test, and turn a
+    /// readable helper into four positional integers. The tier is Wooden and
+    /// arbitrary — [`Pickaxe::fortune_multiplier`] takes no tier and no block, so
+    /// varying either would assert the absence of a term the signature cannot even
+    /// express.
+    fn fortuned(level: u8) -> Pickaxe {
+        let mut enchants = Enchants::new();
+        for _ in 0..level {
+            assert!(enchants.upgrade(EnchantType::Fortune, None).is_ok());
+        }
+        Pickaxe::new(PickaxeTier::Wooden, enchants)
     }
 
     /// Drives a fresh pickaxe all the way to Netherite with no Efficiency.
@@ -547,6 +612,37 @@ mod tests {
             !enchanted(PickaxeTier::Wooden, 0, 0).can_mine(Block::IronOre),
             "a Wooden pickaxe must not reach Iron"
         );
+    }
+
+    /// Fortune 0 multiplies by exactly 1: a player who never enchanted walks away
+    /// with what the block contained, and `Block::drops` is the whole answer.
+    ///
+    /// The identity is the entire reason the formula reads `1 + level`. `level`
+    /// alone type-checks just as well, and hands every unenchanted block in the game
+    /// a drop of zero — the game's opening minute, wiped by an off-by-one.
+    #[test]
+    fn an_unfortuned_pickaxe_multiplies_its_loot_by_exactly_one() {
+        assert_eq!(Pickaxe::default().fortune_multiplier(), 1);
+        assert_eq!(fortuned(0).fortune_multiplier(), 1);
+    }
+
+    /// At its cap Fortune is worth **eleven** times the block, not ten: the last
+    /// level bought is `1 + 10`.
+    ///
+    /// The cap is read from `max_level` to *build* the pickaxe but the expectation
+    /// is the literal 11, on purpose. Computing `cap + 1` here would restate the
+    /// implementation and assert `1 + level == level + 1` — true by construction,
+    /// the trap `the_gate_admits_a_block_at_exactly_its_own_tier` avoids by naming
+    /// its tiers. Reading the cap still means phase 4's per-world caps re-ask the
+    /// question here instead of drifting past it: move the cap and this fails, which
+    /// is the point.
+    ///
+    /// With the level-0 identity above, two points pin the affine map exactly — a
+    /// third level would measure nothing a line does not already say.
+    #[test]
+    fn fortune_at_its_cap_is_worth_eleven_times_the_block() {
+        let cap = EnchantType::Fortune.max_level(None);
+        assert_eq!(fortuned(cap).fortune_multiplier(), 11);
     }
 
     /// Phase 1 of the upgrade curve: spend upgrades on Efficiency while the cap

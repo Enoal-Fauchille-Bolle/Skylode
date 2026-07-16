@@ -428,7 +428,8 @@ impl Mine {
     /// tick however far past the threshold the player climbs. That saturation is
     /// what the endgame's other levers exist to answer.
     ///
-    /// Returns the [`Block`], not a drop, because Fortune, Excavator and XP are
+    /// Returns the [`Block`], not a drop, because
+    /// [Fortune](crate::pickaxe::Pickaxe::fortune_multiplier), Excavator and XP are
     /// the caller's to apply: the mine's business is which block stood there, and
     /// [`Block::drops`] is the block's own table, not the outcome of a swing.
     ///

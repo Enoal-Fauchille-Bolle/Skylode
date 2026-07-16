@@ -65,8 +65,8 @@ unenchanted Wooden pickaxe is worth 2, not 3.
 
 `mining_power` is a floating-point value so multiplicative haste can be
 fractional. Each tick, `break_progress += mining_power`. When
-`break_progress >= hardness * 30`, the block breaks, yields its drop times Fortune,
-and `break_progress` resets to 0. Efficiency (additive) and Haste (multiplicative)
+`break_progress >= hardness * 30`, the block breaks, yields its drop times the
+[Fortune multiplier](#fortune), and `break_progress` resets to 0. Efficiency (additive) and Haste (multiplicative)
 act on different math layers, so they stack without conflict.
 
 The **30** is Minecraft's, and it is the conversion between two scales that are not
@@ -112,10 +112,26 @@ staging this table is meant to have. The exact rungs are phase-10 balance.
 
 ### Fortune
 
-Fortune multiplies the drop count per broken block. It is capped at **10**: past
+Fortune multiplies the drop count per broken block by **`1 + level`**: an
+un-fortuned pickaxe multiplies by 1 and takes exactly what the block contained, and
+Fortune 10 is worth eleven times the block, not ten. It is capped at **10**: past
 that point ore is abundant enough that more Fortune adds nothing, so the player
 moves to other levers. Fortune multiplies the **loot** and only the loot — see XP,
 below.
+
+The multiplier is **exact and drawn from nothing**. Minecraft rolls Fortune at
+random, per block; in an idle game a draw that fires on every break is averaged flat
+by the thousandth block, so the player never sees the variance — only the mean —
+while the roll costs a PRNG draw per swing and, with it, reproducibility. The place
+randomness earns its keep is a *rare, legible* event, which is exactly what the
+Excavator proc is. Fortune is the steady lever and states its own number.
+
+It also applies to **every block equally**, including the dense forms and the
+Obsidian and Ancient Debris of the endgame. Minecraft exempts anything that drops
+itself, which would leave Fortune inert precisely where
+[post-instamine progression](#post-instamine-progression) needs it, and would make
+[richness](#mine-richness) shrink Fortune's reach rather than scale it. The 1:1
+fidelity to Minecraft is kept for hardness only — see [DECISIONS.md](DECISIONS.md).
 
 ### XP
 

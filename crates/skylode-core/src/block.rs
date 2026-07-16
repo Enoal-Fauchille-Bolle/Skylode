@@ -197,12 +197,23 @@ impl Block {
         }
     }
 
-    /// Amount of raw material dropped, before Fortune. Dense forms yield
+    /// Amount of raw material dropped, before
+    /// [Fortune](crate::pickaxe::Pickaxe::fortune_multiplier). Dense forms yield
     /// [`RAW_PER_DENSE_BLOCK`]; everything else yields 1.
     ///
     /// Private: it is half an answer. [`drops`](Block::drops) is the whole one,
     /// and pairing the count with the item is what keeps a caller from asking for
     /// the amount and forgetting to ask what it is an amount *of*.
+    ///
+    /// **Flat across materials, unlike Minecraft**, where Lapis drops 4–9 and
+    /// Redstone 4–5. A per-ore count would duplicate the phase-5 cost curve rather
+    /// than add to it: prices are quoted in each mine's *own* material, so dropping
+    /// four times as much Lapis and charging four times as much for it is the same
+    /// game with longer numbers. What distinguishes an ore here is what it buys —
+    /// Redstone speed, Emerald Fortune, Lapis enchants — and the ore/dense split
+    /// below, which mine richness turns into a dial. Should phase-10 balance want the
+    /// variance back, it is a `match` arm here and nothing else: no caller reads a
+    /// count it did not get from [`drops`](Block::drops).
     fn drop_amount(self) -> u32 {
         match self {
             Self::Cobblestone
@@ -218,7 +229,7 @@ impl Block {
         }
     }
 
-    /// What this block *contains*, before Fortune: an item, and how many of it.
+    /// What this block *contains*, before [Fortune]: an item, and how many of it.
     ///
     /// Always an [`Item::Raw`], and that is the point of stating it as an `Item`
     /// at all: nothing in the ground is worth a hundred. A Compressed unit is
@@ -230,7 +241,14 @@ impl Block {
     /// rock being swung at — it belongs to the mining loop, which starts here and
     /// then applies the enchants.
     ///
+    /// "Contains" is also the word phase 6 grants XP by, and the reason this stays
+    /// the pre-Fortune number: experience is paid on what the rock held, loot on
+    /// what the pickaxe pulled out. [Fortune] multiplies the second and never the
+    /// first, which is what keeps the level axis and the pickaxe axis from becoming
+    /// one axis bought twice.
+    ///
     /// [`Excavator`]: crate::enchant::EnchantType::Excavator
+    /// [Fortune]: crate::pickaxe::Pickaxe::fortune_multiplier
     pub fn drops(self) -> (Item, u32) {
         (Item::Raw(self.material()), self.drop_amount())
     }
