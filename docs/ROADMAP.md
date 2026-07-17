@@ -27,7 +27,11 @@ core is built in, see [PHASES.md](PHASES.md).
 - Prestige (Amethyst cost, deep reset, permanent global multiplier).
 - Save system: JSON, 10-second autosave, atomic write, versioning, HMAC
   integrity, `.bak` recovery, clock handling.
-- Five screens (Mine, Mines, Inventory, Upgrades, Stats).
+- Fifteen states, not five screens: the five above (Mine, Mines, Inventory,
+  Upgrades, Stats) plus nine that were specified elsewhere and listed nowhere —
+  main menu, terminal-too-small, save recovery, offline summary, level-up loot,
+  compression dialog, prestige preview, prestige confirm, Settings — plus a
+  cross-cutting toast component for the announcements no screen owned.
 
 ## Post-MVP (parked)
 
@@ -51,13 +55,15 @@ core is built in, see [PHASES.md](PHASES.md).
 - **Starting state:** confirm Wooden pickaxe mining Stone as the opening.
 - **End signature ore naming:** Amethyst carries the End's rich-ore role; confirm
   whether it needs a distinct name.
-- **Upgrade naming convention:** mirror PikaNetwork (enchant, level, material) or
-  use our own.
+- ~~**Upgrade naming convention**~~ — **settled**: mirror PikaNetwork, with Roman
+  numerals ("Diamond Pickaxe Efficiency XV"). See [DECISIONS.md](DECISIONS.md).
 - **Tunables (decided at implementation time):** XP curve and world-unlock levels
   (15, 30), offline cap (7 days), dip magnitude, cost-curve constants, compression
   ratio (100), autosave interval (10 seconds), enchant level caps per dimension,
   enchant proc rates and cooldowns, mine-size upgrade costs, prestige multiplier
-  scale, batch-reset threshold (0), and for richness: the number of levels, the
+  scale, batch-reset threshold (0), `HOLD_WINDOW` (1100 ms — revisit only if
+  playtest finds the stop latency perceptible) and the accessibility toggle's
+  inactivity cutoff (15 s), and for richness: the number of levels, the
   weight curve `value_weight(level)` — with **no cap**, since
   [DECISIONS.md](DECISIONS.md) reversed the strict-sub-100% bound it once
   called an invariant (the free dial is the anti-brick, the geometric cost

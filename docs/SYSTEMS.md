@@ -35,9 +35,39 @@ game-state struct. The fields, derived from the mechanics:
 - `selected_mine`: the world and mine currently targeted.
 - `prestige`: prestige rank and the derived permanent multiplier.
 - `boosts`: active temporary boosts and their remaining timers.
+- `config`: the player's *preferences* — colour palette (256 or the 16-colour
+  fallback), ASCII-only glyphs, mining input mode, number format. **Not** game
+  state, but it lives here anyway: see below.
 
 The exact field names and shapes are settled during implementation; this is the
 information the save must carry.
+
+### Config in the save
+
+There is deliberately **no separate config file**. One file, one path, no XDG
+handling. Prestige does not touch the file — only the player deleting it does — so
+preferences survive a run. Two costs are accepted knowingly: deleting the save
+loses the preferences, and adding a config field bumps `version` and needs a
+migration like any other schema change.
+
+The consequence that matters is about the [HMAC](#integrity-hmac), which covers the
+whole file, config included. **No hand-editing is tolerated, and Settings is the
+only path to change a preference.** That is only tenable under one rule:
+
+> The Settings screen exposes **every config field, and no game-state field**.
+
+Both halves are load-bearing. Exposing every config field means nobody ever needs
+to open the file to change a colour, so the tamper warning never fires on a
+cosmetic edit — the HMAC's false positive goes to zero. Exposing no game-state
+field means a player editing their Amethyst count still has to touch the file, and
+still trips it — the HMAC's true positive is untouched.
+
+It also forces a bootstrap rule. Config is inside a save that may be **missing**
+(fresh install) or **untrusted** (HMAC mismatch), so the screens that run before
+the save is validated — main menu, "terminal too small", and the recovery screen
+below — **render with hardcoded defaults**. Reading preferences out of a save you
+have just decided not to trust is a contradiction, and the recovery screen is the
+first thing some players ever see.
 
 ### Save cadence
 
@@ -114,6 +144,62 @@ one is work no player waits for and no test needs. Credit it in closed form on
 launch, from the capped elapsed time (see
 [offline accrual](MECHANICS.md#offline-accrual)). The tick loop drives the
 *interactive* session only.
+
+### Keyboard input
+
+`tick(input)` takes a `space_held: bool`. Producing that bool is the TUI's job, and
+it is harder than it looks, because **a terminal sends nothing when a key is
+released**. The legacy encoding is "one key = its character", inherited from
+teletypes where a key *was* a character and a character has no duration. The
+release is not lost in transit: it is never encoded. A tty only knows "data stream
+in, data stream out". So *hold Space* — the interaction
+[DECISIONS.md](DECISIONS.md) settles on — is not expressible by default.
+
+Two layers, and the second is the one that runs on most machines:
+
+**Layer 1 — exact.** Call `crossterm::terminal::supports_keyboard_enhancement()`
+at startup (note: in `terminal`, not `event`; it round-trips a query to the
+terminal, so it must run before the event loop). If supported, push the kitty
+keyboard protocol flags and read real `Press` / `Release`; pop them on exit. The
+flags must be **both**:
+
+```rust
+KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+```
+
+`REPORT_EVENT_TYPES` alone is silently useless here. The protocol sends
+text-producing keys as raw UTF-8, and Space produces text — so it arrives as `0x20`
+with no event-type field at all. The second flag is what forces Space through the
+`CSI 32 ; 1 : 3 u` path where a release can exist. Windows needs neither: crossterm
+reads the Console API there, which carries a key-down flag natively.
+
+**Layer 2 — the window.** Everywhere else, including every VTE terminal (Ptyxis,
+gnome-terminal, Console, Tilix), only OS auto-repeat is observable, and an
+auto-repeated `0x20` is byte-identical to a fresh press:
+
+```text
+space_held = (now - last_space_event) < HOLD_WINDOW    // HOLD_WINDOW = 1100 ms
+```
+
+That is the whole mechanism: one subtraction, one comparison. No measurement, no
+calibration, no persisted state — see [DECISIONS.md](DECISIONS.md) for why each of
+those was tried and rejected. The 1100 is not a preference: the window must exceed
+the largest initial auto-repeat delay a user setting can produce (Windows caps at
+1000 ms), or mining cuts out during the gap and resumes, hitching on every hold.
+Since the initial delay and the repeat interval differ, no single timeout avoids
+both false positives and false negatives, so the design picks: up to 1.1 s of
+over-mining after release, which is invisible against a 7-day offline cap.
+
+The accessibility toggle is the same mechanism with two constants — a 15 000 ms
+window extended by any key, plus Space cutting it explicitly.
+
+**This does not weaken the core's determinism.** The contract is `tick(input)`: the
+core is *given* `space_held`, it never infers it, so "same inputs, same outputs"
+holds. What is not reproducible is the *session* — the same physical gesture can
+produce different tick sequences on two machines. That is already true of any human
+input, and is called out here only because determinism is load-bearing elsewhere in
+this document.
 
 ### Core modules
 
