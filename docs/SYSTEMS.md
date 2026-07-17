@@ -206,11 +206,16 @@ this document.
 The core is split by concern, each unit testable in isolation:
 
 - `worlds`, `materials`: the static data (which ores, their world, hardness, and
-  minimum pickaxe tier).
-- `pickaxes`: tiers, Efficiency, Fortune, enchant levels, and `mining_power`.
+  minimum pickaxe tier), plus the **per-dimension enchant ceiling** the five special
+  enchants share (`World::enchant_cap`) — one number per world, and a rule of the
+  world rather than of any enchant.
+- `pickaxes`: tiers, Efficiency, Fortune, enchant levels, and `mining_power`. Owns
+  **Efficiency's** ceiling (`PickaxeTier::efficiency_cap`), the one keyed by the tier.
 - `mines`: the grid model, mixed content, break progress, batch reset, and size.
 - `progression`: mining XP and level, world unlocks, and the two-axis gating.
-- `enchants`: the five enchants, their per-dimension caps, and their effects.
+- `enchants`: the five enchants and their effects, plus `max_level` — the dispatch
+  that picks whichever ceiling applies. It holds no cap of its own but Fortune's,
+  the only one keyed by neither tier nor world.
 - `economy`: costs (composite compressed plus raw), the compression denomination,
   and boosts.
 - `prestige`: the reset and the permanent multiplier.

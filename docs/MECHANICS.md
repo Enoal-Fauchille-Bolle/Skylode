@@ -95,10 +95,14 @@ drop (see [mine richness](#mine-richness)).
 
 ### Instamine
 
-When `mining_power >= hardness * 30`, a block breaks in a single tick. This is
-reached in the endgame with Netherite Efficiency at its cap plus the Haste enchant.
-Past instamine, single-target speed saturates at one block per tick, so the endgame
-levers shift (see [post-instamine progression](#post-instamine-progression)).
+When `mining_power >= hardness * 30`, a block breaks in a single tick. This is not a
+single moment the endgame arrives at: **each block crosses its own threshold**, and
+the hardness table spreads those thresholds from 12 (Netherrack) to 1500 (Obsidian).
+Netherite at Efficiency 15 already one-shots the Overworld's ores and dense blocks;
+the hardest two stay out of reach even with Haste at its cap, and only the temporary
+Redstone boost closes that last gap (see below). Past instamine, single-target speed
+saturates at one block per tick, so the endgame levers shift (see
+[post-instamine progression](#post-instamine-progression)).
 
 Instamine is **not a special case in the code**: a power at or above the threshold
 simply satisfies the same check on its first tick. The saturation is what the
@@ -107,8 +111,14 @@ into the next block, so no amount of power clears more than one cell per tick.
 
 Netherite at Efficiency 15 is worth 235, which instamines the Overworld ores (90)
 and the dense blocks (150) but not Ancient Debris (900) or Obsidian (1500): those
-are what the Haste enchant and the Redstone boost are for, which is precisely the
-staging this table is meant to have. The exact rungs are phase-10 balance.
+are what the Haste enchant and the Redstone boost are for — **the two together, not
+one each**. Even Haste at its highest cap tops the pickaxe out at 705, so the last
+two blocks stay out of reach of permanent upgrades *entirely*, and only the
+temporary boost closes the gap. That is the staging this table is meant to have: a
+ceiling the player cannot buy their way past, which is what leaves the boost a job
+and the endgame a lever. The exact rungs are phase-10 balance, but that ordering is
+not one of them — `mine`'s
+`a_hasted_netherite_instamines_the_dense_blocks_but_not_the_obsidian` pins it.
 
 ### Fortune
 
@@ -406,15 +416,30 @@ Five special enchants change *how* you mine, not just the numbers. They are
 acquired by levels, and the enchant material differs per world, which caps the
 enchant level available in each dimension:
 
-- **Overworld enchants use Lapis** (lowest level cap).
-- **Nether enchants use Quartz** (higher cap).
-- **End enchants use Amethyst** (maximum cap).
+- **Overworld enchants use Lapis** (lowest level cap: **3**).
+- **Nether enchants use Quartz** (higher cap: **6**).
+- **End enchants use Amethyst** (maximum cap: **10**).
 
 All five enchants are available as soon as you can enchant (Overworld, once Lapis
 is reachable); progressing to a new world only raises the **level cap**. Every
 enchant upgrade costs the world's enchant material **plus a mix of raw ores from
 the earlier mines**, which keeps old mines useful as permanent enchant fuel long
 after their tier is passed.
+
+The cap is **one number per world, shared by all five** — not a cap per
+`(enchant, world)` pair. It is the *gate*: how much the player may invest. What
+the investment buys is the enchant's own effect scaling, below. Keeping the two
+apart is what lets every world hand out the same budget while the five enchants
+stay wildly different; an effect that grows too fast by level 10 is a fault in its
+own curve, and capping that one enchant lower would fix a curve with the wrong
+tool and leave the player an asymmetry to explain. In the code the cap is
+therefore `World::enchant_cap`, a rule of the world, not of any enchant.
+
+Efficiency and Fortune sit outside this: Efficiency is capped by the **pickaxe
+tier** (5, or 15 at Netherite) and Fortune at a flat **10**. The three groups —
+keyed by tier, by world, by nothing — are what keep the two progression axes
+independent. If a world also raised Efficiency's ceiling, one investment would
+advance both axes and the two-axis gate would collapse into one.
 
 Spatial enchants (each radiates from the impact cell; higher level means bigger
 effect):
@@ -438,10 +463,22 @@ and gambling feel, rejected). See [DECISIONS.md](DECISIONS.md).
 
 ### Enchant parameters (to tune at implementation)
 
-Each enchant needs, as named tunables: cost per level, the per-world level cap,
-the effect scaling per level (blob radius, row band `k`, Haste factor, Excavator
-proc rate), and for Nuke the cooldown curve. Values are set and balanced during
-implementation, not fixed here.
+Each enchant needs, as named tunables: cost per level, the effect scaling per level
+(blob radius, row band `k`, Haste factor, Excavator proc rate), and for Nuke the
+cooldown curve. Values are set and balanced during implementation, not fixed here.
+
+The per-world level cap is **no longer one of them**: it is set (3 / 6 / 10, above)
+and shared by all five, so there is one ceiling per world rather than one per
+enchant. The numbers themselves stay provisional until balance, but their *order*
+is not — a world that raised no ceiling would leave its enchant material buying
+nothing.
+
+The **Haste factor is bounded above as well as below**, and the ceiling is the
+easier one to cross by accident. Permanent upgrades alone must stay short of Ancient
+Debris: `235 × (1 + 0.2 × 10) = 705`, under its instamine threshold of 900. Push the
+factor to 0.3 and the maxed pickaxe reaches 940, takes Ancient Debris for good, and
+leaves the Redstone boost with no work left to do — which is its whole reason to
+exist. See [Instamine](#instamine).
 
 ## Compression
 

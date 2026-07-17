@@ -98,8 +98,10 @@ but nothing calls. Apply Fortune to drops, capped at 10
 ## Phase 4 - Enchant effects
 
 Give the five enchants their effects, most of them geometry over the phase-2 grid.
-Make enchant level caps per-world (Lapis < Quartz < Amethyst), replacing the
-placeholder `max_level`. Implement the spatial enchants — Explosive (a blob around
+Enchant level caps are per-world (Lapis < Quartz < Amethyst) — **done**: one shared
+ceiling per world rather than one per enchant, because the cap gates how much may be
+invested and each enchant's own scaling decides what that buys. Implement the
+spatial enchants — Explosive (a blob around
 the impact), Jackhammer (a row, then a band at high levels), Nuke (the whole mine on
 a shortening cooldown) — and Excavator, an RNG proc that drops a Compressed unit or
 an Emerald instead of raw ore (see [MECHANICS.md](MECHANICS.md#enchants)).

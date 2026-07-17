@@ -57,9 +57,14 @@ core is built in, see [PHASES.md](PHASES.md).
   whether it needs a distinct name.
 - ~~**Upgrade naming convention**~~ — **settled**: mirror PikaNetwork, with Roman
   numerals ("Diamond Pickaxe Efficiency XV"). See [DECISIONS.md](DECISIONS.md).
+- ~~**Enchant level caps per dimension**~~ — **settled**: one ceiling per world
+  shared by all five special enchants (3 / 6 / 10), not one per enchant. The cap
+  gates how much may be invested; each enchant's own scaling decides what that buys.
+  Lives in `World::enchant_cap`. The values stay open to balance, but their *order*
+  does not. See [DECISIONS.md](DECISIONS.md).
 - **Tunables (decided at implementation time):** XP curve and world-unlock levels
   (15, 30), offline cap (7 days), dip magnitude, cost-curve constants, compression
-  ratio (100), autosave interval (10 seconds), enchant level caps per dimension,
+  ratio (100), autosave interval (10 seconds),
   enchant proc rates and cooldowns, mine-size upgrade costs, prestige multiplier
   scale, batch-reset threshold (0), `HOLD_WINDOW` (1100 ms — revisit only if
   playtest finds the stop latency perceptible) and the accessibility toggle's
