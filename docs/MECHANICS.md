@@ -353,8 +353,9 @@ next regeneration if it ever proves to matter.
 
 A progress bar below the grid, in a status strip alongside mining power and the
 active boost, is the stable readout. The targeted cell is highlighted and shows a
-crack glyph (`.:#` progression by break percentage). This is mostly visible early
-or on hard blocks (Obsidian and similar) and becomes irrelevant at instamine.
+crack glyph that erodes by break percentage (`##` → `::` → `..`, then gone). This
+is mostly visible early or on hard blocks (Obsidian and similar) and becomes
+irrelevant at instamine.
 
 ### Input
 
