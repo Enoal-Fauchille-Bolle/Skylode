@@ -58,6 +58,9 @@ core is built in, see [PHASES.md](PHASES.md).
   ratio (100), autosave interval (10 seconds), enchant level caps per dimension,
   enchant proc rates and cooldowns, mine-size upgrade costs, prestige multiplier
   scale, batch-reset threshold (0), and for richness: the number of levels, the
-  weight curve `p(level)`, the weight cap (around 50%, and *strictly* below 100% —
-  that bound is an invariant, not a tunable), and how fast the cost mix shifts from
-  the common material to the rare one.
+  weight curve `value_weight(level)` — with **no cap**, since
+  [DECISIONS.md](DECISIONS.md) reversed the strict-sub-100% bound it once
+  called an invariant (the free dial is the anti-brick, the geometric cost
+  curve is the anti-runaway), leaving only the weaker rule that the two
+  weights are never both zero — and how fast the cost mix shifts from the
+  common material to the rare one.

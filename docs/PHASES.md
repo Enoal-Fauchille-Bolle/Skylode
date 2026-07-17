@@ -73,9 +73,14 @@ at level 0, not a separate feature (see
 read, keeping `block_count` derived and never stored
 ([MECHANICS.md](MECHANICS.md#the-grid-is-the-model)). Add progressive breaking (a
 single `break_progress` accumulating `mining_power` until `hardness`), the instamine
-path, and the batch reset that refills at zero remaining. **Invariant:** the
-valuable weight stays strictly below 100% — at 100% the End mine stops dropping the
-End Stone that pays to grow it and the run bricks. Moving the richness dial re-rolls
+path, and the batch reset that refills at zero remaining. **Invariant:** the two
+cell weights are never *both* zero, so the composition always describes a valid
+distribution — and that is the *only* structural rule the core enforces here. The
+valuable cell's weight per level is an ordinary tunable (`value_weight`) that phase
+10 sets: an earlier version of this design made a strict-sub-100% cap a
+load-bearing invariant, and [DECISIONS.md](DECISIONS.md) reversed it, because both
+of the jobs it did are done elsewhere — the free, reversible dial is the anti-brick,
+and the geometric cost curve is the anti-runaway. Moving the richness dial re-rolls
 the *remaining* cells while leaving broken ones broken: no free action may ever put a
 broken block back.
 
