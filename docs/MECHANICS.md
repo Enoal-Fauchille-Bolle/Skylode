@@ -137,7 +137,8 @@ random, per block; in an idle game a draw that fires on every break is averaged 
 by the thousandth block, so the player never sees the variance — only the mean —
 while the roll costs a PRNG draw per swing and, with it, reproducibility. The place
 randomness earns its keep is a *rare, legible* event, which is exactly what the
-Excavator proc is. Fortune is the steady lever and states its own number.
+Excavator proc and the spatial-enchant bursts are. Fortune is the steady lever and
+states its own number.
 
 It also applies to **every block equally**, including the dense forms and the
 Obsidian and Ancient Debris of the endgame. Minecraft exempts anything that drops
@@ -445,20 +446,42 @@ keyed by tier, by world, by nothing — are what keep the two progression axes
 independent. If a world also raised Efficiency's ceiling, one investment would
 advance both axes and the two-axis gate would collapse into one.
 
-Spatial enchants (each radiates from the impact cell; higher level means bigger
-effect):
+Every **triggered** special enchant — Explosive, Jackhammer, Nuke, Excavator —
+fires on a **random proc**, not on every break: a swing that lands a block rolls
+once per enchant, and a higher level raises that roll's chance. This is the *rare,
+legible burst* [Randomness](#randomness) reserves the PRNG for, the same role the
+Excavator proc already played. The draw is seeded, so it is reproducible, and it
+fires on **active mining only** — the auto-miner is a flat closed-form rate and
+never procs, so the enchants pay out for playing, not for idling. Haste is the
+exception: a passive permanent multiplier, always on, that does not proc.
 
-- **Explosive:** breaks a compact blob or square around the impact.
-- **Jackhammer:** breaks a full row, then a band of `k` rows at high levels.
-- **Nuke:** breaks the whole mine, on a long cooldown (higher level shortens the
-  cooldown).
+Spatial enchants each radiate from the impact cell (the block just broken):
+
+- **Explosive:** breaks a compact **square** (Chebyshev) around the impact. Level
+  raises both the proc chance and the square's radius, in three bands aligned with
+  the world caps — up to **3x3** in the Overworld (cap 3), **5x5** in the Nether
+  (cap 6), **7x7** in the End (cap 10). Capped there so it never approaches Nuke's
+  whole-grid clear.
+- **Jackhammer:** breaks a **full row** — the mine's whole width, so *mine size* is
+  what scales its reach. Level raises only the proc chance; the row is always one
+  cell tall, which is what keeps it distinct from Explosive's square.
+- **Nuke:** breaks the **whole mine**; its geometry never changes with level, only
+  the proc chance does. **No cooldown** — clearing the grid is its own limiter,
+  since a re-proc finds nothing to break until the batch reset refills.
+
+A blast breaks whatever standing cells its shape covers, with **no tier check**: a
+mine can never hold a cell its gating tier cannot break (`MineKind` guarantees it),
+so a blast has no un-mineable cell to catch. The impact cell is already a hole by
+the time the blast runs, and the shape clips itself at holes and edges alike — no
+special case, no bounds check.
 
 Non-spatial enchants (qualitative on another axis):
 
-- **Excavator:** chance to drop `Compressed <ore>` or Emerald directly instead of
-  raw ore.
+- **Excavator:** on a proc, substitutes a `Compressed <ore>` or Emerald for the raw
+  drop. Its proc is the model the three spatials now follow.
 - **Haste:** permanent mining-speed multiplier `x(1 + 0.2 * level)`, multiplicative
-  and distinct from additive Efficiency. This is the endgame instamine lever.
+  and distinct from additive Efficiency. This is the endgame instamine lever, and —
+  as above — the one special that does not proc.
 
 Dropped or merged: Drill (a column dominated by the row), Laser (merged into
 Jackhammer), a true Vein Miner (needs mixed-content mines, and mixed content now
@@ -467,9 +490,11 @@ and gambling feel, rejected). See [DECISIONS.md](DECISIONS.md).
 
 ### Enchant parameters (to tune at implementation)
 
-Each enchant needs, as named tunables: cost per level, the effect scaling per level
-(blob radius, row band `k`, Haste factor, Excavator proc rate), and for Nuke the
-cooldown curve. Values are set and balanced during implementation, not fixed here.
+Each enchant needs, as named tunables: cost per level, its **proc-chance curve**
+per level (Explosive, Jackhammer, Nuke and Excavator each proc, more often as they
+climb), the Explosive **square-radius bands** (3x3 / 5x5 / 7x7), and the Haste
+factor. There is **no Nuke cooldown curve** — Nuke is a proc like the others.
+Values are set and balanced during implementation, not fixed here.
 
 The per-world level cap is **no longer one of them**: it is set (3 / 6 / 10, above)
 and shared by all five, so there is one ceiling per world rather than one per
