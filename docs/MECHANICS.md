@@ -25,10 +25,13 @@ carries progression.
 
 ### Level-up rewards
 
-Each level-up drops a bundle of **ores or Compressed ore** (scaled to the level)
-plus a **temporary boost** (a short Haste window). Level-ups never gate content by
-themselves; only the world thresholds do. The reward keeps early levels
-satisfying and gives a reason to keep the XP bar moving.
+Each level-up that does not open a world drops a bundle of **ores or Compressed
+ore** (scaled to the level) plus a **temporary boost** (a short Redstone boost).
+The two world-unlock levels, 15 and 30, grant that world instead and no loot:
+every level-up gives exactly one thing, loot or a world — never both, never
+nothing. Level-ups never gate content by themselves; only the world thresholds
+do. The reward keeps early levels satisfying and gives a reason to keep the XP bar
+moving.
 
 ## Mining model
 
