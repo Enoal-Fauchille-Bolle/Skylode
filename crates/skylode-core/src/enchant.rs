@@ -18,10 +18,18 @@ use std::collections::HashMap;
 /// The level ceiling of [`Fortune`](EnchantType::Fortune) — the one enchant keyed
 /// by neither the pickaxe tier nor the world.
 ///
-/// Settled by the design rather than left open, which is why it is a constant here
-/// and not in [`tunables`](crate::tunables): past 10 the ore is abundant enough
-/// that further Fortune buys nothing, so the player is meant to move to another
-/// lever. See `docs/MECHANICS.md`.
+/// **Not in [`tunables`](crate::tunables), and the reason is step 1 of that
+/// module's question, not step 2.** Being keyed by nothing, this would land there
+/// on the same grounds as
+/// [`HASTE_PER_LEVEL`](crate::tunables::HASTE_PER_LEVEL) — the obvious guess, and
+/// wrong. What separates them is that Haste's factor is a *dial*, marked provisional
+/// for the balance pass, and 10 is a *design fact*: past it the ore is abundant
+/// enough that further Fortune buys nothing, so the player is meant to move to
+/// another lever. `docs/MECHANICS.md` states it with that reason, and
+/// `docs/ROADMAP.md` does not list it among the numbers left open. Moving it under
+/// a module named *tunables* would not describe it — it would advertise it as
+/// turnable, and re-balancing it would silently delete the point at which Fortune is
+/// supposed to stop being the answer.
 const FORTUNE_CAP: u8 = 10;
 
 /// A single enchantment together with its level.

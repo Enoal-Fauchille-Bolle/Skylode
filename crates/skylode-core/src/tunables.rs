@@ -1,28 +1,58 @@
-//! The game's open balance constants, in one place.
+//! The game's balance dials that are keyed by nothing.
 //!
-//! Every value here is one the design left *open* — marked "decided at
-//! implementation time" in `docs/ROADMAP.md` — as opposed to the numbers that are
-//! already settled and live with the thing they describe: the `MINE_SIZES` table,
-//! `RAW_PER_DENSE_BLOCK`, the pickaxe tier curve. Those stay put. This module is
-//! the home for the ones still in flux, so a later phase consumes a named constant
-//! instead of re-inventing a magic number on the spot.
+//! A number belongs here, or does not, by a two-step question. Both steps are
+//! mechanical on purpose: a module whose boundary has to be *argued* has no
+//! boundary, and this one drifts into a junk drawer the first time someone has to
+//! guess.
 //!
-//! Two rules keep this module from swelling into a junk drawer:
+//! **1. Is it a dial, or a design fact?** A *dial* is a number the balance pass is
+//! invited to turn — marked "decided at implementation time" in `docs/ROADMAP.md`.
+//! A *design fact* is settled, and settled numbers live with the thing they
+//! describe and never come here: `TICKS_PER_HARDNESS` (30) and
+//! [`Block::hardness`](crate::block::Block::hardness) are Minecraft's values kept
+//! 1:1, `RAW_PER_DENSE_BLOCK` (9) and [`FORTUNE_CAP`](crate::enchant) are settled
+//! with their reasons in `docs/MECHANICS.md`. Filing one of those under a module
+//! called *tunables* would not describe it — it would **invite someone to turn it**,
+//! and the name would be the whole of their justification.
 //!
-//! - **Scalars and curve *parameters* only — never a price table.** The economy's
-//!   cost is a curve, `cost(n) = base * growth^n`; what lives here is the two
-//!   parameters, and the [`economy`](crate) module (phase 5) generates every price
-//!   from them. A hundred prices are two numbers, not a hundred constants.
-//! - **Anything keyed by an enum variant stays with its enum.** A value that is
-//!   "one per [`PickaxeTier`](crate::pickaxe::PickaxeTier), per
-//!   [`EnchantType`](crate::enchant::EnchantType), per [`World`](crate::world::World)"
-//!   belongs in a table beside that type, where its variants are in scope — moving
-//!   it here would only invert a dependency and scatter the enum's own truth.
+//! **2. If it is a dial: is it keyed by an enum variant?** A value that is "one per
+//! [`World`](crate::world::World), per [`PickaxeTier`](crate::pickaxe::PickaxeTier),
+//! per [`EnchantType`](crate::enchant::EnchantType)" is a `match` on that enum, in
+//! that enum's module — which is also the only shape that turns a *new* variant into
+//! a compile error rather than a silent default. Re-exporting its cells as constants
+//! here would buy nothing: each would be read exactly once, from the one `match` arm
+//! that a jump between two files now stands in front of. Keyed by nothing, and it
+//! lives here.
 //!
-//! Most of these have no consumer yet: the phases that will read them (5, 6, 7)
-//! are not written. They are `pub` regardless — a `pub` item in a library is never
-//! flagged `dead_code`, so the module can state the game's full tuning surface up
+//! Step 2 means this module is **not** the whole tuning surface, so the dials it
+//! does not hold are named below rather than left to be found. Whatever step 1
+//! rejects is out of scope for balance entirely and is deliberately absent from both
+//! lists.
+//!
+//! ## The dials that live with their enum
+//!
+//! - [`World::enchant_cap`](crate::world::World::enchant_cap) — the five special
+//!   enchants' shared ceiling, per dimension (3 / 6 / 10). Its **order** is load-
+//!   bearing where the values are not; see the method.
+//! - [`PickaxeTier::efficiency_cap`](crate::pickaxe::PickaxeTier::efficiency_cap) —
+//!   Efficiency's ceiling (5, or 15 at Netherite).
+//! - [`PickaxeTier::base_power`](crate::pickaxe::PickaxeTier::base_power) — the tier
+//!   curve. Strictly monotone, and that much is settled.
+//! - `mine::MINE_SIZES` — the mine-size ladder. Keyed by a size level rather than a
+//!   variant, but the same reasoning puts it beside the type that walks it.
+//!
+//! ## Everything else
+//!
+//! Most of the constants below have no consumer yet: the phases that will read them
+//! (5, 6, 7) are not written. They are `pub` regardless — a `pub` item in a library
+//! is never flagged `dead_code`, so this module can state its side of the surface up
 //! front without a litter of `#[expect(dead_code)]`.
+//!
+//! One shape rule survives from step 2, for the keyed-by-nothing half: **curve
+//! *parameters*, never a price table.** The economy's cost is a curve,
+//! `cost(n) = base * growth^n`; what lives here is the two parameters, and the
+//! `economy` module (phase 5) generates every price from them. A hundred prices are
+//! two numbers, not a hundred constants.
 
 use std::time::Duration;
 

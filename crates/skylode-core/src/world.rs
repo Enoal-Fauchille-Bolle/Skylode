@@ -83,10 +83,15 @@ impl World {
     /// an asymmetry the player can see, and cost this method its single-number
     /// shape.
     ///
-    /// Lives here rather than in [`tunables`](crate::tunables) because it is keyed
-    /// by a variant of this enum; see that module's second rule. The three values
-    /// are provisional — phase 10 balances them — but their **order is not**: it
-    /// is what makes Lapis, Quartz and Amethyst a ladder, and it is tested.
+    /// A balance dial, but a dial keyed by a variant, so it lives here and not in
+    /// [`tunables`](crate::tunables) — step 2 of that module's question, which names
+    /// this method in return. The `match` is also what makes a fourth dimension a
+    /// compile error instead of a world that silently caps enchants at zero.
+    ///
+    /// The three values are provisional — phase 10 balances them — but their **order
+    /// is not**: it is what makes Lapis, Quartz and Amethyst a ladder rather than
+    /// three interchangeable materials, and `enchant_caps_grow_strictly_with_the_world`
+    /// is what refuses to let a re-balance flatten it.
     pub fn enchant_cap(self) -> u8 {
         match self {
             Self::Overworld => 3,
