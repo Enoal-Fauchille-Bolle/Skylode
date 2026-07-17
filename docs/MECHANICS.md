@@ -513,8 +513,10 @@ composite numbers read better than one large number like `650 Iron`.
 raw Iron cannot buy `6 Compressed Iron + 50 Iron` — the value is there, the
 denomination is not, and they must compress first. That refusal is deliberate: it
 is what makes compressing a step in the upgrade path rather than a cosmetic
-button. It is also cheap to clear, one free action, so it is a beat and not a
-wall. The UI is expected to tell the two failures apart — "compress first" and "go
+button. Clearing it is one free action, but a *separate, deliberate* one — never
+folded into the purchase — so the refusal keeps its teeth: it rewards the player
+who keeps a denomination ready over the one who mints it at the point of sale.
+The UI is expected to tell the two failures apart — "compress first" and "go
 mine more" are different messages, and only one of them is bad news.
 
 - **Cost curve shape:** costs grow geometrically per step (`cost(n) = base *
