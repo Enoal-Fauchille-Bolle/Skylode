@@ -200,7 +200,8 @@ impl Pickaxe {
     ///
     /// The upgrade curve is two-phase:
     /// 1. While Efficiency is below its tier-dependent cap
-    ///    ([`max_level`](EnchantType::max_level)), each call bumps Efficiency.
+    ///    ([`efficiency_cap`](PickaxeTier::efficiency_cap)), each call bumps
+    ///    Efficiency.
     /// 2. Once Efficiency is maxed, it is reset to 0 and the pickaxe advances to
     ///    the next tier — so the player re-climbs Efficiency on a stronger base.
     ///
@@ -224,11 +225,11 @@ impl Pickaxe {
     pub(crate) fn upgrade(&mut self) -> Result<(), CoreError> {
         let efficiency = EnchantType::Efficiency;
 
-        if self.enchants.get_level(efficiency) < efficiency.max_level(Some(self.tier)) {
-            // The guard is the same one `Enchants::upgrade` re-checks, so this
-            // can only be `Ok` — propagating rather than discarding keeps that a
-            // fact the compiler enforces instead of a comment.
-            self.enchants.upgrade(efficiency, Some(self.tier))?;
+        if self.enchants.get_level(efficiency) < self.tier.efficiency_cap() {
+            // The guard is the same one `Enchants::upgrade_efficiency` re-checks,
+            // so this can only be `Ok` — propagating rather than discarding keeps
+            // that a fact the compiler enforces instead of a comment.
+            self.enchants.upgrade_efficiency(self.tier)?;
         } else if let Some(next_tier) = self.tier.next() {
             self.enchants.reset_level(efficiency);
             self.tier = next_tier;
@@ -264,6 +265,34 @@ impl PickaxeTier {
         }
     }
 
+    /// Returns the level ceiling this tier grants to
+    /// [`Efficiency`](crate::enchant::EnchantType::Efficiency): 5 everywhere, 15
+    /// at [`Netherite`](PickaxeTier::Netherite).
+    ///
+    /// That raised cap is the whole reward for reaching the final tier: past
+    /// Netherite there is no [`next`](PickaxeTier::next) to climb, so the ten
+    /// extra Efficiency levels are what the upgrade path spends itself into.
+    ///
+    /// Efficiency is the one enchant keyed by the **tier**, which is why its
+    /// ceiling lives here and not beside the other caps. The five special
+    /// enchants are keyed by the world instead
+    /// ([`World::enchant_cap`](crate::world::World::enchant_cap)), and Fortune by
+    /// nothing at all. [`EnchantType::max_level`](crate::enchant::EnchantType::max_level)
+    /// is the generic front door that dispatches to whichever of the three
+    /// applies; each of them stays the single source of its own number.
+    ///
+    /// Keeping this one here is what lets [`Pickaxe::upgrade`] ask its question —
+    /// "how far can Efficiency go on *this tier*" — without being handed a
+    /// [`World`](crate::world::World) it would provably never read.
+    ///
+    /// [`Pickaxe::upgrade`]: Pickaxe::upgrade
+    pub fn efficiency_cap(self) -> u8 {
+        match self {
+            PickaxeTier::Netherite => 15,
+            _ => 5,
+        }
+    }
+
     /// Returns the tier one step up the upgrade ladder, or `None` at
     /// [`Netherite`](PickaxeTier::Netherite).
     ///
@@ -288,6 +317,16 @@ impl PickaxeTier {
 mod tests {
     use super::*;
 
+    use crate::world::World;
+
+    /// The world these helpers buy Haste in.
+    ///
+    /// The End, whose [`enchant_cap`](World::enchant_cap) is the game's highest, so
+    /// a test asking for a Haste level is never throttled by a ceiling it is not
+    /// about. Efficiency needs no world here — that is the whole point of
+    /// [`Enchants::upgrade_efficiency`].
+    const HASTE_WORLD: World = World::End;
+
     /// Every tier, weakest first.
     const ALL_TIERS: [PickaxeTier; 6] = [
         PickaxeTier::Wooden,
@@ -311,14 +350,14 @@ mod tests {
     fn enchanted(tier: PickaxeTier, efficiency: u8, haste: u8) -> Pickaxe {
         let mut enchants = Enchants::new();
         for _ in 0..efficiency {
-            assert!(
-                enchants
-                    .upgrade(EnchantType::Efficiency, Some(tier))
-                    .is_ok()
-            );
+            assert!(enchants.upgrade_efficiency(tier).is_ok());
         }
         for _ in 0..haste {
-            assert!(enchants.upgrade(EnchantType::Haste, None).is_ok());
+            assert!(
+                enchants
+                    .upgrade(EnchantType::Haste, tier, HASTE_WORLD)
+                    .is_ok()
+            );
         }
         Pickaxe::new(tier, enchants)
     }
@@ -326,8 +365,10 @@ mod tests {
     /// A pickaxe carrying `level` of Fortune and nothing else.
     ///
     /// Goes through `Enchants::upgrade` for the reason [`enchanted`] does — a level
-    /// no shop would sell measures a pickaxe no player can hold — and passes `None`
-    /// because Fortune is tier-independent (see `TIER_INDEPENDENT` in `enchant`).
+    /// no shop would sell measures a pickaxe no player can hold. The tier and world
+    /// it passes are both arbitrary: Fortune is keyed by neither, which
+    /// `the_five_special_enchants_and_fortune_ignore_the_pickaxe_tier` and
+    /// `efficiency_and_fortune_ignore_the_world` in `enchant` are what establish.
     ///
     /// Deliberately *not* a fourth parameter on [`enchanted`]: that would make every
     /// existing call site carry a `, 0` for an enchant it does not test, and turn a
@@ -338,7 +379,11 @@ mod tests {
     fn fortuned(level: u8) -> Pickaxe {
         let mut enchants = Enchants::new();
         for _ in 0..level {
-            assert!(enchants.upgrade(EnchantType::Fortune, None).is_ok());
+            assert!(
+                enchants
+                    .upgrade(EnchantType::Fortune, PickaxeTier::Wooden, HASTE_WORLD)
+                    .is_ok()
+            );
         }
         Pickaxe::new(PickaxeTier::Wooden, enchants)
     }
@@ -395,11 +440,7 @@ mod tests {
         let unenchanted = Pickaxe::default();
 
         let mut enchants = Enchants::new();
-        assert!(
-            enchants
-                .upgrade(EnchantType::Efficiency, Some(PickaxeTier::Wooden))
-                .is_ok()
-        );
+        assert!(enchants.upgrade_efficiency(PickaxeTier::Wooden).is_ok());
         let level_one = Pickaxe::new(PickaxeTier::Wooden, enchants);
 
         assert_eq!(unenchanted.mining_power(), 2.0);
@@ -415,14 +456,14 @@ mod tests {
     /// base, level 5 is worth 26 power where level 1 is worth 2.
     #[test]
     fn efficiency_scales_quadratically() {
-        let tier = Some(PickaxeTier::Wooden);
+        let tier = PickaxeTier::Wooden;
         let mut enchants = Enchants::new();
-        assert!(enchants.upgrade(EnchantType::Efficiency, tier).is_ok());
+        assert!(enchants.upgrade_efficiency(tier).is_ok());
         let level_one = Pickaxe::new(PickaxeTier::Wooden, enchants.clone());
         assert_eq!(level_one.mining_power(), 2.0 + 1.0 + 1.0);
 
         for _ in 0..4 {
-            assert!(enchants.upgrade(EnchantType::Efficiency, tier).is_ok());
+            assert!(enchants.upgrade_efficiency(tier).is_ok());
         }
         let level_five = Pickaxe::new(PickaxeTier::Wooden, enchants);
         assert_eq!(level_five.mining_power(), 2.0 + 25.0 + 1.0);
@@ -508,12 +549,14 @@ mod tests {
     /// A level of Haste must never be a downgrade — the same guarantee
     /// `base_power_never_goes_backwards_up_the_ladder` makes for the tier ladder,
     /// and for the same reason: a lever the player can rationally refuse is a lever
-    /// that does not belong in the upgrade path. Swept from `max_level` so it keeps
-    /// holding when phase 4 gives Haste its real per-world caps.
+    /// that does not belong in the upgrade path. Swept from `max_level` — now the
+    /// End's [`World::enchant_cap`](crate::world::World::enchant_cap) — so a
+    /// re-balance of that ceiling keeps the guarantee under test rather than
+    /// quietly shrinking its range.
     #[test]
     fn haste_never_slows_the_pickaxe() {
         let tier = PickaxeTier::Netherite;
-        let cap = EnchantType::Haste.max_level(None);
+        let cap = EnchantType::Haste.max_level(tier, HASTE_WORLD);
         assert!(cap > 0, "a Haste that cannot be earned proves nothing here");
 
         let mut previous = enchanted(tier, 15, 0).mining_power();
@@ -641,7 +684,7 @@ mod tests {
     /// third level would measure nothing a line does not already say.
     #[test]
     fn fortune_at_its_cap_is_worth_eleven_times_the_block() {
-        let cap = EnchantType::Fortune.max_level(None);
+        let cap = EnchantType::Fortune.max_level(PickaxeTier::Wooden, HASTE_WORLD);
         assert_eq!(fortuned(cap).fortune_multiplier(), 11);
     }
 

@@ -616,6 +616,7 @@ mod tests {
     use crate::block::ALL_BLOCKS;
     use crate::enchant::{EnchantType, Enchants};
     use crate::pickaxe::{Pickaxe, PickaxeTier};
+    use crate::world::World;
 
     /// A generator on a fixed seed. The composition tests only need *a*
     /// reproducible sequence, not a particular one.
@@ -1325,21 +1326,25 @@ mod tests {
     /// instamine; let it multiply too much and the boost has no work left to do and
     /// no reason to exist.
     ///
-    /// Reads Haste's cap rather than fixing one, so phase 4's real per-world caps
-    /// re-ask the question instead of silently drifting past it.
+    /// Reads Haste's cap rather than fixing one, so a re-balance re-asks the
+    /// question instead of silently drifting past it. That cap is now
+    /// [`World::enchant_cap`](crate::world::World::enchant_cap), and the End's is
+    /// what makes this pickaxe the game's permanent ceiling; the gap it must leave
+    /// is also the upper bound on
+    /// [`HASTE_PER_LEVEL`](crate::tunables::HASTE_PER_LEVEL), which that constant's
+    /// docs point back here for.
     #[test]
     fn a_hasted_netherite_instamines_the_dense_blocks_but_not_the_obsidian() {
         let tier = PickaxeTier::Netherite;
+        // The End: the highest ceiling the game offers, which is what makes this
+        // the *permanent* endgame pickaxe and not merely a well-equipped one.
+        let world = World::End;
         let mut enchants = Enchants::new();
-        for _ in 0..EnchantType::Efficiency.max_level(Some(tier)) {
-            assert!(
-                enchants
-                    .upgrade(EnchantType::Efficiency, Some(tier))
-                    .is_ok()
-            );
+        for _ in 0..tier.efficiency_cap() {
+            assert!(enchants.upgrade_efficiency(tier).is_ok());
         }
-        for _ in 0..EnchantType::Haste.max_level(None) {
-            assert!(enchants.upgrade(EnchantType::Haste, None).is_ok());
+        for _ in 0..EnchantType::Haste.max_level(tier, world) {
+            assert!(enchants.upgrade(EnchantType::Haste, tier, world).is_ok());
         }
         let power = Pickaxe::new(tier, enchants).mining_power();
 

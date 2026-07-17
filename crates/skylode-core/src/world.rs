@@ -65,6 +65,36 @@ impl World {
         }
     }
 
+    /// Returns the level ceiling this world grants to the five special enchants
+    /// — Explosive, Jackhammer, Nuke, Excavator and Haste.
+    ///
+    /// **One scalar per world, shared by all five**, rather than a cap per
+    /// `(enchant, world)` pair. Every special enchant is buyable from the
+    /// Overworld onwards; reaching a new dimension unlocks nothing new, it only
+    /// raises this ceiling. That makes the number below the whole progression
+    /// curve of the special enchants, which is why it is a rule of the world and
+    /// not a detail of any one enchant.
+    ///
+    /// The ceiling and an enchant's effect are **two separate dials**: this one
+    /// says how much the player may invest, the enchant's own scaling says what
+    /// the investment buys. An effect that grows too fast by level 10 is a bug in
+    /// its curve — the blob radius, the row band, the Nuke cooldown — and must be
+    /// fixed there. Capping that enchant lower instead would trade a curve bug for
+    /// an asymmetry the player can see, and cost this method its single-number
+    /// shape.
+    ///
+    /// Lives here rather than in [`tunables`](crate::tunables) because it is keyed
+    /// by a variant of this enum; see that module's second rule. The three values
+    /// are provisional — phase 10 balances them — but their **order is not**: it
+    /// is what makes Lapis, Quartz and Amethyst a ladder, and it is tested.
+    pub fn enchant_cap(self) -> u8 {
+        match self {
+            Self::Overworld => 3,
+            Self::Nether => 6,
+            Self::End => 10,
+        }
+    }
+
     /// Returns the materials that can be found in the world.
     pub fn materials(self) -> &'static [Material] {
         match self {
@@ -90,13 +120,20 @@ impl World {
     }
 }
 
+/// Every [`World`] variant, for tests that must cover the whole enum.
+///
+/// Test-only; see [`ALL_BLOCKS`](crate::block::ALL_BLOCKS) for the rationale.
+/// Ordered by progression, weakest first, because
+/// [`enchant`](crate::enchant)'s cap tests walk it in order to assert that the
+/// ceiling only ever climbs.
+#[cfg(test)]
+pub(crate) const ALL_WORLDS: [World; 3] = [World::Overworld, World::Nether, World::End];
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::block::ALL_BLOCKS;
     use crate::material::ALL_MATERIALS;
-
-    const ALL_WORLDS: [World; 3] = [World::Overworld, World::Nether, World::End];
 
     #[test]
     fn worlds_have_display_names() {

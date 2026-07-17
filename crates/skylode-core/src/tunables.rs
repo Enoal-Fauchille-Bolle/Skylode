@@ -35,9 +35,24 @@ use std::time::Duration;
 /// A curve parameter, like [`COST_GROWTH`] — the factor, not a table of factors —
 /// which is why it lives here and not beside [`EnchantType`](crate::enchant::EnchantType)
 /// under this module's second rule. That rule is about values that are *one per
-/// variant*, and Haste's **cap** is exactly that: it stays in `enchant::max_level`,
-/// where phase 4 will make it depend on the world. The factor is keyed by nothing
-/// and needs no variant in scope.
+/// variant*, and Haste's **cap** is exactly that: it is
+/// [`World::enchant_cap`](crate::world::World::enchant_cap), shared with the four
+/// other special enchants. The factor is keyed by nothing and needs no variant in
+/// scope.
+///
+/// **Bounded above, and not only below.** The obvious invariant is `> 0` (see the
+/// test), but this factor also has a ceiling it must not cross, and the ceiling is
+/// the one that is easy to raise by accident. Together with
+/// [`World::enchant_cap`](crate::world::World::enchant_cap) it fixes the strongest
+/// pickaxe *permanent upgrades alone* can build: Netherite at Efficiency 15 is 235,
+/// and the End's cap of 10 takes it to `235 * (1 + 0.2 * 10) = 705`. That must stay
+/// **below** Ancient Debris' instamine threshold of `30 * 30 = 900`, because
+/// clearing the two hardest blocks is the temporary Redstone boost's job and its
+/// only reason to exist. Raise this to `0.3` and the same pickaxe reaches 940,
+/// taking Ancient Debris permanently and leaving the boost with nothing to buy;
+/// `mine`'s `a_hasted_netherite_instamines_the_dense_blocks_but_not_the_obsidian`
+/// is what fails when that happens, and it is the test to read before touching this
+/// number.
 ///
 /// **Linear, where Efficiency's `level² + 1` is quadratic**, and that asymmetry is
 /// the design, not an open question. The two act on different layers — Efficiency
