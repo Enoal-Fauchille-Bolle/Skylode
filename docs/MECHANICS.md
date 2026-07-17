@@ -26,7 +26,7 @@ carries progression.
 ### Level-up rewards
 
 Each level-up that does not open a world drops a bundle of **ores or Compressed
-ore** (scaled to the level) plus a **temporary boost** (a short Haste Redstone boost).
+ore** (scaled to the level) plus a **temporary boost** (a short Redstone boost).
 The two world-unlock levels, 15 and 30, grant that world instead and no loot:
 every level-up gives exactly one thing, loot or a world — never both, never
 nothing. Level-ups never gate content by themselves; only the world thresholds
@@ -58,7 +58,7 @@ mining_power = (base_tier + efficiency_bonus) * haste_multiplier
   base_tier        = monotone per-tier speed (see pickaxes.rs)
   efficiency_bonus = efficiency^2 + 1 if efficiency > 0, else 0  (additive)
   haste_multiplier = product of haste sources (multiplicative:
-                     permanent Haste enchant * temporary Haste Redstone boost)
+                     permanent Haste enchant * temporary Redstone boost)
 ```
 
 The `efficiency > 0` guard is Minecraft's (`Player.getDigSpeed`), and it is why
@@ -103,7 +103,7 @@ single moment the endgame arrives at: **each block crosses its own threshold**, 
 the hardness table spreads those thresholds from 12 (Netherrack) to 1500 (Obsidian).
 Netherite at Efficiency 15 already one-shots the Overworld's ores and dense blocks;
 the hardest two stay out of reach even with Haste at its cap, and only the temporary
-Haste Redstone boost closes that last gap (see below). Past instamine, single-target speed
+Redstone boost closes that last gap (see below). Past instamine, single-target speed
 saturates at one block per tick, so the endgame levers shift (see
 [post-instamine progression](#post-instamine-progression)).
 
@@ -114,7 +114,7 @@ into the next block, so no amount of power clears more than one cell per tick.
 
 Netherite at Efficiency 15 is worth 235, which instamines the Overworld ores (90)
 and the dense blocks (150) but not Ancient Debris (900) or Obsidian (1500): those
-are what the Haste enchant and the Haste Redstone boost are for — **the two together, not
+are what the Haste enchant and the Redstone boost are for — **the two together, not
 one each**. Even Haste at its highest cap tops the pickaxe out at 705, so the last
 two blocks stay out of reach of permanent upgrades *entirely*, and only the
 temporary boost closes the gap. That is the staging this table is meant to have: a
@@ -377,7 +377,7 @@ second enchant material.
 | World | Material | Function |
 | --- | --- | --- |
 | Overworld | Stone, Coal, Iron, Gold, Diamond | pickaxe tier upgrades |
-| Overworld | Redstone | speed: temporary Haste Redstone boosts. Later: auto-miner fuel |
+| Overworld | Redstone | speed: temporary Redstone boosts. Later: auto-miner fuel |
 | Overworld | Emerald | Fortune upgrades. Later: currency of a special shop (to be decided) |
 | Overworld | Lapis | enchant material (Overworld tier of enchants). True to Minecraft, where lapis is the enchanting currency |
 | Nether | Ancient Debris | Netherite tier upgrades |
@@ -400,7 +400,7 @@ Amethyst) each own a distinct function, so no two ores are redundant.
   stays short and clearly worth taking.
 - The top tier keeps climbing: **Netherite Efficiency goes 0 to 15** without a
   reset (15 is Pika's instamine point). Past Efficiency 15, the Haste enchant and
-  Haste Redstone boosts push the last blocks to instamine.
+  Redstone boosts push the last blocks to instamine.
 - Past Netherite, Obsidian and Crying Obsidian gate further enhancement
   (progression-gated, not paid).
 - Beyond the upgrade ceiling: prestige.
@@ -481,7 +481,7 @@ The **Haste factor is bounded above as well as below**, and the ceiling is the
 easier one to cross by accident. Permanent upgrades alone must stay short of Ancient
 Debris: `235 × (1 + 0.2 × 10) = 705`, under its instamine threshold of 900. Push the
 factor to 0.3 and the maxed pickaxe reaches 940, takes Ancient Debris for good, and
-leaves the Haste Redstone boost with no work left to do — which is its whole reason to
+leaves the Redstone boost with no work left to do — which is its whole reason to
 exist. See [Instamine](#instamine).
 
 ## Compression
