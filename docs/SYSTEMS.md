@@ -99,9 +99,8 @@ extractable. It catches hand-editing and corruption, not determined cheating.
   writes).
 - **Schema versioning:** the `version` field enables safe migrations.
 - **On integrity failure:** do not crash or punish. Inform the player the save
-  looks modified or corrupted, and offer to restore the `.bak`, start a new game,
-  or continue anyway at their own risk. Treat it first as corruption recovery, not
-  anti-cheat enforcement.
+  looks modified or corrupted, and offer to restore the `.bak` or start a new
+  game. Treat it first as corruption recovery, not anti-cheat enforcement.
 
 ## Tech stack
 
