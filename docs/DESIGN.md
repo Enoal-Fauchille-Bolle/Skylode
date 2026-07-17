@@ -86,9 +86,9 @@ Tab or number keys:
   the mining-level / XP bar).
 - **Mines:** choose the world and cube. Worlds are gated by mining level and mines
   by pickaxe tier; shows unlocked versus locked, and each mine's size and richness.
-  This is also where the **richness dial** lives — drawn only on the two mines where
-  it is a real choice (Obsidian, End), and hidden on the nine where its only sensible
-  position is the top.
+  This is also where the **richness dial** lives — drawn only on the three mines
+  where it is a real choice (Quartz, Obsidian, End), and hidden on the nine where
+  its only sensible position is the top.
 - **Inventory:** ores and amounts (raw and Compressed, no stack limit).
 - **Upgrades:** the full pickaxe roadmap (every tier and Efficiency/Fortune step
   with its composite cost, current position highlighted, future steps visible for
