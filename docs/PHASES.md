@@ -100,11 +100,16 @@ but nothing calls. Apply Fortune to drops, capped at 10
 Give the five enchants their effects, most of them geometry over the phase-2 grid.
 Enchant level caps are per-world (Lapis < Quartz < Amethyst) — **done**: one shared
 ceiling per world rather than one per enchant, because the cap gates how much may be
-invested and each enchant's own scaling decides what that buys. Implement the
-spatial enchants — Explosive (a blob around
-the impact), Jackhammer (a row, then a band at high levels), Nuke (the whole mine on
-a shortening cooldown) — and Excavator, an RNG proc that drops a Compressed unit or
-an Emerald instead of raw ore (see [MECHANICS.md](MECHANICS.md#enchants)).
+invested and each enchant's own scaling decides what that buys. The spatial enchants
+are **done** as well: Explosive (a Chebyshev square around the impact, growing in
+three bands aligned with the world caps, so a 7x7 is proof of the End), Jackhammer
+(one full-width row, scaled by mine size rather than by level) and Nuke (the whole
+grid, at any level). All three fire on a seeded **proc** whose frequency climbs with
+the level, rolled in a fixed order that a save replays; Nuke has no cooldown, since
+emptying the mine is its own limiter. They compute and break shapes but are **not
+wired to a tick** — ordering a swing as impact → procs → refill is phase 7's.
+What remains here is Excavator, an RNG proc that drops a Compressed unit or an
+Emerald instead of raw ore (see [MECHANICS.md](MECHANICS.md#enchants)).
 
 ## Phase 5 - Economy
 
@@ -134,9 +139,14 @@ one (see [MECHANICS.md](MECHANICS.md#progression-and-gating)).
 The keystone. Introduce `GameState`, the missing aggregate that owns player, mines
 per world, selected mine, active boosts, RNG state, prestige rank, and `last_seen`.
 Add `tick(input)`, the fixed 20 tps step applying held-Space mining, the auto-miner,
-timers (boosts, Nuke cooldown), XP, and enchant procs — all drawn from the seeded RNG
-(see [SYSTEMS.md](SYSTEMS.md#tick-loop)). Add a basic flat-rate auto-miner (tiers and
-purchases are post-MVP). Credit offline accrual in **closed form** — `rate × elapsed`
+boost timers, XP, and enchant procs — all drawn from the seeded RNG
+(see [SYSTEMS.md](SYSTEMS.md#tick-loop)). The spatial procs themselves already exist
+(phase 4); wiring them up means calling them after a break and ordering the swing
+**impact → procs → refill**, which moves the batch reset out of the break that
+empties the grid and to the end of the step — a blast may empty the mine too, and a
+refill in the middle would drop a full grid under the enchants that have not rolled
+yet. Add a basic flat-rate auto-miner (tiers and purchases are post-MVP); it never
+procs, being credited in closed form. Credit offline accrual in **closed form** — `rate × elapsed`
 capped at the offline cap, *not* a tick replay, since a flat rate makes a replay a
 multiplication done the long way — and clamp a backward clock jump to 0. Core reads no
 wall clock: the caller injects `now`, or core stops being deterministic (see
