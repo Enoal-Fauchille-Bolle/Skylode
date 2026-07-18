@@ -74,15 +74,47 @@ impl Rng {
     /// between 0 and 1" is not an operation that exists. An impossible probability
     /// is the only reading of an unspecified one that cannot hand the player a
     /// windfall.
+    ///
+    /// The enchant procs were expected to land here, and did not: they are quoted
+    /// in **permille** and roll through [`chance_permille`](Rng::chance_permille),
+    /// which keeps the comparison in integers. This stays for a caller whose
+    /// probability is genuinely a real number — a rate derived from a ratio rather
+    /// than named as one — and is the only remaining reason to accept an `f64`.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "awaiting the phase-4 enchant procs")
+        expect(dead_code, reason = "no integer-quoted caller; see chance_permille")
     )]
     pub(crate) fn chance(&mut self, p: f64) -> bool {
         if p.is_nan() {
             return false;
         }
         self.0.random_bool(p.clamp(0.0, 1.0))
+    }
+
+    /// Returns `true` with probability `permille / 1000`.
+    ///
+    /// The door every enchant proc goes through, and it is **integer all the way
+    /// down**: the proc curves are quoted in permille
+    /// ([`EnchantType::proc_permille`]), so rolling them means comparing two `u32`s
+    /// rather than converting to an `f64` and asking [`chance`](Rng::chance). That
+    /// is not a micro-optimisation — it removes floating-point rounding from the
+    /// path that decides a proc, and the proc sequence is state a save resumes.
+    /// A run must not depend on how a division rounded.
+    ///
+    /// Needs no clamping, which is the happy accident of drawing on `0..1000`:
+    /// `permille = 0` never fires because nothing is below 0, and any `permille` at
+    /// or above 1000 always fires because every draw is under it. The degenerate
+    /// ends are the correct ones for free.
+    ///
+    /// [`EnchantType::proc_permille`]: crate::enchant::EnchantType
+    pub(crate) fn chance_permille(&mut self, permille: u32) -> bool {
+        /// The denominator every proc chance is quoted against.
+        const PER_MILLE: NonZeroU32 = match NonZeroU32::new(1_000) {
+            Some(n) => n,
+            None => unreachable!(),
+        };
+
+        self.below(PER_MILLE) < permille
     }
 
     /// Draws an index into `weights`, each index in proportion to its weight.
@@ -258,5 +290,31 @@ mod tests {
         let mut rng = Rng::from_seed(17);
         assert_eq!(rng.weighted(&[]), None, "no candidates to choose between");
         assert_eq!(rng.weighted(&[0, 0]), None, "no candidate can be chosen");
+    }
+
+    /// The two ends, which `chance_permille` gets for free by drawing on `0..1000`
+    /// rather than by clamping. A 0-permille enchant that fired occasionally would
+    /// hand a blast to a player who never bought the level.
+    #[test]
+    fn a_zero_permille_never_fires_and_a_full_thousand_always_does() {
+        let mut rng = Rng::from_seed(18);
+        for _ in 0..1000 {
+            assert!(!rng.chance_permille(0));
+            assert!(rng.chance_permille(1_000));
+            assert!(
+                rng.chance_permille(5_000),
+                "past certainty is still certain"
+            );
+        }
+    }
+
+    /// A proc quoted at 200 permille has to fire about a fifth of the time, or the
+    /// balance numbers in `EnchantType::proc_permille` mean nothing. 10 000 draws
+    /// at 20% average 2000; a correct implementation stays well inside ±10%.
+    #[test]
+    fn chance_permille_fires_about_as_often_as_it_promises() {
+        let mut rng = Rng::from_seed(19);
+        let fired = (0..10_000).filter(|_| rng.chance_permille(200)).count();
+        assert!((1800..=2200).contains(&fired), "200 permille fired {fired}");
     }
 }

@@ -4,7 +4,9 @@
 //! module provides:
 //! - [`EnchantType`]: the kind of enchantment (Efficiency, Fortune, …) plus the
 //!   dispatch to its level cap, which is keyed by the pickaxe tier, by the world,
-//!   or by nothing, depending on the enchant.
+//!   or by nothing, depending on the enchant — and, for the three spatial ones,
+//!   the dispatch to the *shape* a proc breaks
+//!   ([`blast_cells`](EnchantType::blast_cells)).
 //! - [`Enchants`]: a compact per-pickaxe store mapping each active enchantment
 //!   to its current level.
 //! - [`Enchant`]: a standalone `(type, level)` pair used when an enchantment
@@ -31,6 +33,105 @@ use std::collections::HashMap;
 /// turnable, and re-balancing it would silently delete the point at which Fortune is
 /// supposed to stop being the answer.
 const FORTUNE_CAP: u8 = 10;
+
+/// The radius of the smallest [`Explosive`](EnchantType::Explosive) square: a
+/// 3x3 around the impact.
+///
+/// Non-zero, so the enchant is worth something the moment it is installed. A
+/// radius of 0 would be a level the player paid for that breaks the one cell the
+/// swing had already broken.
+const EXPLOSIVE_RADIUS_MIN: u8 = 1;
+
+/// The radius of the largest Explosive square: a 7x7, or 49 of a full mine's 200
+/// cells.
+///
+/// The ceiling exists to keep Explosive and [`Nuke`](EnchantType::Nuke) distinct.
+/// Nuke's whole point is clearing the *grid*; an Explosive allowed to grow with
+/// every level would reach that on its own and leave Nuke buying nothing but a
+/// different proc rate. Under a quarter of the grid is the gap that keeps them two
+/// enchants.
+const EXPLOSIVE_RADIUS_MAX: u8 = 3;
+
+/// How many enchant levels buy one extra ring on the Explosive square.
+///
+/// Three, and that is **not** an arbitrary step: it lines the radius bands up with
+/// [`World::enchant_cap`] (3 / 6 / 10), so each dimension owns exactly one square
+/// size — 3x3 in the Overworld, 5x5 in the Nether, 7x7 in the End. A player who
+/// reaches a new world sees the blast visibly grow, and a 7x7 is proof of the End
+/// rather than of patience. Changing this number breaks that alignment silently,
+/// which is what `explosive_bands_line_up_with_the_world_caps` is there to catch.
+///
+/// [`World::enchant_cap`]: crate::world::World::enchant_cap
+const EXPLOSIVE_RADIUS_BAND: u8 = 3;
+
+/// The Chebyshev radius of [`Explosive`](EnchantType::Explosive)'s square at
+/// `level`: 1, 2 or 3, in bands of [`EXPLOSIVE_RADIUS_BAND`].
+///
+/// A **formula plus a clamp**, not a table, for the reason `mine::value_weight` is
+/// one: this is a single monotone one-dimensional curve, and a table would invite
+/// the bands to drift out of step with the world caps they mirror.
+///
+/// `saturating_sub` rather than `level - 1` because `level` is a `u8` and level 0 is
+/// reachable — an enchant the player has never bought reads as 0 through
+/// [`Enchants::get_level`]. On unsigned arithmetic `0 - 1` is not a small negative
+/// number, it is a **panic in debug and a wrap to 255 in release**, and the release
+/// half is the dangerous one: a wrapped level would land in the top band and hand
+/// out a 7x7 to a player with no Explosive at all. Callers are expected to skip
+/// level 0 entirely (see [`blast_cells`](EnchantType::blast_cells)); this makes the
+/// function safe even if one forgets.
+fn explosive_radius(level: u8) -> u8 {
+    let band = level.saturating_sub(1) / EXPLOSIVE_RADIUS_BAND;
+    EXPLOSIVE_RADIUS_MIN + band.min(EXPLOSIVE_RADIUS_MAX - EXPLOSIVE_RADIUS_MIN)
+}
+
+/// How many levels the proc ramp spans: from level 1 to level 10, the highest
+/// [`World::enchant_cap`] in the game.
+///
+/// The divisor of the ramp in [`proc_permille`](EnchantType::proc_permille), and
+/// the reason that method clamps rather than trusts its argument — a level past the
+/// End's cap would otherwise ramp *past* the quoted ceiling.
+///
+/// [`World::enchant_cap`]: crate::world::World::enchant_cap
+const PROC_RAMP_SPAN: u32 = 9;
+
+/// The order enchant procs are rolled in, and therefore the order they consume the
+/// generator.
+///
+/// **This is a reproducibility contract, not a list.** A save stores a position in
+/// the PRNG sequence, so which enchant draws first decides what every later draw
+/// in the run returns. Reorder these three and every existing save quietly
+/// continues on different dice — nothing fails, which is exactly the problem.
+/// `the_proc_order_follows_the_declaration_order` is what turns that silence into a
+/// failing test.
+///
+/// The order is the enum's own declaration order. Rust cannot iterate a plain enum,
+/// so it has to be written down; anchoring it to the declaration means there is one
+/// obvious answer to "where does a new enchant go" rather than a convention to
+/// remember.
+///
+/// [`Excavator`](EnchantType::Excavator) is **absent on purpose**: it procs too, but
+/// its effect is not built yet, and rolling for an enchant that cannot act would
+/// burn a draw for nothing. It belongs after [`Nuke`](EnchantType::Nuke) when it
+/// lands. Inserting it there will not disturb any existing run, because a level-0
+/// enchant is skipped before it draws — so a player who never bought it consumes
+/// the same sequence either way.
+pub(crate) const PROC_ORDER: [EnchantType; 3] = [
+    EnchantType::Explosive,
+    EnchantType::Jackhammer,
+    EnchantType::Nuke,
+];
+
+/// Every cell of the inclusive rectangle `x0..=x1` by `y0..=y1`, row by row.
+///
+/// Shared by the shapes rather than written out at each arm, so "which rectangle"
+/// and "walk a rectangle" stay separate questions. An inverted range (`x0 > x1`)
+/// yields nothing, which is what makes an impact off the grid answer with an empty
+/// blast instead of a bad index.
+fn rect_cells(x0: u8, x1: u8, y0: u8, y1: u8) -> Vec<(u8, u8)> {
+    (y0..=y1)
+        .flat_map(|y| (x0..=x1).map(move |x| (x, y)))
+        .collect()
+}
 
 /// A single enchantment together with its level.
 ///
@@ -71,13 +172,24 @@ pub enum EnchantType {
     /// Increases the drop rate of ores, multiplying the loot by `1 + level`.
     /// Capped at [`FORTUNE_CAP`], whatever the tier and whatever the world.
     Fortune,
-    /// Clears a compact blob around the impact cell, growing with level.
+    /// On a proc, clears a **Chebyshev square** centred on the impact cell. The
+    /// only spatial enchant whose level buys area as well as frequency, in three
+    /// bands aligned with the world caps: 3x3, 5x5, then 7x7. See
+    /// [`blast_cells`](EnchantType::blast_cells).
     /// Capped by the world; see [`World::enchant_cap`].
     Explosive,
-    /// Clears a whole row of blocks, then a band of `k` rows at high levels.
+    /// On a proc, clears **one full-width row** — the mine's whole width, so it is
+    /// *mine size* rather than the enchant's level that scales its reach. Always a
+    /// single row: a multi-row band would blur it into
+    /// [`Explosive`](EnchantType::Explosive)'s square.
     /// Capped by the world; see [`World::enchant_cap`].
     Jackhammer,
-    /// Clears an entire mine at once, on a cooldown that shortens with level.
+    /// On a proc, clears the **whole grid**, from wherever the impact landed. Its
+    /// geometry never changes with level — there is no area past "all of it" — so
+    /// the level buys frequency alone.
+    ///
+    /// **No cooldown.** Emptying the mine is its own limiter: a re-proc finds
+    /// nothing standing until the batch reset refills the grid.
     /// Capped by the world; see [`World::enchant_cap`].
     Nuke,
     /// Grants a chance to drop a [`Compressed`] unit, or an Emerald, in place of
@@ -163,6 +275,119 @@ impl EnchantType {
             Self::Explosive | Self::Jackhammer | Self::Nuke | Self::Excavator | Self::Haste => {
                 world.enchant_cap()
             }
+        }
+    }
+
+    /// How often this enchant procs at `level`, in **permille** — 0 for the
+    /// enchants that do not proc, and for level 0.
+    ///
+    /// A linear ramp from the level-1 rate to the level-10 one:
+    /// `first + (last - first) * (level - 1) / 9`. Frequency is the axis every
+    /// triggered enchant scales on, and for [`Jackhammer`](EnchantType::Jackhammer)
+    /// and [`Nuke`](EnchantType::Nuke) it is the *only* one — their shapes never
+    /// change, so this method is the whole of what their levels buy.
+    ///
+    /// **Permille, and integer, on purpose.** The roll is a `u32` comparison in
+    /// [`Rng::chance_permille`], never a float: the proc sequence is state a save
+    /// resumes, and a run must not depend on how a division rounded. It is also
+    /// why the rates are quoted as whole permille here rather than as
+    /// probabilities.
+    ///
+    /// Nuke starts at **1**, which is *double* the 0.5 permille the balance sketch
+    /// asked for — 0.5 has no representation in whole permille, and the choice was
+    /// to round it up rather than move the whole game to ten-thousandths for one
+    /// enchant's opening rate. Worth knowing at the balance pass: if Nuke proves too
+    /// frequent early, the fix is the unit, not the curve.
+    ///
+    /// These live here rather than in [`tunables`](crate::tunables) under that
+    /// module's second rule — a value that is *one per variant* is a `match` in the
+    /// enum's own module, which is also the only shape that turns a new variant into
+    /// a compile error instead of a silent default. All the numbers are
+    /// provisional; phase 10 balance sets the final ones, and the *shape* — a linear
+    /// ramp bounded at both ends — is what is settled.
+    ///
+    /// [`Rng::chance_permille`]: crate::rng::Rng
+    pub(crate) fn proc_permille(self, level: u8) -> u32 {
+        let (first, last) = match self {
+            Self::Explosive => (20, 200),
+            Self::Jackhammer => (15, 150),
+            Self::Nuke => (1, 10),
+            // Excavator procs too, but its effect is not built yet; Efficiency,
+            // Fortune and Haste are passive and never roll at all.
+            Self::Efficiency | Self::Fortune | Self::Excavator | Self::Haste => return 0,
+        };
+
+        if level == 0 {
+            return 0;
+        }
+        // Clamped, not trusted: a level past the End's cap — from a hand-edited
+        // save — would otherwise ramp past the quoted ceiling instead of resting
+        // on it.
+        let step = u32::from(level - 1).min(PROC_RAMP_SPAN);
+        first + (last - first) * step / PROC_RAMP_SPAN
+    }
+
+    /// The cells a proc of this enchant breaks, radiating from the `impact` cell in
+    /// a mine of `size` — empty for the enchants that break nothing.
+    ///
+    /// **Dispatch over the shapes**, the same way [`max_level`](EnchantType::max_level)
+    /// is dispatch over the caps: each spatial enchant states its own geometry and
+    /// this method only picks which one applies. The three are deliberately
+    /// different *dimensions* of shape, which is what keeps them worth buying
+    /// separately — [`Explosive`](EnchantType::Explosive) a 2-D square that grows
+    /// with its level, [`Jackhammer`](EnchantType::Jackhammer) a 1-D stripe that
+    /// grows with the *mine*, [`Nuke`](EnchantType::Nuke) the whole grid at any
+    /// level.
+    ///
+    /// Every coordinate returned is **inside the grid**. The clipping happens here
+    /// rather than being left to [`Mine::take`], and the reason is arithmetic, not
+    /// taste: coordinates are `u8`, so an Explosive centred on `x = 0` computes
+    /// `0 - 1`, which on an unsigned integer **panics in debug and wraps to 255 in
+    /// release**. `take` absorbs an out-of-grid coordinate gracefully, but it never
+    /// gets the chance — the subtraction blows up first. `saturating_sub` on the
+    /// near edges and `min(last)` on the far ones is what makes a blast at a corner
+    /// a smaller blast instead of a crash.
+    ///
+    /// Level 0 breaks nothing. An enchant the player never bought reads as level 0
+    /// through [`get_level`](Enchants::get_level), so this is the difference between
+    /// "not installed" and "installed and useless" — and callers skip level 0
+    /// before drawing anyway, so no proc is ever rolled for it.
+    ///
+    /// Returns an owned [`Vec`] rather than an iterator because the four arms have
+    /// four different iterator types, and unifying them would mean a `Box<dyn
+    /// Iterator>` — a heap allocation and a virtual call to avoid an allocation. A
+    /// blast is at most [`capacity`](crate::mine::Mine::capacity) = 200 pairs and
+    /// happens on a rare proc, not every tick.
+    ///
+    /// [`Mine::take`]: crate::mine::Mine
+    pub(crate) fn blast_cells(self, level: u8, impact: (u8, u8), size: (u8, u8)) -> Vec<(u8, u8)> {
+        let (width, height) = size;
+        if level == 0 || width == 0 || height == 0 {
+            return Vec::new();
+        }
+        let (last_x, last_y) = (width - 1, height - 1);
+        let (impact_x, impact_y) = impact;
+
+        match self {
+            Self::Explosive => {
+                let radius = explosive_radius(level);
+                rect_cells(
+                    impact_x.saturating_sub(radius),
+                    impact_x.saturating_add(radius).min(last_x),
+                    impact_y.saturating_sub(radius),
+                    impact_y.saturating_add(radius).min(last_y),
+                )
+            }
+            // The row spans the mine's whole width, so *mine size* is what scales
+            // its reach — the level only buys a better proc chance.
+            Self::Jackhammer if impact_y <= last_y => rect_cells(0, last_x, impact_y, impact_y),
+            Self::Jackhammer => Vec::new(),
+            // Level-independent by design: Nuke's level buys frequency, never area,
+            // and there is no area past "all of it" to buy.
+            Self::Nuke => rect_cells(0, last_x, 0, last_y),
+            // The non-spatial enchants: two passive multipliers and one that
+            // substitutes a drop. None of them touches the grid.
+            Self::Efficiency | Self::Fortune | Self::Excavator | Self::Haste => Vec::new(),
         }
     }
 }
@@ -668,5 +893,378 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The three enchants that break cells in a shape. The other four break
+    /// nothing, which `only_the_spatial_enchants_break_cells` holds up.
+    const SPATIAL_ENCHANTS: [EnchantType; 3] = [
+        EnchantType::Explosive,
+        EnchantType::Jackhammer,
+        EnchantType::Nuke,
+    ];
+
+    /// The largest mine in the game, which is the interesting one for shapes: a
+    /// 3x3 would clip every blast against its own edges and hide a radius bug.
+    const FULL_MINE: (u8, u8) = (20, 10);
+
+    /// How many cells `kind` breaks — the readable half of most shape assertions.
+    fn cells(kind: EnchantType, level: u8, impact: (u8, u8), size: (u8, u8)) -> usize {
+        kind.blast_cells(level, impact, size).len()
+    }
+
+    /// The radius curve, band by band. Level 10 is the End's cap and must land on
+    /// the top band rather than past it — the `min` in `explosive_radius` is what
+    /// stops the ramp, and without it level 10 would ask for a radius of 4.
+    #[test]
+    fn the_explosive_square_grows_in_three_bands() {
+        let radii: Vec<u8> = (1..=10).map(explosive_radius).collect();
+        assert_eq!(radii, vec![1, 1, 1, 2, 2, 2, 3, 3, 3, 3]);
+    }
+
+    /// The alignment [`EXPLOSIVE_RADIUS_BAND`] exists to produce: each dimension
+    /// owns exactly one square size, so a 7x7 is proof the player reached the End.
+    /// If the band width or a world cap moves, this is what says so — the two
+    /// numbers live in different modules and nothing else ties them together.
+    #[test]
+    fn explosive_bands_line_up_with_the_world_caps() {
+        let sizes: Vec<usize> = ALL_WORLDS
+            .iter()
+            .map(|world| {
+                let level = EnchantType::Explosive.max_level(ANY_TIER, *world);
+                cells(EnchantType::Explosive, level, (10, 5), FULL_MINE)
+            })
+            .collect();
+
+        assert_eq!(
+            sizes,
+            vec![9, 25, 49],
+            "each world must own exactly one square size (3x3, 5x5, 7x7)"
+        );
+    }
+
+    /// The arithmetic trap this module is most exposed to: a `u8` impact at the
+    /// origin computes `0 - radius`, which panics in debug and — worse — wraps to
+    /// 255 in release, putting the blast on the far side of the grid. A corner
+    /// blast must simply be a smaller blast.
+    #[test]
+    fn a_blast_at_the_origin_is_clipped_rather_than_wrapped() {
+        let blast = EnchantType::Explosive.blast_cells(10, (0, 0), FULL_MINE);
+
+        assert_eq!(blast.len(), 16, "a radius-3 square at the origin is 4x4");
+        for &(x, y) in &blast {
+            assert!(x <= 3 && y <= 3, "({x}, {y}) is not in the corner quadrant");
+        }
+    }
+
+    /// Every shape, at every level, from every cell of a full mine, must return
+    /// coordinates that are actually on the grid. This is the property the whole
+    /// clipping design exists for, and asserting it over the entire grid is what
+    /// makes it a guarantee rather than three lucky examples.
+    #[test]
+    fn no_shape_ever_leaves_the_grid() {
+        let (width, height) = FULL_MINE;
+        for kind in SPATIAL_ENCHANTS {
+            for level in 0..=10 {
+                for y in 0..height {
+                    for x in 0..width {
+                        for &(cell_x, cell_y) in &kind.blast_cells(level, (x, y), FULL_MINE) {
+                            assert!(
+                                cell_x < width && cell_y < height,
+                                "{} at level {level} from ({x}, {y}) reached ({cell_x}, {cell_y})",
+                                kind.name()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A shape must not name the same cell twice. `blast` is immune to it anyway —
+    /// the second `take` finds the hole the first left — but a duplicate would mean
+    /// the geometry is wrong, and relying on `take` to hide it is how a shape that
+    /// double-counts survives to meet a caller that does not.
+    #[test]
+    fn no_shape_names_a_cell_twice() {
+        for kind in SPATIAL_ENCHANTS {
+            let blast = kind.blast_cells(10, (7, 4), FULL_MINE);
+            let mut unique = blast.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(unique.len(), blast.len(), "{} repeats a cell", kind.name());
+        }
+    }
+
+    /// Jackhammer's reach is the *mine's* width, never its own level: that is what
+    /// makes mine size the upgrade that scales it, and what keeps it from blurring
+    /// into Explosive's square. One row tall at level 1 and at level 10 alike.
+    #[test]
+    fn jackhammer_spans_the_full_width_at_every_level() {
+        for level in 1..=10 {
+            let blast = EnchantType::Jackhammer.blast_cells(level, (7, 4), FULL_MINE);
+            assert_eq!(blast.len(), usize::from(FULL_MINE.0), "level {level}");
+            for &(_, y) in &blast {
+                assert_eq!(y, 4, "level {level} left the impact row");
+            }
+        }
+    }
+
+    /// A wider mine is a wider Jackhammer — the whole of its scaling, stated
+    /// directly rather than inferred from the two tests above.
+    #[test]
+    fn a_bigger_mine_makes_a_longer_jackhammer_row() {
+        let small = cells(EnchantType::Jackhammer, 1, (1, 1), (3, 3));
+        let large = cells(EnchantType::Jackhammer, 1, (1, 1), FULL_MINE);
+        assert!(large > small, "{large} is no longer than {small}");
+    }
+
+    /// Nuke's level buys frequency, never area: there is no area past "all of it",
+    /// and a Nuke that grew with its level would be an Explosive with a better
+    /// ceiling.
+    #[test]
+    fn nuke_covers_the_whole_grid_at_every_level_and_from_anywhere() {
+        let expected = usize::from(FULL_MINE.0) * usize::from(FULL_MINE.1);
+        for level in 1..=10 {
+            for impact in [(0, 0), (7, 4), (19, 9)] {
+                assert_eq!(
+                    cells(EnchantType::Nuke, level, impact, FULL_MINE),
+                    expected,
+                    "level {level} from {impact:?}"
+                );
+            }
+        }
+    }
+
+    /// Nuke must strictly dominate the other two, and they must not collapse into
+    /// each other. This is what the radius ceiling buys: an Explosive allowed to
+    /// keep growing would reach the whole grid and leave Nuke selling nothing but a
+    /// different proc rate.
+    ///
+    /// Deliberately **not** a total order on the counts — at the cap a 7x7 (49)
+    /// clears more than a 20-wide row (20), and that is fine. What matters is that
+    /// the three cover different *shapes*, and that neither of the small two
+    /// approaches the grid.
+    #[test]
+    fn nuke_dominates_the_other_two_shapes() {
+        let at_cap = |kind: EnchantType| cells(kind, 10, (7, 4), FULL_MINE);
+        let (explosive, jackhammer, nuke) = (
+            at_cap(EnchantType::Explosive),
+            at_cap(EnchantType::Jackhammer),
+            at_cap(EnchantType::Nuke),
+        );
+
+        assert_ne!(
+            explosive, jackhammer,
+            "a square and a row that clear the same count are one enchant sold twice"
+        );
+        assert!(
+            explosive < nuke,
+            "Explosive ({explosive}) reaches Nuke ({nuke})"
+        );
+        assert!(
+            jackhammer < nuke,
+            "Jackhammer ({jackhammer}) reaches Nuke ({nuke})"
+        );
+        assert!(
+            explosive * 2 < nuke,
+            "Explosive ({explosive}) clears half the grid ({nuke}) and crowds Nuke out"
+        );
+    }
+
+    /// Level 0 is "never bought", not "bought and useless". Callers skip it before
+    /// rolling a proc, so this is the belt to that brace — and the half that would
+    /// otherwise hand a free blast to a player with no enchant at all.
+    #[test]
+    fn a_level_zero_enchant_breaks_nothing() {
+        for kind in ALL_ENCHANTS {
+            assert_eq!(
+                cells(kind, 0, (7, 4), FULL_MINE),
+                0,
+                "{} breaks cells at level 0",
+                kind.name()
+            );
+        }
+    }
+
+    /// The four non-spatial enchants touch the grid not at all: two are passive
+    /// multipliers and Excavator substitutes a drop *after* it leaves the block.
+    /// A shape appearing on one of them would be an enchant quietly gaining a
+    /// second effect.
+    #[test]
+    fn only_the_spatial_enchants_break_cells() {
+        for kind in ALL_ENCHANTS {
+            let breaks = cells(kind, 10, (7, 4), FULL_MINE) > 0;
+            assert_eq!(
+                breaks,
+                SPATIAL_ENCHANTS.contains(&kind),
+                "{} disagrees with its spatial classification",
+                kind.name()
+            );
+        }
+    }
+
+    /// An impact outside the grid must not produce cells outside the grid. A live
+    /// impact always comes from [`Mine::get_target`](crate::mine::Mine::get_target)
+    /// and is therefore on the grid, so this guards the same thing
+    /// `size_levels_past_the_table_clamp_to_the_largest_mine` does: coordinates are
+    /// plain data that phase 9 reads back out of a save file.
+    ///
+    /// Nuke is the deliberate exception — it ignores the impact entirely, so an
+    /// out-of-grid one still clears the grid. That is the shape being
+    /// level- *and* position-independent, not a leak.
+    /// Note the invariant is **in-bounds, not empty**: an impact one cell past the
+    /// right edge still clips to a square that overlaps the grid, and that is
+    /// correct. Only a row whose `y` is off the grid has nothing left to break.
+    #[test]
+    fn an_impact_off_the_grid_never_yields_cells_off_the_grid() {
+        let (width, height) = FULL_MINE;
+        for impact in [(width, 5), (7, height), (u8::MAX, u8::MAX)] {
+            for kind in SPATIAL_ENCHANTS {
+                for &(x, y) in &kind.blast_cells(10, impact, FULL_MINE) {
+                    assert!(
+                        x < width && y < height,
+                        "{} from {impact:?} reached ({x}, {y})",
+                        kind.name()
+                    );
+                }
+            }
+        }
+
+        // The row guard specifically: with its `y` off the grid there is no row
+        // left to break, where a clipped square may still overlap.
+        assert_eq!(
+            cells(EnchantType::Jackhammer, 10, (7, height), FULL_MINE),
+            0,
+            "a row below the grid must break nothing"
+        );
+    }
+
+    /// A degenerate mine has no cells to break, and must produce an empty blast
+    /// rather than an underflow on `width - 1`. Unreachable from `MINE_SIZES`,
+    /// whose smallest entry is 3x3 — but `blast_cells` takes the size as plain
+    /// data, and phase 9 reads mine dimensions back out of a save file.
+    #[test]
+    fn a_mine_with_no_cells_yields_an_empty_blast() {
+        for kind in SPATIAL_ENCHANTS {
+            for size in [(0, 0), (0, 5), (5, 0)] {
+                assert_eq!(
+                    cells(kind, 10, (0, 0), size),
+                    0,
+                    "{} on a {size:?} mine",
+                    kind.name()
+                );
+            }
+        }
+    }
+
+    /// The ramp lands exactly on its quoted ends. Level 1 and level 10 are the two
+    /// numbers the balance pass reasons about, so an off-by-one in the `(level - 1)`
+    /// or in the divisor would silently sell a different enchant than the one
+    /// designed.
+    #[test]
+    fn the_proc_ramp_lands_on_both_of_its_quoted_ends() {
+        assert_eq!(EnchantType::Explosive.proc_permille(1), 20);
+        assert_eq!(EnchantType::Explosive.proc_permille(10), 200);
+        assert_eq!(EnchantType::Jackhammer.proc_permille(1), 15);
+        assert_eq!(EnchantType::Jackhammer.proc_permille(10), 150);
+        assert_eq!(EnchantType::Nuke.proc_permille(1), 1);
+        assert_eq!(EnchantType::Nuke.proc_permille(10), 10);
+    }
+
+    /// A level the player paid for must never make an enchant proc *less* often.
+    /// Integer division makes that worth checking rather than assuming: the ramp
+    /// truncates, and a badly ordered expression could flatten or dip.
+    #[test]
+    fn proc_chances_never_fall_as_the_level_climbs() {
+        for kind in SPATIAL_ENCHANTS {
+            for level in 1..10u8 {
+                assert!(
+                    kind.proc_permille(level + 1) >= kind.proc_permille(level),
+                    "{} dips from level {level} to {}",
+                    kind.name(),
+                    level + 1
+                );
+            }
+            assert!(
+                kind.proc_permille(10) > kind.proc_permille(1),
+                "{} is no more frequent at the cap than at level 1",
+                kind.name()
+            );
+        }
+    }
+
+    /// A level past the End's cap rests on the ceiling instead of ramping past it.
+    /// Unreachable through [`Enchants::upgrade`], which enforces the cap — but the
+    /// level is plain data that phase 9 reads back out of a save file.
+    #[test]
+    fn a_level_past_the_cap_rests_on_the_quoted_ceiling() {
+        for kind in SPATIAL_ENCHANTS {
+            let ceiling = kind.proc_permille(10);
+            for level in [11, 50, u8::MAX] {
+                assert_eq!(
+                    kind.proc_permille(level),
+                    ceiling,
+                    "{} ramps past its ceiling at level {level}",
+                    kind.name()
+                );
+            }
+        }
+    }
+
+    /// Level 0 is "never bought": it must not proc, and — more importantly — the
+    /// resolution skips it before drawing, so it costs no entropy either.
+    #[test]
+    fn a_level_zero_enchant_never_procs() {
+        for kind in ALL_ENCHANTS {
+            assert_eq!(kind.proc_permille(0), 0, "{} procs at level 0", kind.name());
+        }
+    }
+
+    /// Only the enchants in [`PROC_ORDER`] roll. Efficiency, Fortune and Haste are
+    /// passive multipliers, and Excavator procs by design but has no effect built
+    /// yet — rolling for it would burn a draw on nothing.
+    #[test]
+    fn only_the_enchants_in_the_proc_order_ever_proc() {
+        for kind in ALL_ENCHANTS {
+            let procs = kind.proc_permille(10) > 0;
+            assert_eq!(
+                procs,
+                PROC_ORDER.contains(&kind),
+                "{} disagrees with its presence in PROC_ORDER",
+                kind.name()
+            );
+        }
+    }
+
+    /// **The reproducibility contract.** `PROC_ORDER` decides which enchant draws
+    /// first, and a save stores a position in that sequence — so reordering it
+    /// would leave every existing run continuing on different dice, silently. This
+    /// anchors it to the enum's declaration order, which is the one rule that makes
+    /// "where does a new enchant go" have an obvious answer.
+    #[test]
+    fn the_proc_order_follows_the_declaration_order() {
+        let declared: Vec<EnchantType> = ALL_ENCHANTS
+            .iter()
+            .copied()
+            .filter(|kind| PROC_ORDER.contains(kind))
+            .collect();
+
+        assert_eq!(
+            declared,
+            PROC_ORDER.to_vec(),
+            "PROC_ORDER has drifted from the order the enum declares"
+        );
+    }
+
+    /// Every enchant that procs must also have a shape to break, and vice versa.
+    /// One without the other is an enchant that rolls and does nothing, or one that
+    /// has a shape no roll ever reaches.
+    #[test]
+    fn the_proc_list_and_the_spatial_list_describe_the_same_enchants() {
+        let mut ordered = PROC_ORDER.to_vec();
+        let mut spatial = SPATIAL_ENCHANTS.to_vec();
+        ordered.sort_unstable();
+        spatial.sort_unstable();
+        assert_eq!(ordered, spatial);
     }
 }

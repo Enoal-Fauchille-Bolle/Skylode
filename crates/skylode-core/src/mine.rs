@@ -5,6 +5,7 @@
 //! the top of the `MINE_SIZES` table.
 
 use crate::block::Block;
+use crate::enchant::{Enchants, PROC_ORDER};
 use crate::error::CoreError;
 use crate::mine_kind::MineKind;
 use crate::rng::Rng;
@@ -411,6 +412,98 @@ impl Mine {
             .get_mut(usize::from(y))?
             .get_mut(usize::from(x))?
             .take()
+    }
+
+    /// Breaks every cell in `cells`, returning the blocks that actually stood
+    /// there.
+    ///
+    /// The one operation the spatial enchants are built on: they compute a shape
+    /// ([`EnchantType::blast_cells`]) and hand it here. Splitting "which cells" from
+    /// "break them" is what lets all three enchants share one break path — and one
+    /// place where a cell can be paid out — while each keeps its own geometry.
+    ///
+    /// The returned [`Vec`] is **shorter than `cells`** whenever the shape covered
+    /// holes, and that is the contract rather than a caveat: it is the list of
+    /// blocks to drop, so a hole must not appear in it. [`take`](Mine::take) already
+    /// makes that free — it hands back `None` for a hole or an off-grid cell, and
+    /// `filter_map` drops those — so a shape overlapping ground it has already
+    /// cleared cannot pay twice. Nor can a duplicated coordinate: the first `take`
+    /// leaves a `None` behind, and the second finds it.
+    ///
+    /// **Does not reset the mine, even when the blast empties it.** [`dig`](Mine::dig)
+    /// refills on the break that takes the last cell, because there the break and
+    /// the emptiness are the same event. A blast is not: the impact cell has already
+    /// fallen, other enchants may still be about to fire on the same swing, and a
+    /// refill here would drop a full grid under the ones that have not rolled yet.
+    /// Ordering impact → procs → refill belongs to the phase-7 tick, which sees the
+    /// whole swing; this method deliberately leaves the mine empty for it to find.
+    ///
+    /// `pub(crate)`, and for [`take`](Mine::take)'s reason: it is **free**. It
+    /// consults no [`break_progress`](Mine::break_ratio) and no mining power, so a
+    /// front-end able to call it could empty a mine into the inventory on demand.
+    ///
+    /// [`EnchantType::blast_cells`]: crate::enchant::EnchantType
+    pub(crate) fn blast(&mut self, cells: &[(u8, u8)]) -> Vec<Block> {
+        cells.iter().filter_map(|&(x, y)| self.take(x, y)).collect()
+    }
+
+    /// Rolls every spatial enchant against the swing that just broke `impact`, and
+    /// breaks the shapes that fired — returning the blocks they took.
+    ///
+    /// One roll per enchant per **interactive** break, in [`PROC_ORDER`], which is
+    /// the order they consume the generator and therefore part of what a save
+    /// replays. The auto-miner never reaches here: it is credited in closed form
+    /// (`rate × elapsed`), so it cannot draw, and the enchants pay out for playing
+    /// rather than for idling.
+    ///
+    /// **A level-0 enchant is skipped before it draws**, not rolled at 0 permille.
+    /// The two are indistinguishable in outcome and completely different in the
+    /// sequence: a roll that always fails still advances the generator, so an
+    /// enchant the player has not bought would shift every later draw in the run.
+    /// Skipping is also what will let [`Excavator`](crate::enchant::EnchantType)
+    /// join `PROC_ORDER` later without disturbing a single existing save.
+    ///
+    /// **No chain reaction.** Only the cell the player actually mined rolls; the
+    /// cells a blast takes do not roll again. That is what bounds the work — a
+    /// swing resolves in at most three blasts — and what stops a lucky Explosive
+    /// from cascading through the grid on the balance sheet of one swing.
+    ///
+    /// **Does not refill the mine**, for the reason [`blast`](Mine::blast) does not:
+    /// the enchants may empty the grid between them, and the refill belongs to the
+    /// phase-7 tick, which sees the whole swing and can order it impact → procs →
+    /// refill. Callers here are handed an empty mine and are expected to deal with
+    /// it.
+    ///
+    /// Takes no [`World`](crate::world::World): the cap is applied when a level is
+    /// *bought* ([`Enchants::upgrade`]), so an installed level is already legal, and
+    /// both [`proc_permille`](crate::enchant::EnchantType) and
+    /// [`blast_cells`](crate::enchant::EnchantType) clamp what they are handed. A
+    /// world here would be a parameter no line reads.
+    ///
+    /// [`Enchants::upgrade`]: crate::enchant::Enchants
+    // Dead outside the tests until the phase-7 tick calls it, for `dig`'s reason:
+    // nothing in core bounds how often a front-end could ask for a swing.
+    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
+    pub(crate) fn resolve_spatial_procs(
+        &mut self,
+        impact: (u8, u8),
+        enchants: &Enchants,
+        rng: &mut Rng,
+    ) -> Vec<Block> {
+        let size = self.get_size();
+        let mut broken = Vec::new();
+
+        for kind in PROC_ORDER {
+            let level = enchants.get_level(kind);
+            if level == 0 {
+                continue;
+            }
+            if rng.chance_permille(kind.proc_permille(level)) {
+                broken.extend(self.blast(&kind.blast_cells(level, impact, size)));
+            }
+        }
+
+        broken
     }
 
     /// Applies one tick of mining at `mining_power`, returning the block that
@@ -1634,5 +1727,250 @@ mod tests {
             "the emptying tick paid out a block from the fresh grid"
         );
         assert_eq!(mine.remaining_count(), mine.capacity());
+    }
+
+    /// The blast, end to end: every standing cell in the shape falls, and each one
+    /// is handed back exactly once so the caller can drop it.
+    #[test]
+    fn a_blast_breaks_every_cell_of_its_shape_and_returns_them() {
+        let mut mine = built(MineKind::Iron, 3, 0, &mut rng());
+        let shape = [(0, 0), (1, 0), (2, 1)];
+
+        let broken = mine.blast(&shape);
+
+        assert_eq!(broken.len(), shape.len());
+        for (x, y) in shape {
+            assert_eq!(mine.get(x, y), None, "({x}, {y}) is still standing");
+        }
+    }
+
+    /// The half that keeps a blast from paying twice. A shape almost always covers
+    /// ground already cleared — an Explosive fired near the last one, or two
+    /// enchants procing on the same swing — and those cells must be absent from the
+    /// returned drops, not present as phantom blocks. `remaining_count` is the
+    /// load-bearing assertion: it must not move for the cells that were already
+    /// holes.
+    #[test]
+    fn a_blast_over_holes_pays_only_for_what_was_standing() {
+        let mut mine = built(MineKind::Stone, 3, 0, &mut rng());
+        assert!(mine.take(0, 0).is_some());
+        assert!(mine.take(1, 0).is_some());
+        let remaining = mine.remaining_count();
+
+        // Two holes, one standing cell, and one coordinate named twice.
+        let broken = mine.blast(&[(0, 0), (1, 0), (2, 0), (2, 0)]);
+
+        assert_eq!(broken.len(), 1, "only (2, 0) was still standing");
+        assert_eq!(
+            mine.remaining_count(),
+            remaining - 1,
+            "a blast must consume exactly the cells it paid for"
+        );
+    }
+
+    /// Off-grid coordinates are absorbed rather than refused, the same way `take`
+    /// absorbs them. `blast_cells` clips its shapes, so this is defence in depth —
+    /// but a blast that panicked on a stray coordinate would turn a geometry bug
+    /// into a crashed run.
+    #[test]
+    fn a_blast_off_the_grid_breaks_nothing_and_survives() {
+        let mut mine = built(MineKind::Iron, 0, 0, &mut rng());
+        let (width, height) = mine.get_size();
+        let full = mine.remaining_count();
+
+        assert!(
+            mine.blast(&[(width, 0), (0, height), (u8::MAX, u8::MAX)])
+                .is_empty()
+        );
+        assert_eq!(mine.remaining_count(), full);
+    }
+
+    /// **A blast leaves the mine empty; it does not refill it.** `dig` refills on
+    /// the break that takes the last cell, because there the break and the
+    /// emptiness are one event. A blast is not: other enchants may still fire on
+    /// the same swing, and a refill here would drop a full grid under the ones that
+    /// have not rolled yet. Ordering impact → procs → refill is the phase-7 tick's,
+    /// and this test is what pins the half `blast` deliberately does not do.
+    #[test]
+    fn a_blast_that_empties_the_mine_does_not_refill_it() {
+        let mut mine = built(MineKind::Stone, 0, 0, &mut rng());
+        let (width, height) = mine.get_size();
+        let whole_grid: Vec<(u8, u8)> = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .collect();
+
+        let broken = mine.blast(&whole_grid);
+
+        assert_eq!(
+            broken.len(),
+            mine.capacity(),
+            "every cell should have fallen"
+        );
+        assert!(mine.is_empty(), "the blast must leave the mine empty");
+        assert_eq!(mine.remaining_count(), 0);
+    }
+
+    /// The two halves meeting: a shape from `blast_cells` fed straight to `blast`,
+    /// which is exactly what the proc resolution will do. A Nuke clears the grid
+    /// whatever cell it fires from — including a corner, where every other shape
+    /// would be clipped.
+    #[test]
+    fn a_nuke_shape_clears_the_whole_grid_from_a_corner() {
+        let mut mine = built(MineKind::Amethyst, 2, 0, &mut rng());
+        let shape = EnchantType::Nuke.blast_cells(1, (0, 0), mine.get_size());
+
+        let broken = mine.blast(&shape);
+
+        assert_eq!(broken.len(), mine.capacity());
+        assert!(mine.is_empty());
+    }
+
+    /// Every spatial enchant at the End's cap, for the tests whose subject is the
+    /// resolution rather than any one enchant.
+    fn maxed_enchants() -> Enchants {
+        let mut enchants = Enchants::new();
+        for kind in [
+            EnchantType::Explosive,
+            EnchantType::Jackhammer,
+            EnchantType::Nuke,
+        ] {
+            for _ in 0..10 {
+                assert!(
+                    enchants
+                        .upgrade(kind, PickaxeTier::Wooden, World::End)
+                        .is_ok()
+                );
+            }
+        }
+        enchants
+    }
+
+    /// **Decision I, and the half that protects every existing save.** An enchant
+    /// the player never bought must be skipped *before* it draws, not rolled at 0
+    /// permille: a roll that always fails still advances the generator, so the two
+    /// are identical in outcome and completely different in the sequence. Proven
+    /// against a twin generator asked for the same work minus the resolution.
+    ///
+    /// This is also what will let Excavator join `PROC_ORDER` later without
+    /// disturbing a run that never bought it.
+    #[test]
+    fn an_enchant_at_level_zero_costs_no_entropy() {
+        let (mut resolved, mut untouched) = (rng(), rng());
+        let mut mine = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut resolved);
+        let _ = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut untouched);
+
+        let broken = mine.resolve_spatial_procs((5, 5), &Enchants::new(), &mut resolved);
+
+        assert!(broken.is_empty(), "an unenchanted pickaxe broke cells");
+        assert_eq!(
+            draws(&mut resolved),
+            draws(&mut untouched),
+            "resolving with no enchants advanced the generator"
+        );
+    }
+
+    /// The determinism contract, at the proc level: the same seed rolls the same
+    /// procs. Without it a reloaded save would re-roll its luck, and "send me your
+    /// save, I will reproduce your bug" would stop being true the moment an enchant
+    /// fired.
+    #[test]
+    fn the_same_seed_replays_the_same_procs() {
+        fn run(seed: u64) -> (usize, usize) {
+            let mut rng = Rng::from_seed(seed);
+            let mut mine = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut rng);
+            let enchants = maxed_enchants();
+            let mut broken = 0;
+            for swing in 0..20u8 {
+                broken += mine
+                    .resolve_spatial_procs((swing % 20, swing % 10), &enchants, &mut rng)
+                    .len();
+            }
+            (broken, mine.remaining_count())
+        }
+
+        assert_eq!(run(7), run(7), "same seed must replay identically");
+        assert_ne!(run(7), run(99), "different seeds must diverge");
+    }
+
+    /// **Procs take cells and never put one back.** `remaining_count` must be
+    /// monotone across a long run of swings: a resolution that refilled — because a
+    /// Nuke emptied the grid and something reset it — would show up as the count
+    /// climbing. Reaching empty at the end is the other half, and proves the
+    /// monotonicity was not vacuous.
+    #[test]
+    fn procs_only_ever_remove_cells_and_never_refill() {
+        let mut rng = Rng::from_seed(5);
+        let mut mine = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut rng);
+        let enchants = maxed_enchants();
+
+        let mut previous = mine.remaining_count();
+        for swing in 0..500u32 {
+            let impact = ((swing % 20) as u8, (swing % 10) as u8);
+            mine.resolve_spatial_procs(impact, &enchants, &mut rng);
+
+            let remaining = mine.remaining_count();
+            assert!(
+                remaining <= previous,
+                "the mine refilled at swing {swing}: {previous} -> {remaining}"
+            );
+            previous = remaining;
+        }
+
+        assert!(
+            mine.is_empty(),
+            "500 swings at the cap left {previous} cells standing"
+        );
+    }
+
+    /// **The golden vector of the proc sequence.** These counts pin the order the
+    /// enchants draw in (`PROC_ORDER`), the way the roll is made
+    /// (`chance_permille`, an integer comparison on `below(1000)`), and the curve
+    /// behind it. Any of the three changing moves these numbers.
+    ///
+    /// If it fails, the question is not "what are the new counts?" but "what did we
+    /// just do to every existing save?" — the run's luck is a position in this
+    /// sequence, and a save resumes it.
+    #[test]
+    fn the_proc_sequence_is_pinned_to_a_golden_vector() {
+        let mut rng = Rng::from_seed(42);
+        let mut mine = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut rng);
+        let enchants = maxed_enchants();
+
+        let counts: Vec<usize> = (0..12u8)
+            .map(|swing| {
+                mine.resolve_spatial_procs((swing % 20, swing % 10), &enchants, &mut rng)
+                    .len()
+            })
+            .collect();
+
+        // Readable as the enchants themselves: a bare 20 is a Jackhammer clearing
+        // one full-width row, 55 is an Explosive and a Jackhammer landing on the
+        // same swing, and the smaller counts are shapes falling on ground already
+        // dug. The zeros are the swings where nothing rolled.
+        assert_eq!(counts, vec![20, 0, 0, 20, 0, 0, 55, 0, 13, 13, 0, 0]);
+    }
+
+    /// An Explosive fired at a corner is clipped by `blast_cells`, so the blast
+    /// breaks a quadrant and nothing outside the grid — the `u8` underflow this
+    /// pairing exists to rule out would have wrapped it to the far edge instead.
+    #[test]
+    fn an_explosive_shape_at_a_corner_breaks_only_its_quadrant() {
+        let mut mine = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut rng());
+        let capacity = mine.capacity();
+        let shape = EnchantType::Explosive.blast_cells(10, (0, 0), mine.get_size());
+
+        let broken = mine.blast(&shape);
+
+        assert_eq!(broken.len(), 16, "a radius-3 square at the origin is 4x4");
+        assert_eq!(mine.remaining_count(), capacity - 16);
+        for y in 0..4 {
+            for x in 0..4 {
+                assert_eq!(mine.get(x, y), None, "({x}, {y}) should have fallen");
+            }
+        }
+        assert!(
+            mine.get(4, 0).is_some(),
+            "the blast reached past its radius"
+        );
     }
 }
