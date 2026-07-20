@@ -401,8 +401,15 @@ Amethyst) each own a distinct function, so no two ores are redundant.
 - The top tier keeps climbing: **Netherite Efficiency goes 0 to 15** without a
   reset (15 is Pika's instamine point). Past Efficiency 15, the Haste enchant and
   Redstone boosts push the last blocks to instamine.
-- Past Netherite, Obsidian and Crying Obsidian gate further enhancement
-  (progression-gated, not paid).
+- That climb is **priced in two halves**. Efficiency 1→5 is the ordinary tier
+  upgrade, paid in Ancient Debris like the tier itself. Efficiency **6→15 is the
+  post-Netherite enhancement**, and it *is paid* — in Obsidian **and** Crying
+  Obsidian both, the two materials of the Obsidian mine. It is mostly the common
+  Obsidian with a minority Crying share, so the enhancement consumes both and the
+  Obsidian mine's [richness](#mine-richness) dial has an *optimum* ratio to farm
+  toward rather than a maximum (see [upgrade costs](#upgrade-costs)). The
+  enhancement is thus folded into the Efficiency climb, not a separate track past
+  it.
 - Beyond the upgrade ceiling: prestige.
 
 ### Mine gating table
@@ -566,6 +573,11 @@ mine more" are different messages, and only one of them is bad news.
 - **Cost curve shape:** costs grow geometrically per step (`cost(n) = base *
   growth^n`), split across a Compressed part and a raw remainder. The base and
   growth constants are tunables set at implementation time, not fixed here.
+- **Most costs are a single material; a few are a mix.** A price is a list of
+  lines, one per material. The ordinary pickaxe upgrades and the nine same-material
+  mine tracks quote a single line; the enchant cost (world material plus an
+  earlier-mine fuel ore), the two-material richness tracks, and Netherite's
+  Efficiency 6→15 (Obsidian plus Crying Obsidian) quote several.
 - On PikaNetwork, upgrades are identified by Minecraft enchantment, level, and
   material (for example "Efficiency V Stone Pickaxe"). Our naming convention is to
   be decided.
