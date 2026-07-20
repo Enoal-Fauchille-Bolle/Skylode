@@ -37,9 +37,13 @@
 //! [`set_richness_setting`]: crate::mine::Mine::set_richness_setting
 
 use crate::enchant::EnchantType;
+use crate::error::CoreError;
+use crate::inventory::Inventory;
 use crate::material::{Item, Material};
+use crate::mine::Mine;
 use crate::mine_kind::MineKind;
-use crate::pickaxe::PickaxeTier;
+use crate::pickaxe::{Pickaxe, PickaxeTier};
+use crate::rng::Rng;
 use crate::tunables::{COST_BASE, COST_GROWTH, RAW_PER_COMPRESSED};
 use crate::world::World;
 
@@ -113,7 +117,7 @@ impl CostLine {
 
     /// The line's demands as `(Item, amount)` pairs, in the denomination each is
     /// owed in — the shape the till checks against and debits from the
-    /// [`Inventory`](crate::inventory::Inventory).
+    /// [`Inventory`].
     ///
     /// **Zero-amount denominations are dropped.** A line of `6 Compressed + 0 raw`
     /// owes only the Compressed units; yielding `(Raw, 0)` too would make the
@@ -399,6 +403,212 @@ pub fn mine_richness_cost(kind: MineKind, current_richness_level: u32) -> Cost {
         lines.push(CostLine::from_raw_total(value, rare_part));
     }
     Cost::new(lines)
+}
+
+// --- Transactional spending (step 3) ---
+//
+// The till. Each `buy_*` follows one order so that a refusal changes nothing:
+// **is it possible? → is all of it affordable? → debit all → apply**. The
+// possibility check comes first because the apply step (`Pickaxe::upgrade`,
+// `Mine::upgrade_*`) can itself refuse at a cap, and a debit before a refused apply
+// would be the partial payment `error` forbids. Once possibility and affordability
+// are established, the apply cannot fail — it is called on a state its own
+// pre-check already cleared.
+
+/// Whether the inventory holds every line of `cost`, in the exact denominations
+/// quoted.
+///
+/// Strict, like [`Inventory::has`]: 650 raw Iron does not satisfy a `6 Compressed
+/// Iron` line. This is what the Upgrades screen reads to enable a buy button. A
+/// [`Cost`] is one line per material by construction, so each line is checked on
+/// its own.
+pub fn can_afford(inventory: &Inventory, cost: &Cost) -> bool {
+    cost.lines()
+        .iter()
+        .flat_map(CostLine::requirements)
+        .all(|(item, amount)| inventory.has(item, amount))
+}
+
+/// Debits `cost` from the inventory, or refuses without touching it.
+///
+/// **Two passes, and that is the whole point.** The first checks every line; the
+/// second debits. A single pass that debited as it checked would take the first
+/// material of a multi-line cost and then fail on the second — leaving the player
+/// poorer *and* empty-handed, the partial debit the whole [`error`](crate::error)
+/// module is built to forbid. Nothing is removed until everything is known
+/// affordable, so the second pass cannot fail.
+fn pay(inventory: &mut Inventory, cost: &Cost) -> Result<(), CoreError> {
+    for (item, amount) in cost.lines().iter().flat_map(CostLine::requirements) {
+        if !inventory.has(item, amount) {
+            return Err(CoreError::InsufficientItems {
+                item,
+                needed: amount,
+                held: inventory.count(item),
+            });
+        }
+    }
+    for (item, amount) in cost.lines().iter().flat_map(CostLine::requirements) {
+        inventory.remove(item, amount)?;
+    }
+    Ok(())
+}
+
+/// Buys one Efficiency level for the pickaxe: check the cap, debit, apply.
+///
+/// Refuses at the tier's Efficiency cap with [`CoreError::EnchantAtCap`] — the
+/// signal **buy-max reads to stop at the tier boundary** rather than roll on into a
+/// tier jump. Priced by [`pickaxe_efficiency_cost`].
+pub fn buy_pickaxe_efficiency(
+    inventory: &mut Inventory,
+    pickaxe: &mut Pickaxe,
+) -> Result<(), CoreError> {
+    let tier = pickaxe.get_tier();
+    let level = pickaxe.enchants().get_level(EnchantType::Efficiency);
+    let cap = tier.efficiency_cap();
+    if level >= cap {
+        return Err(CoreError::EnchantAtCap {
+            kind: EnchantType::Efficiency,
+            cap,
+        });
+    }
+
+    pay(inventory, &pickaxe_efficiency_cost(tier, level))?;
+    // Efficiency is below the cap, so `upgrade` raises it (never a tier jump) and
+    // cannot fail; the pre-check is what makes the debit safe.
+    pickaxe.upgrade()
+}
+
+/// Buys the jump to the next pickaxe tier: check Efficiency is maxed, debit, apply
+/// (which resets Efficiency on the stronger tier).
+///
+/// Refuses with [`CoreError::EfficiencyNotMaxed`] while Efficiency is still below
+/// its cap — a jump resets it, so buying early would throw away paid levels — and
+/// with [`CoreError::PickaxeFullyUpgraded`] at Netherite, where there is no next
+/// tier. Priced by [`pickaxe_tier_cost`].
+pub fn buy_pickaxe_tier(inventory: &mut Inventory, pickaxe: &mut Pickaxe) -> Result<(), CoreError> {
+    let tier = pickaxe.get_tier();
+    let level = pickaxe.enchants().get_level(EnchantType::Efficiency);
+    let cap = tier.efficiency_cap();
+    if level < cap {
+        return Err(CoreError::EfficiencyNotMaxed {
+            current: level,
+            cap,
+        });
+    }
+    let next = tier.next().ok_or(CoreError::PickaxeFullyUpgraded)?;
+
+    pay(inventory, &pickaxe_tier_cost(next))?;
+    // Efficiency is at the cap and a next tier exists, so `upgrade` performs the
+    // jump (not an Efficiency bump) and cannot fail.
+    pickaxe.upgrade()
+}
+
+/// Buys one level of a special enchant — Fortune or a world-capped enchant:
+/// check the cap, debit, apply.
+///
+/// Priced by [`enchant_cost`] and applied through
+/// [`Pickaxe::upgrade_enchant`](crate::pickaxe::Pickaxe::upgrade_enchant). `world`
+/// is the highest world the player has unlocked, which the cap needs (phase 6 owns
+/// that set). The cap is checked *before* paying, since a purchase at the cap would
+/// otherwise debit and then be refused by the apply.
+///
+/// [`Efficiency`](EnchantType::Efficiency) is not a shop enchant — passed here it
+/// is **routed to [`buy_pickaxe_efficiency`]** rather than refused, so a caller
+/// that does not special-case it still prices and applies it correctly.
+pub fn buy_enchant(
+    inventory: &mut Inventory,
+    pickaxe: &mut Pickaxe,
+    kind: EnchantType,
+    world: World,
+) -> Result<(), CoreError> {
+    let tier = pickaxe.get_tier();
+    let level = pickaxe.enchants().get_level(kind);
+    let Some(cost) = enchant_cost(kind, level, world) else {
+        // `enchant_cost` is `None` only for Efficiency, which the pickaxe path
+        // prices (in the tier material) and applies.
+        return buy_pickaxe_efficiency(inventory, pickaxe);
+    };
+
+    let cap = kind.max_level(tier, world);
+    if level >= cap {
+        return Err(CoreError::EnchantAtCap { kind, cap });
+    }
+
+    pay(inventory, &cost)?;
+    // Level is below the cap, so the apply cannot fail.
+    pickaxe.upgrade_enchant(kind, world)
+}
+
+/// Buys the next size level of a mine: check it is not maxed, debit, apply
+/// (growing and refilling the grid).
+///
+/// Refuses at the top of the size table with [`CoreError::MineSizeMaxed`]. Takes
+/// `&mut Rng` because the enlargement redraws the grid at its new size, and every
+/// draw comes from the seeded generator. Priced by [`mine_size_cost`].
+pub fn buy_mine_size(
+    inventory: &mut Inventory,
+    mine: &mut Mine,
+    rng: &mut Rng,
+) -> Result<(), CoreError> {
+    if mine.is_size_maxed() {
+        return Err(CoreError::MineSizeMaxed {
+            level: mine.get_size_level(),
+        });
+    }
+
+    pay(
+        inventory,
+        &mine_size_cost(mine.kind(), mine.get_size_level()),
+    )?;
+    mine.upgrade_size_level(rng)
+}
+
+/// Buys the next richness *level* — the ceiling — of a mine: check it is not maxed,
+/// debit, apply.
+///
+/// Raises only the ceiling; the player then moves the free
+/// [dial](crate::mine::Mine::set_richness_setting) to use it. Refuses at the top
+/// rung with [`CoreError::RichnessLevelMaxed`]. Priced by [`mine_richness_cost`] —
+/// a single common-material line on the same-material mines, a shifting common →
+/// rare mix on the two-material ones.
+pub fn buy_mine_richness(inventory: &mut Inventory, mine: &mut Mine) -> Result<(), CoreError> {
+    if mine.is_richness_maxed() {
+        return Err(CoreError::RichnessLevelMaxed {
+            level: mine.get_richness_level(),
+        });
+    }
+
+    pay(
+        inventory,
+        &mine_richness_cost(mine.kind(), mine.get_richness_level()),
+    )?;
+    mine.upgrade_richness_level()
+}
+
+/// Repeats a single purchase up to `max_count` times, stopping at the first
+/// refusal, and returns how many succeeded.
+///
+/// The engine behind **buy-×N** (`max_count = n`) and **buy-max**
+/// (`max_count = u32::MAX`): each call re-reads the state, so the price climbs step
+/// by step and the loop halts the moment the next one is unaffordable or the track
+/// is capped. A refusal changes nothing, so the failed final attempt costs the
+/// player nothing.
+///
+/// Takes the purchase as a closure because each track's buy has its own arguments
+/// — some need a [`World`], [`buy_mine_size`] needs an [`Rng`] — so the caller wraps
+/// the one it wants: `buy_repeatedly(5, || buy_pickaxe_efficiency(inv, pickaxe))`.
+/// Applied to [`buy_pickaxe_efficiency`], buy-max stops at the Efficiency cap
+/// rather than advancing the tier, which is the whole reason Efficiency and the
+/// tier jump are separate purchases.
+pub fn buy_repeatedly(max_count: u32, mut buy_once: impl FnMut() -> Result<(), CoreError>) -> u32 {
+    let mut bought = 0;
+    while bought < max_count {
+        if buy_once().is_err() {
+            break;
+        }
+        bought += 1;
+    }
+    bought
 }
 
 #[cfg(test)]
@@ -720,5 +930,311 @@ mod tests {
         );
         assert_eq!(high.lines()[0].material, common, "common line comes first");
         assert_eq!(high.lines()[1].material, rare);
+    }
+
+    // --- Transactional spending (step 3) ---
+
+    fn rng() -> Rng {
+        Rng::from_seed(42)
+    }
+
+    /// An inventory holding the listed raw materials.
+    fn stocked(pairs: &[(Material, u32)]) -> Inventory {
+        let mut inventory = Inventory::new();
+        for &(material, amount) in pairs {
+            inventory.add(Item::Raw(material), amount);
+        }
+        inventory
+    }
+
+    fn efficiency_of(pickaxe: &Pickaxe) -> u8 {
+        pickaxe.enchants().get_level(EnchantType::Efficiency)
+    }
+
+    /// A pickaxe driven to `tier` with Efficiency filled to that tier's cap — the
+    /// state a tier jump is bought from. Goes through the free `upgrade` so the
+    /// setup never sells a level the game would not.
+    fn maxed_efficiency_at(tier: PickaxeTier) -> Pickaxe {
+        let mut pickaxe = Pickaxe::default();
+        while pickaxe.get_tier() != tier {
+            assert!(pickaxe.upgrade().is_ok());
+        }
+        while efficiency_of(&pickaxe) < tier.efficiency_cap() {
+            assert!(pickaxe.upgrade().is_ok());
+        }
+        pickaxe
+    }
+
+    #[test]
+    fn buying_efficiency_debits_and_raises_the_level() {
+        let mut pickaxe = Pickaxe::default(); // Wooden, Efficiency 0
+        let mut inventory = stocked(&[(Material::Stone, 100)]);
+
+        assert_eq!(buy_pickaxe_efficiency(&mut inventory, &mut pickaxe), Ok(()));
+        assert_eq!(efficiency_of(&pickaxe), 1);
+        assert_eq!(
+            inventory.count(Item::Raw(Material::Stone)),
+            90,
+            "cost_curve(0) = 10 Stone"
+        );
+    }
+
+    /// The load-bearing guarantee, on the pickaxe: a refused buy leaves the level
+    /// *and* the inventory exactly as they were.
+    #[test]
+    fn an_unaffordable_efficiency_buy_changes_nothing() {
+        let mut pickaxe = Pickaxe::default();
+        let mut inventory = stocked(&[(Material::Stone, 5)]); // needs 10
+        let before = inventory.clone();
+
+        assert_eq!(
+            buy_pickaxe_efficiency(&mut inventory, &mut pickaxe),
+            Err(CoreError::InsufficientItems {
+                item: Item::Raw(Material::Stone),
+                needed: 10,
+                held: 5,
+            })
+        );
+        assert_eq!(efficiency_of(&pickaxe), 0, "the level moved on a refusal");
+        assert_eq!(inventory, before, "the inventory moved on a refusal");
+    }
+
+    /// At the cap the buy is refused *before* it debits — a capped enchant that
+    /// still took the ore would be the silent hole the whole till is built to close.
+    #[test]
+    fn efficiency_refuses_at_the_cap_without_debiting() {
+        let mut pickaxe = maxed_efficiency_at(PickaxeTier::Wooden); // Efficiency 5
+        let mut inventory = stocked(&[(Material::Stone, 10_000)]);
+
+        assert_eq!(
+            buy_pickaxe_efficiency(&mut inventory, &mut pickaxe),
+            Err(CoreError::EnchantAtCap {
+                kind: EnchantType::Efficiency,
+                cap: 5,
+            })
+        );
+        assert_eq!(inventory.count(Item::Raw(Material::Stone)), 10_000);
+    }
+
+    /// A tier jump before Efficiency is maxed is refused and debits nothing — the
+    /// rule that stops the player throwing away paid Efficiency.
+    #[test]
+    fn a_tier_jump_needs_efficiency_maxed_first() {
+        let mut pickaxe = Pickaxe::default(); // Wooden, Efficiency 0
+        let mut inventory = stocked(&[(Material::Coal, 10_000)]);
+
+        assert_eq!(
+            buy_pickaxe_tier(&mut inventory, &mut pickaxe),
+            Err(CoreError::EfficiencyNotMaxed { current: 0, cap: 5 })
+        );
+        assert_eq!(pickaxe.get_tier(), PickaxeTier::Wooden);
+        assert_eq!(inventory.count(Item::Raw(Material::Coal)), 10_000);
+    }
+
+    #[test]
+    fn buying_a_tier_jump_advances_and_resets_efficiency() {
+        let mut pickaxe = maxed_efficiency_at(PickaxeTier::Wooden); // Wooden, Efficiency 5
+        let mut inventory = stocked(&[(Material::Coal, 100)]);
+
+        assert_eq!(buy_pickaxe_tier(&mut inventory, &mut pickaxe), Ok(()));
+        assert_eq!(pickaxe.get_tier(), PickaxeTier::Stone);
+        assert_eq!(efficiency_of(&pickaxe), 0, "a tier jump resets Efficiency");
+        assert_eq!(
+            inventory.count(Item::Raw(Material::Coal)),
+            88,
+            "reaching Stone costs cost_curve(1) = 12 Coal"
+        );
+    }
+
+    #[test]
+    fn a_fully_maxed_pickaxe_cannot_jump() {
+        let mut pickaxe = maxed_efficiency_at(PickaxeTier::Netherite); // Efficiency 15
+        let mut inventory = stocked(&[(Material::AncientDebris, 10_000)]);
+
+        assert_eq!(
+            buy_pickaxe_tier(&mut inventory, &mut pickaxe),
+            Err(CoreError::PickaxeFullyUpgraded)
+        );
+    }
+
+    #[test]
+    fn buying_a_special_enchant_debits_all_its_lines() {
+        let mut pickaxe = Pickaxe::default();
+        // Fortune level 1 in the Overworld: 10 Emerald + 3 Coal (fuel).
+        let mut inventory = stocked(&[(Material::Emerald, 100), (Material::Coal, 100)]);
+
+        assert_eq!(
+            buy_enchant(
+                &mut inventory,
+                &mut pickaxe,
+                EnchantType::Fortune,
+                World::Overworld
+            ),
+            Ok(())
+        );
+        assert_eq!(pickaxe.enchants().get_level(EnchantType::Fortune), 1);
+        assert_eq!(inventory.count(Item::Raw(Material::Emerald)), 90);
+        assert_eq!(inventory.count(Item::Raw(Material::Coal)), 97);
+    }
+
+    /// The multi-line partial-debit guard, stated as a test: short on the *second*
+    /// line, and the *first* is not debited either. If this ever fails, `pay` has
+    /// started debiting before it finished checking.
+    #[test]
+    fn a_special_enchant_short_on_one_line_debits_neither() {
+        let mut pickaxe = Pickaxe::default();
+        // Enough Emerald, but only 2 Coal where the fuel line needs 3.
+        let mut inventory = stocked(&[(Material::Emerald, 100), (Material::Coal, 2)]);
+        let before = inventory.clone();
+
+        assert!(
+            buy_enchant(
+                &mut inventory,
+                &mut pickaxe,
+                EnchantType::Fortune,
+                World::Overworld
+            )
+            .is_err()
+        );
+        assert_eq!(pickaxe.enchants().get_level(EnchantType::Fortune), 0);
+        assert_eq!(
+            inventory, before,
+            "the Emerald line was debited before the Coal line failed"
+        );
+    }
+
+    #[test]
+    fn a_special_enchant_refuses_at_its_world_cap() {
+        // Explosive caps at 3 in the Overworld.
+        let mut pickaxe = Pickaxe::default();
+        let mut inventory = stocked(&[(Material::Lapis, 10_000), (Material::Coal, 10_000)]);
+
+        for _ in 0..3 {
+            assert!(
+                buy_enchant(
+                    &mut inventory,
+                    &mut pickaxe,
+                    EnchantType::Explosive,
+                    World::Overworld
+                )
+                .is_ok()
+            );
+        }
+        assert_eq!(
+            buy_enchant(
+                &mut inventory,
+                &mut pickaxe,
+                EnchantType::Explosive,
+                World::Overworld
+            ),
+            Err(CoreError::EnchantAtCap {
+                kind: EnchantType::Explosive,
+                cap: 3,
+            })
+        );
+        assert_eq!(pickaxe.enchants().get_level(EnchantType::Explosive), 3);
+    }
+
+    /// Efficiency handed to the enchant door is priced in the *tier* material and
+    /// applied to Efficiency, not treated as a shop enchant — the routing that keeps
+    /// a caller from having to special-case it.
+    #[test]
+    fn efficiency_through_the_enchant_door_uses_the_pickaxe_path() {
+        let mut pickaxe = Pickaxe::default();
+        let mut inventory = stocked(&[(Material::Stone, 100)]);
+
+        assert_eq!(
+            buy_enchant(
+                &mut inventory,
+                &mut pickaxe,
+                EnchantType::Efficiency,
+                World::End
+            ),
+            Ok(())
+        );
+        assert_eq!(efficiency_of(&pickaxe), 1);
+        assert_eq!(
+            inventory.count(Item::Raw(Material::Stone)),
+            90,
+            "Efficiency is priced in the tier material, not an enchant material"
+        );
+    }
+
+    #[test]
+    fn buying_mine_size_grows_the_grid_and_debits() {
+        let mut mine = Mine::new(MineKind::Iron, &mut rng());
+        let mut inventory = stocked(&[(Material::Iron, 100)]);
+        let before_level = mine.get_size_level();
+
+        assert_eq!(buy_mine_size(&mut inventory, &mut mine, &mut rng()), Ok(()));
+        assert_eq!(mine.get_size_level(), before_level + 1);
+        assert_eq!(inventory.count(Item::Raw(Material::Iron)), 90);
+    }
+
+    /// Buying a richness level raises the ceiling and *only* the ceiling: the dial,
+    /// stuck at 0 before, can now be pushed to the new rung.
+    #[test]
+    fn buying_mine_richness_raises_the_ceiling_and_unlocks_the_dial() {
+        let mut mine = Mine::new(MineKind::Amethyst, &mut rng());
+        let mut inventory = stocked(&[(Material::Endstone, 100)]);
+        assert_eq!(mine.get_richness_level(), 0);
+        assert!(
+            mine.set_richness_setting(1, &mut rng()).is_err(),
+            "the dial cannot exceed a ceiling of 0 yet"
+        );
+
+        assert_eq!(buy_mine_richness(&mut inventory, &mut mine), Ok(()));
+        assert_eq!(mine.get_richness_level(), 1);
+        assert_eq!(inventory.count(Item::Raw(Material::Endstone)), 90);
+        assert!(
+            mine.set_richness_setting(1, &mut rng()).is_ok(),
+            "the dial reaches the freshly bought ceiling"
+        );
+    }
+
+    /// The reason Efficiency and the tier jump are separate purchases: buy-max on
+    /// Efficiency stops at the cap instead of rolling on into a tier jump.
+    #[test]
+    fn buy_max_efficiency_stops_at_the_tier_cap() {
+        let mut pickaxe = Pickaxe::default(); // Wooden, cap 5
+        let mut inventory = stocked(&[(Material::Stone, 10_000)]);
+
+        let bought = buy_repeatedly(u32::MAX, || {
+            buy_pickaxe_efficiency(&mut inventory, &mut pickaxe)
+        });
+
+        assert_eq!(bought, 5, "buy-max must stop at the Efficiency cap");
+        assert_eq!(efficiency_of(&pickaxe), 5);
+        assert_eq!(
+            pickaxe.get_tier(),
+            PickaxeTier::Wooden,
+            "buy-max Efficiency must not advance the tier"
+        );
+    }
+
+    /// Buy-×N buys exactly what the stock covers and stops, the rising price
+    /// deciding where.
+    #[test]
+    fn buy_n_stops_when_the_stock_runs_out() {
+        let mut pickaxe = Pickaxe::default();
+        // cost_curve(0) + cost_curve(1) = 10 + 12 = 22; a third would be 13 more.
+        let mut inventory = stocked(&[(Material::Stone, 25)]);
+
+        let bought = buy_repeatedly(10, || buy_pickaxe_efficiency(&mut inventory, &mut pickaxe));
+
+        assert_eq!(bought, 2, "only two levels are affordable");
+        assert_eq!(efficiency_of(&pickaxe), 2);
+        assert_eq!(inventory.count(Item::Raw(Material::Stone)), 3);
+    }
+
+    #[test]
+    fn can_afford_reads_every_line_strictly() {
+        let cost = enchant_cost(EnchantType::Fortune, 0, World::Overworld); // 10 Emerald + 3 Coal
+
+        let short = stocked(&[(Material::Emerald, 100), (Material::Coal, 2)]);
+        assert_eq!(cost.as_ref().map(|c| can_afford(&short, c)), Some(false));
+
+        let enough = stocked(&[(Material::Emerald, 100), (Material::Coal, 100)]);
+        assert_eq!(cost.as_ref().map(|c| can_afford(&enough, c)), Some(true));
     }
 }

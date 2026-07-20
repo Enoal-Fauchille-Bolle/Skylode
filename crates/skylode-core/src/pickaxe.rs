@@ -16,6 +16,7 @@ use crate::block::Block;
 use crate::enchant::{EnchantType, Enchants};
 use crate::error::CoreError;
 use crate::tunables::HASTE_PER_LEVEL;
+use crate::world::World;
 
 /// The material tier of a pickaxe.
 ///
@@ -63,6 +64,17 @@ impl Pickaxe {
     /// Returns the tier of the pickaxe.
     pub fn get_tier(&self) -> PickaxeTier {
         self.tier
+    }
+
+    /// Borrows the pickaxe's enchantments, for reading their levels.
+    ///
+    /// Shared access only. Every mutating path ([`upgrade`](Pickaxe::upgrade),
+    /// [`upgrade_enchant`](Pickaxe::upgrade_enchant)) goes *through* the pickaxe so
+    /// the tier is always in scope for the cap; a front-end reads levels here to
+    /// render the pickaxe and to quote an upgrade's next cost, and cannot mutate
+    /// through a `&` — the [`Enchants`] mutators are `pub(crate)` besides.
+    pub fn enchants(&self) -> &Enchants {
+        &self.enchants
     }
 
     /// Whether this pickaxe is allowed to break `block` at all: its tier must
@@ -215,13 +227,9 @@ impl Pickaxe {
     ///
     /// `pub(crate)` because it is **free**: it consults no inventory and debits
     /// nothing. A front-end that could call it could walk a fresh player to a
-    /// maxed Netherite pickaxe in thirty calls. The paid path will check solvency,
-    /// debit, and then delegate here.
-    // Dead outside the tests until the phase-5 purchase path calls it. `expect`
-    // rather than `allow`, so the lint fires again — and this line can go — the
-    // moment a real caller appears; `cfg_attr` because the tests *do* call it, and
-    // an unconditional expectation would go unfulfilled in the test build.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-5 economy"))]
+    /// maxed Netherite pickaxe in thirty calls. The paid path in
+    /// [`economy`](crate::economy) checks solvency, debits, and then delegates
+    /// here — it is this method's only non-test caller.
     pub(crate) fn upgrade(&mut self) -> Result<(), CoreError> {
         let efficiency = EnchantType::Efficiency;
 
@@ -237,6 +245,26 @@ impl Pickaxe {
             return Err(CoreError::PickaxeFullyUpgraded);
         }
         Ok(())
+    }
+
+    /// Raises one enchant by a level, refusing at its cap.
+    ///
+    /// The application half of a special-enchant purchase — Fortune and the five
+    /// world-capped enchants. [`economy`](crate::economy) prices it and calls here;
+    /// this defers to [`Enchants::upgrade`], handing over the pickaxe's own
+    /// [tier](Pickaxe::get_tier) so the cap resolves correctly (the specials ignore
+    /// the tier, Fortune ignores both, and Efficiency — were it routed here — would
+    /// read it).
+    ///
+    /// Efficiency is normally bought through [`upgrade`](Pickaxe::upgrade) instead,
+    /// where it shares the tier-jump path; the economy layer keeps the two doors
+    /// apart. `pub(crate)`: a front-end could otherwise raise an enchant for free.
+    pub(crate) fn upgrade_enchant(
+        &mut self,
+        kind: EnchantType,
+        world: World,
+    ) -> Result<(), CoreError> {
+        self.enchants.upgrade(kind, self.tier, world)
     }
 }
 
@@ -283,7 +311,7 @@ impl PickaxeTier {
     ///
     /// Keeping this one here is what lets [`Pickaxe::upgrade`] ask its question —
     /// "how far can Efficiency go on *this tier*" — without being handed a
-    /// [`World`](crate::world::World) it would provably never read.
+    /// [`World`] it would provably never read.
     ///
     /// [`Pickaxe::upgrade`]: Pickaxe::upgrade
     pub fn efficiency_cap(self) -> u8 {

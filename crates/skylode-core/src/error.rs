@@ -59,6 +59,21 @@ pub enum CoreError {
     /// for nothing and drop the player from 235 mining power back to 10,
     /// *permanently*. See [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe).
     PickaxeFullyUpgraded,
+    /// A tier jump was asked for while Efficiency is still below its cap.
+    ///
+    /// The two pickaxe upgrades are bought separately, and a tier jump **resets
+    /// Efficiency to 0** — so buying it early would throw away levels the player
+    /// paid for. The rule is: fill Efficiency to its
+    /// [cap](crate::pickaxe::PickaxeTier::efficiency_cap) first, then trade the
+    /// maxed enchant for the next tier and re-climb on a stronger base. Carries
+    /// both numbers so the UI can say how many Efficiency levels are still owed
+    /// before the tier button opens.
+    EfficiencyNotMaxed {
+        /// The Efficiency level the pickaxe currently holds.
+        current: u8,
+        /// The cap it must reach on this tier before the jump is allowed.
+        cap: u8,
+    },
     /// The mine already fills the largest grid the size table holds.
     ///
     /// Size levels past the table buy no blocks: the dimensions stop growing.
@@ -66,6 +81,17 @@ pub enum CoreError {
     /// charging for nothing once the economy lands.
     MineSizeMaxed {
         /// The largest size level, which the mine is already at.
+        level: u32,
+    },
+    /// The mine's bought richness ceiling is already at the highest level.
+    ///
+    /// The sibling of [`MineSizeMaxed`](CoreError::MineSizeMaxed) for the mine's
+    /// other paid track: the richness *level* (the ceiling the dial may reach) has
+    /// a top rung, and a purchase past it would charge for nothing. Distinct from
+    /// [`RichnessAboveCeiling`](CoreError::RichnessAboveCeiling), which refuses the
+    /// free *dial* — this refuses the *purchase* that would raise the ceiling.
+    RichnessLevelMaxed {
+        /// The highest richness level, which the mine is already at.
         level: u32,
     },
     /// The richness dial was pushed past the ceiling the player has bought.
@@ -97,8 +123,20 @@ impl fmt::Display for CoreError {
                 write!(f, "{} is already at its cap of {cap}", kind.name())
             }
             Self::PickaxeFullyUpgraded => write!(f, "the pickaxe is fully upgraded"),
+            Self::EfficiencyNotMaxed { current, cap } => {
+                write!(
+                    f,
+                    "Efficiency must reach its cap of {cap} before the tier advances (at {current})"
+                )
+            }
             Self::MineSizeMaxed { level } => {
                 write!(f, "the mine is already at its largest size, level {level}")
+            }
+            Self::RichnessLevelMaxed { level } => {
+                write!(
+                    f,
+                    "the mine's richness is already at its highest level, {level}"
+                )
             }
             Self::RichnessAboveCeiling { requested, ceiling } => {
                 write!(
@@ -151,6 +189,21 @@ mod tests {
         assert_eq!(
             CoreError::MineSizeMaxed { level: 9 }.to_string(),
             "the mine is already at its largest size, level 9"
+        );
+        assert_eq!(
+            CoreError::RichnessLevelMaxed { level: 9 }.to_string(),
+            "the mine's richness is already at its highest level, 9"
+        );
+    }
+
+    /// The tier-jump refusal names both numbers, so the Upgrades screen can say how
+    /// many Efficiency levels are still owed before the tier button opens.
+    #[test]
+    fn a_tier_jump_before_efficiency_is_maxed_names_both_numbers() {
+        let err = CoreError::EfficiencyNotMaxed { current: 2, cap: 5 };
+        assert_eq!(
+            err.to_string(),
+            "Efficiency must reach its cap of 5 before the tier advances (at 2)"
         );
     }
 

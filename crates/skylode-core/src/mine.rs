@@ -146,9 +146,10 @@ pub struct Mine {
     /// [`get_size`](Mine::get_size).
     size_level: u32,
     /// The richness *ceiling*: how high the dial may be pushed. Bought (phase 5),
-    /// permanent, one-way. It has no writer yet — the paid upgrade path does not
-    /// exist — so it stays 0 until phase 5 lands; it is read through
-    /// [`get_richness_level`](Mine::get_richness_level).
+    /// permanent, one-way — raised a level at a time by
+    /// [`upgrade_richness_level`](Mine::upgrade_richness_level) and read through
+    /// [`get_richness_level`](Mine::get_richness_level). A fresh mine starts at 0,
+    /// so the dial cannot move until a level is bought.
     richness_level: u32,
     /// The richness *dial*: `<= richness_level`, set freely and for free, and the
     /// only field that actually shapes the grid. It is the weight the composition
@@ -211,9 +212,46 @@ impl Mine {
     }
 
     /// Returns the richness *ceiling* — the highest the dial may be set. Bought,
-    /// permanent, one-way; 0 until the phase-5 upgrade path exists to raise it.
+    /// permanent, one-way; raised a level at a time by
+    /// [`upgrade_richness_level`](Mine::upgrade_richness_level).
     pub fn get_richness_level(&self) -> u32 {
         self.richness_level
+    }
+
+    /// Whether the bought richness ceiling is already at its top rung, so
+    /// [`upgrade_richness_level`](Mine::upgrade_richness_level) would refuse — for a
+    /// UI to grey out the buy button before it is pressed.
+    pub fn is_richness_maxed(&self) -> bool {
+        self.richness_level >= MAX_RICHNESS_LEVEL
+    }
+
+    /// Raises the richness *ceiling* by one level, or refuses if it is already at
+    /// the top rung.
+    ///
+    /// The **purchase** side of richness: it moves only the ceiling, never the
+    /// dial. Buying a level does not enrich the grid on its own — it lets the
+    /// player push the free [dial](Mine::set_richness_setting) one rung higher, and
+    /// *that* is what re-rolls the standing cells. Buy the ceiling, then set the
+    /// dial; the two are deliberately separate actions.
+    ///
+    /// Refuses at [`MAX_RICHNESS_LEVEL`] with [`CoreError::RichnessLevelMaxed`]
+    /// rather than incrementing past it, so a paid purchase never charges for a
+    /// level the composition curve cannot use — the refusal
+    /// [`upgrade_size_level`](Mine::upgrade_size_level) makes for the size track.
+    ///
+    /// `pub(crate)` because it is **free** here: the transaction that debits it
+    /// lives in [`economy`](crate::economy). Unlike
+    /// [`set_richness_setting`](Mine::set_richness_setting), which is `pub` because
+    /// the free dial *is* the design, raising the ceiling for free would hand a
+    /// front-end unlimited richness.
+    pub(crate) fn upgrade_richness_level(&mut self) -> Result<(), CoreError> {
+        if self.richness_level >= MAX_RICHNESS_LEVEL {
+            return Err(CoreError::RichnessLevelMaxed {
+                level: MAX_RICHNESS_LEVEL,
+            });
+        }
+        self.richness_level += 1;
+        Ok(())
     }
 
     /// Returns the richness *dial*: the value cell's weight in the composition.
@@ -683,6 +721,13 @@ impl Mine {
         }
     }
 
+    /// Whether the mine already fills the largest grid the size table holds, so
+    /// [`upgrade_size_level`](Mine::upgrade_size_level) would refuse — for a UI to
+    /// grey out the buy button before it is pressed.
+    pub fn is_size_maxed(&self) -> bool {
+        self.size_level >= MAX_SIZE_LEVEL
+    }
+
     /// Increases the mine's size level by 1 and resets the grid to the new size,
     /// or refuses if the mine is already the largest the table describes.
     ///
@@ -692,12 +737,10 @@ impl Mine {
     /// paid for in the mine's own ore, that is a purchase that charges the player
     /// for nothing.
     ///
-    /// `pub(crate)` because it is **free**. A mine enlargement is paid for in the
-    /// mine's own ore, and the transaction that debits it does not exist yet
-    /// (phase 5). Until it does, this is a door onto a 20x10 mine at no cost, and
-    /// it stays shut to anything outside the core. The paid entry point will wrap
-    /// this one rather than replace it.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-5 economy"))]
+    /// `pub(crate)` because it is **free**: a mine enlargement is paid for in the
+    /// mine's own ore, and the transaction that debits it lives in
+    /// [`economy`](crate::economy), which is its only caller. A front-end able to
+    /// call this directly could grow a mine to 20x10 at no cost.
     pub(crate) fn upgrade_size_level(&mut self, rng: &mut Rng) -> Result<(), CoreError> {
         if self.size_level >= MAX_SIZE_LEVEL {
             return Err(CoreError::MineSizeMaxed {

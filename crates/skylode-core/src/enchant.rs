@@ -494,11 +494,11 @@ impl Enchants {
     /// `pub(crate)` for the same reason as
     /// [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe::upgrade): it is free. An
     /// enchant level is bought with the world's enchant material plus a mix of
-    /// earlier mines' ore, and none of that is checked here.
-    // Dead outside the tests until the phase-5 purchase path calls it: the one
-    // in-crate caller, `Pickaxe::upgrade`, goes through `upgrade_efficiency`
-    // instead, precisely because it has no world to hand over.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-5 economy"))]
+    /// earlier mines' ore, and that is checked by the paid path in
+    /// [`economy`](crate::economy), which reaches this through
+    /// [`Pickaxe::upgrade_enchant`](crate::pickaxe::Pickaxe::upgrade_enchant) — the
+    /// door that has a world to hand over, unlike
+    /// [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe::upgrade)'s Efficiency route.
     pub(crate) fn upgrade(
         &mut self,
         kind: EnchantType,
