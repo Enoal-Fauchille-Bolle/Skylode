@@ -77,21 +77,16 @@ pickaxe tier opens mines) and the detailed rules behind each step are in
 
 ## Screens
 
-The interface is keyboard-driven, with one responsibility per screen, switched via
-Tab or number keys:
+The interface is keyboard-driven: six screens in a tab ring, one responsibility
+each.
 
-- **Mine:** active mining (hold Space). The current cube is shown as a 2D grid
-  (each block `##`, the targeted cell highlighted with a crack glyph), with a
-  status strip below the grid (break-progress bar, mining power, active boost, and
-  the mining-level / XP bar).
-- **Mines:** choose the world and cube. Worlds are gated by mining level and mines
-  by pickaxe tier; shows unlocked versus locked, and each mine's size and richness.
-  This is also where the **richness dial** lives — drawn only on the three mines
-  where it is a real choice (Quartz, Obsidian, End), and hidden on the nine where
-  its only sensible position is the top.
-- **Inventory:** ores and amounts (raw and Compressed, no stack limit).
-- **Upgrades:** the full pickaxe roadmap (every tier and Efficiency/Fortune step
-  with its composite cost, current position highlighted, future steps visible for
-  planning), plus enchant levels and both mine tracks (size and richness).
-  Quality-of-life: affordability markers, buy times N, buy max.
-- **Stats:** progression, mining level, prestige rank, milestones.
+- **Mine** — where you swing the pickaxe, and watch the cube come apart.
+- **Mines** — choose the world and the mine, and set how rich it runs.
+- **Inventory** — what you hold, in both denominations, and where you compress it.
+- **Upgrades** — the pickaxe ladder, the enchant tracks, and both mine tracks.
+- **Stats** — progression, prestige, this run's progress, and the event history.
+- **Levels** — the level roadmap, and what each level grants.
+
+The specification — every layout, every key, and the counted frames that prove the
+content fits the reference terminal — is [UI.md](UI.md). It is the single source
+for all of it; this list carries only what each screen is *for*.
