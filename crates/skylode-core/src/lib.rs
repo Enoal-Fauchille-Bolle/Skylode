@@ -15,6 +15,8 @@
 //!   denominations — raw and Compressed — the player holds them in.
 //! - [`inventory`]: what the player is carrying, and the compression they
 //!   convert it with.
+//! - [`economy`]: what upgrades cost, and the transactional path that pays for
+//!   them.
 //! - [`mine`]: a generated grid of blocks the player digs through, sized by
 //!   level.
 //! - [`mine_kind`]: the twelve canonical mines and their identity (block pool,
@@ -27,6 +29,7 @@
 //! - [`error`]: what the rules refuse, and why.
 
 pub mod block;
+pub mod economy;
 pub mod enchant;
 pub mod error;
 pub mod inventory;
