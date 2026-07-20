@@ -476,8 +476,28 @@ special case, no bounds check.
 
 Non-spatial enchants (qualitative on another axis):
 
-- **Excavator:** on a proc, substitutes a `Compressed <ore>` or Emerald for the raw
-  drop. Its proc is the model the three spatials now follow.
+- **Excavator:** on a proc, substitutes **one `Compressed <ore>` of the mined
+  material** for the block's whole raw drop. Its proc is the model the three spatials
+  now follow, and it is the only thing in the game that mints a Compressed unit
+  without paying its 100 raw.
+
+  **Fortune does not multiply it.** *Substitutes* is meant at full strength: the proc
+  replaces the drop rather than joining it, so a proc is worth a flat 100 raw whatever
+  else the pickaxe carries. Composing them would put the rarest burst in the game
+  under its largest multiplier — 11 Compressed, 1100 raw, from one swing at the caps —
+  and a windfall that swings by a factor of eleven stops being legible to the player
+  and starts dominating every balance number near it.
+
+  It rolls **once per swing, on the block the player actually broke**, never on the
+  cells a blast takes. A maxed Nuke drops two hundred cells in a tick; rolling each
+  would make the number of draws per swing depend on a blast's geometry, and a PRNG
+  sequence whose shape varies with the grid is one no golden vector can pin.
+
+  An **Emerald** was the alternative half of an earlier draft ("a Compressed unit or
+  an Emerald") and is dropped. It read as a premium currency once; in Skylode it is
+  one Overworld material among eight, so on almost every mine it would have been the
+  strictly worse side of a coin flip — an outcome the player suffers rather than
+  understands.
 - **Haste:** permanent mining-speed multiplier `x(1 + 0.2 * level)`, multiplicative
   and distinct from additive Efficiency. This is the endgame instamine lever, and —
   as above — the one special that does not proc.

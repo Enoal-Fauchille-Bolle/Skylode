@@ -108,8 +108,12 @@ grid, at any level). All three fire on a seeded **proc** whose frequency climbs 
 the level, rolled in a fixed order that a save replays; Nuke has no cooldown, since
 emptying the mine is its own limiter. They compute and break shapes but are **not
 wired to a tick** — ordering a swing as impact → procs → refill is phase 7's.
-What remains here is Excavator, an RNG proc that drops a Compressed unit or an
-Emerald instead of raw ore (see [MECHANICS.md](MECHANICS.md#enchants)).
+Excavator closes the phase: a proc that substitutes one Compressed unit of the mined
+material for the block's whole raw drop, unmultiplied by Fortune, rolled once per
+swing on the impact block. It reshapes no cell, so it resolves in `enchant` rather
+than on the mine, and draws **after** the three spatials — an order the two halves are
+tested against rather than produced by a single loop (see
+[MECHANICS.md](MECHANICS.md#enchants)).
 
 ## Phase 5 - Economy
 
