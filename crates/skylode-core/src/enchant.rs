@@ -13,7 +13,9 @@
 //!   needs to be passed around on its own.
 
 use crate::error::CoreError;
+use crate::material::{Item, Material};
 use crate::pickaxe::PickaxeTier;
+use crate::rng::Rng;
 use crate::world::World;
 use std::collections::HashMap;
 
@@ -99,7 +101,7 @@ const PROC_RAMP_SPAN: u32 = 9;
 ///
 /// **This is a reproducibility contract, not a list.** A save stores a position in
 /// the PRNG sequence, so which enchant draws first decides what every later draw
-/// in the run returns. Reorder these three and every existing save quietly
+/// in the run returns. Reorder these four and every existing save quietly
 /// continues on different dice — nothing fails, which is exactly the problem.
 /// `the_proc_order_follows_the_declaration_order` is what turns that silence into a
 /// failing test.
@@ -109,13 +111,54 @@ const PROC_RAMP_SPAN: u32 = 9;
 /// obvious answer to "where does a new enchant go" rather than a convention to
 /// remember.
 ///
-/// [`Excavator`](EnchantType::Excavator) is **absent on purpose**: it procs too, but
-/// its effect is not built yet, and rolling for an enchant that cannot act would
-/// burn a draw for nothing. It belongs after [`Nuke`](EnchantType::Nuke) when it
-/// lands. Inserting it there will not disturb any existing run, because a level-0
-/// enchant is skipped before it draws — so a player who never bought it consumes
-/// the same sequence either way.
-pub(crate) const PROC_ORDER: [EnchantType; 3] = [
+/// [`Excavator`](EnchantType::Excavator) comes **last**, and that placement is what
+/// let it land without disturbing a single existing run: a level-0 enchant is skipped
+/// before it draws, so a player who never bought it consumes the same sequence as
+/// before it existed. Appending rather than inserting is the general rule a future
+/// enchant should follow for the same reason.
+///
+/// **Nothing iterates this, and that is the cost of splitting the resolution.** The
+/// spatials loop over [`SPATIAL_PROC_ORDER`] inside [`Mine`]; the Excavator resolves
+/// on its own in [`resolve_excavator`](Enchants::resolve_excavator). So this constant
+/// is no longer the code that *produces* the order — it is the statement of what the
+/// order must be, which the tests hold the two halves to. Deleting it as unused would
+/// delete the only place the whole sequence is written down.
+///
+/// [`Mine`]: crate::mine::Mine
+// Dead outside the tests by construction, per the paragraph above.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the contract the two resolutions are tested against"
+    )
+)]
+pub(crate) const PROC_ORDER: [EnchantType; 4] = [
+    EnchantType::Explosive,
+    EnchantType::Jackhammer,
+    EnchantType::Nuke,
+    EnchantType::Excavator,
+];
+
+/// The enchants [`Mine::resolve_spatial_procs`] rolls: a **prefix** of
+/// [`PROC_ORDER`], and the prefix is the whole point.
+///
+/// The four triggered enchants do not resolve in one place. Three of them reshape
+/// the grid and belong to [`Mine`]; [`Excavator`](EnchantType::Excavator) substitutes
+/// a *drop* and touches no cell, so it resolves here in `enchant` through
+/// [`resolve_excavator`](Enchants::resolve_excavator) — putting it on `Mine` would
+/// hand the grid a say in the inventory it has no business having.
+///
+/// Splitting the resolution splits the draw, though, and the draw order is the
+/// contract [`PROC_ORDER`] exists to state. So the ordering that used to be
+/// guaranteed by one loop is now a promise between two functions: the spatials draw
+/// first, the Excavator draws after. `spatial_proc_order_is_a_prefix_of_proc_order`
+/// is what turns that promise into something the compiler runs — being a prefix is
+/// exactly the statement "the spatials come first, and nothing was skipped".
+///
+/// [`Mine`]: crate::mine::Mine
+/// [`Mine::resolve_spatial_procs`]: crate::mine::Mine
+pub(crate) const SPATIAL_PROC_ORDER: [EnchantType; 3] = [
     EnchantType::Explosive,
     EnchantType::Jackhammer,
     EnchantType::Nuke,
@@ -192,13 +235,31 @@ pub enum EnchantType {
     /// nothing standing until the batch reset refills the grid.
     /// Capped by the world; see [`World::enchant_cap`].
     Nuke,
-    /// Grants a chance to drop a [`Compressed`] unit, or an Emerald, in place of
-    /// the raw ore.
+    /// On a proc, substitutes one [`Compressed`] unit of the mined material for the
+    /// block's whole raw drop. The one triggered enchant that changes the *loot*
+    /// rather than the grid; see
+    /// [`resolve_excavator`](Enchants::resolve_excavator).
     ///
     /// The only thing in the game that mints a Compressed unit without paying its
     /// 100 raw, which is what makes it a windfall rather than a prettier drop. It
     /// substitutes the drop *after* it leaves the block, so no block gains a
     /// Compressed unit of its own — see [`Block::drops`].
+    ///
+    /// **Fortune does not multiply it**, and that is a balance decision rather than
+    /// an oversight. `substitutes` is meant at full strength: the proc replaces the
+    /// loot, it does not join it. Composing the two would put the game's rarest
+    /// burst under its largest multiplier — 11 Compressed, 1100 raw, from one swing
+    /// at the caps — and a windfall that swings by a factor of eleven stops being
+    /// legible to the player and starts dominating every balance number around it.
+    /// A flat 100 is the whole of what a proc is worth, whatever else the pickaxe
+    /// carries.
+    ///
+    /// **Compressed of the mined material, and nothing else.** Earlier drafts
+    /// offered "a Compressed unit *or* an Emerald"; the Emerald branch is dropped.
+    /// It made sense when Emerald read as a premium currency, and in Skylode it is
+    /// one Overworld material among eight — so on almost every mine it would have
+    /// been the strictly worse half of a coin flip, and the player would have
+    /// suffered the outcome rather than understood it.
     /// Capped by the world; see [`World::enchant_cap`].
     ///
     /// [`Compressed`]: crate::material::Item::Compressed
@@ -299,6 +360,16 @@ impl EnchantType {
     /// enchant's opening rate. Worth knowing at the balance pass: if Nuke proves too
     /// frequent early, the fix is the unit, not the curve.
     ///
+    /// [`Excavator`](EnchantType::Excavator) sits low for a different reason than
+    /// Nuke does. Nuke is throttled because it clears a 200-cell grid; the Excavator
+    /// breaks nothing at all, and is throttled because of what it *pays*. A proc
+    /// mints 100 raw where the ore cell it replaced was worth 1 — so frequency is
+    /// not one lever among several here, it is the entire power budget, and the
+    /// curve is the only thing standing between a windfall and an income. Its
+    /// ceiling is deliberately below the two spatials': they hand out cells the
+    /// player still has to have mined, this hands out a denomination nothing else in
+    /// the game produces without paying for it.
+    ///
     /// These live here rather than in [`tunables`](crate::tunables) under that
     /// module's second rule — a value that is *one per variant* is a `match` in the
     /// enum's own module, which is also the only shape that turns a new variant into
@@ -312,9 +383,10 @@ impl EnchantType {
             Self::Explosive => (20, 200),
             Self::Jackhammer => (15, 150),
             Self::Nuke => (1, 10),
-            // Excavator procs too, but its effect is not built yet; Efficiency,
-            // Fortune and Haste are passive and never roll at all.
-            Self::Efficiency | Self::Fortune | Self::Excavator | Self::Haste => return 0,
+            Self::Excavator => (5, 50),
+            // Efficiency, Fortune and Haste are passive multipliers: they are always
+            // on, so there is nothing for them to roll.
+            Self::Efficiency | Self::Fortune | Self::Haste => return 0,
         };
 
         if level == 0 {
@@ -452,6 +524,52 @@ impl Enchants {
     /// being the lenient one.
     pub(crate) fn upgrade_efficiency(&mut self, tier: PickaxeTier) -> Result<(), CoreError> {
         self.upgrade_to_cap(EnchantType::Efficiency, tier.efficiency_cap())
+    }
+
+    /// Rolls [`Excavator`](EnchantType::Excavator) against a break of `material`,
+    /// returning the [`Compressed`] unit it mints — or `None` on the far commoner
+    /// outcome, which is that the block's own drop stands.
+    ///
+    /// **The whole drop, replaced.** A `Some` is not a bonus laid beside the loot;
+    /// it *is* the loot for that break. The caller applies one or the other, never
+    /// both, and never
+    /// [Fortune](crate::pickaxe::Pickaxe::fortune_multiplier) on top — see the variant's docs
+    /// for why the two rarest levers in the game are kept from composing.
+    ///
+    /// **Rolled once per swing, on the impact block**, which is the caller's part of
+    /// the contract and not something this signature can enforce. A maxed Nuke drops
+    /// two hundred cells in a tick; rolling each of them would make the number of
+    /// draws per swing depend on a blast's geometry, and a PRNG sequence whose shape
+    /// varies with the grid is one no golden vector can pin and no bug report can
+    /// reproduce.
+    ///
+    /// **Draws only if the enchant is owned.** Level 0 returns before touching
+    /// `rng`, the same discipline
+    /// [`Mine::resolve_spatial_procs`](crate::mine::Mine) follows — and here it is
+    /// what made this enchant shippable at all. Appending to [`PROC_ORDER`] can only
+    /// disturb a run that reaches the new draw, and a player who never bought the
+    /// Excavator never does, so every save written before it existed replays on
+    /// exactly the dice it was written with.
+    ///
+    /// Takes a [`Material`] rather than the [`Block`] that fell: the substitution
+    /// depends on the matter and on nothing else — not hardness, not tier, not the
+    /// world — so the narrower argument is both the honest one and the one that
+    /// keeps this module from having to know what a block is. The tick passes
+    /// `block.material()`.
+    ///
+    /// [`Compressed`]: crate::material::Item::Compressed
+    /// [`Block`]: crate::block::Block
+    // Dead outside the tests until the phase-7 tick calls it: nothing in core
+    // composes a swing yet, which is the same reason `Mine::dig` is gated.
+    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
+    pub(crate) fn resolve_excavator(&self, material: Material, rng: &mut Rng) -> Option<Item> {
+        let level = self.get_level(EnchantType::Excavator);
+        if level == 0 {
+            return None;
+        }
+
+        rng.chance_permille(EnchantType::Excavator.proc_permille(level))
+            .then_some(Item::Compressed(material))
     }
 
     /// Bumps `kind` by one level, refusing at `cap`.
@@ -1169,6 +1287,29 @@ mod tests {
         assert_eq!(EnchantType::Jackhammer.proc_permille(10), 150);
         assert_eq!(EnchantType::Nuke.proc_permille(1), 1);
         assert_eq!(EnchantType::Nuke.proc_permille(10), 10);
+        assert_eq!(EnchantType::Excavator.proc_permille(1), 5);
+        assert_eq!(EnchantType::Excavator.proc_permille(10), 50);
+    }
+
+    /// **The Excavator's ceiling stays under both spatials', and that is the design
+    /// rather than a coincidence of tuning.** A proc mints 100 raw where the cell it
+    /// replaced held 1, so frequency is its entire power budget — whereas Explosive
+    /// and Jackhammer hand out cells the player would have mined anyway, only sooner.
+    /// A balance pass that raises this above them has changed what the enchant is,
+    /// and should have to say so here.
+    ///
+    /// Nuke is excluded: it is throttled far below everything for its own reason —
+    /// it clears the grid — so comparing against it would prove nothing.
+    #[test]
+    fn the_excavator_procs_less_often_than_the_two_common_spatials() {
+        let excavator = EnchantType::Excavator.proc_permille(10);
+        for kind in [EnchantType::Explosive, EnchantType::Jackhammer] {
+            assert!(
+                excavator < kind.proc_permille(10),
+                "the Excavator now procs at least as often as {}",
+                kind.name()
+            );
+        }
     }
 
     /// A level the player paid for must never make an enchant proc *less* often.
@@ -1176,7 +1317,7 @@ mod tests {
     /// truncates, and a badly ordered expression could flatten or dip.
     #[test]
     fn proc_chances_never_fall_as_the_level_climbs() {
-        for kind in SPATIAL_ENCHANTS {
+        for kind in PROC_ORDER {
             for level in 1..10u8 {
                 assert!(
                     kind.proc_permille(level + 1) >= kind.proc_permille(level),
@@ -1198,7 +1339,7 @@ mod tests {
     /// level is plain data that phase 9 reads back out of a save file.
     #[test]
     fn a_level_past_the_cap_rests_on_the_quoted_ceiling() {
-        for kind in SPATIAL_ENCHANTS {
+        for kind in PROC_ORDER {
             let ceiling = kind.proc_permille(10);
             for level in [11, 50, u8::MAX] {
                 assert_eq!(
@@ -1220,9 +1361,8 @@ mod tests {
         }
     }
 
-    /// Only the enchants in [`PROC_ORDER`] roll. Efficiency, Fortune and Haste are
-    /// passive multipliers, and Excavator procs by design but has no effect built
-    /// yet — rolling for it would burn a draw on nothing.
+    /// Only the enchants in [`PROC_ORDER`] roll — Efficiency, Fortune and Haste are
+    /// passive multipliers, always on, with nothing to roll for.
     #[test]
     fn only_the_enchants_in_the_proc_order_ever_proc() {
         for kind in ALL_ENCHANTS {
@@ -1256,15 +1396,141 @@ mod tests {
         );
     }
 
-    /// Every enchant that procs must also have a shape to break, and vice versa.
-    /// One without the other is an enchant that rolls and does nothing, or one that
-    /// has a shape no roll ever reaches.
+    /// Every enchant [`Mine`](crate::mine::Mine) rolls must have a shape to break,
+    /// and vice versa. One without the other is an enchant that draws and does
+    /// nothing, or one that has a shape no roll ever reaches.
     #[test]
-    fn the_proc_list_and_the_spatial_list_describe_the_same_enchants() {
-        let mut ordered = PROC_ORDER.to_vec();
+    fn the_spatial_proc_list_and_the_spatial_list_describe_the_same_enchants() {
+        let mut ordered = SPATIAL_PROC_ORDER.to_vec();
         let mut spatial = SPATIAL_ENCHANTS.to_vec();
         ordered.sort_unstable();
         spatial.sort_unstable();
         assert_eq!(ordered, spatial);
+    }
+
+    /// A generator's position, read as the next eight draws. Two generators that
+    /// agree here have consumed the same amount of entropy; two that do not have
+    /// diverged, whatever their outcomes looked like.
+    fn draws(rng: &mut Rng) -> Vec<Option<usize>> {
+        (0..8).map(|_| rng.weighted(&[1, 1])).collect()
+    }
+
+    /// An `Enchants` holding `level` of the Excavator and nothing else.
+    fn with_excavator(level: u8) -> Enchants {
+        let mut enchants = Enchants::new();
+        enchants.levels.insert(EnchantType::Excavator, level);
+        enchants
+    }
+
+    /// **The test that protects every save written before this enchant existed.**
+    /// Appending to `PROC_ORDER` is only free because an unbought enchant returns
+    /// before it touches the generator — roll it at 0 permille instead and the draw
+    /// still happens, shifting every later draw in the run onto different dice.
+    /// Nothing would fail; the run would just quietly stop being the run that was
+    /// saved. Proven against a twin generator asked for the same work minus the
+    /// resolution.
+    #[test]
+    fn an_unbought_excavator_never_procs_and_never_draws() {
+        let (mut resolved, mut untouched) = (Rng::from_seed(11), Rng::from_seed(11));
+        let enchants = Enchants::new();
+
+        for _ in 0..50 {
+            assert_eq!(
+                enchants.resolve_excavator(Material::Iron, &mut resolved),
+                None,
+                "an unbought Excavator minted a Compressed unit"
+            );
+        }
+
+        assert_eq!(
+            draws(&mut resolved),
+            draws(&mut untouched),
+            "resolving an unbought Excavator advanced the generator"
+        );
+    }
+
+    /// What a proc pays: one Compressed unit of the material that was mined, never a
+    /// raw one and never another material's. The Compressed denomination is the whole
+    /// point — it is the only thing in the game that mints one without paying its
+    /// 100 raw — and the material is the only thing about the block that matters.
+    #[test]
+    fn a_proc_mints_one_compressed_unit_of_the_mined_material() {
+        let enchants = with_excavator(10);
+        let mut rng = Rng::from_seed(3);
+        let mut procs = 0;
+
+        for material in [Material::Iron, Material::Diamond, Material::Amethyst] {
+            for _ in 0..500 {
+                if let Some(item) = enchants.resolve_excavator(material, &mut rng) {
+                    procs += 1;
+                    assert_eq!(
+                        item,
+                        Item::Compressed(material),
+                        "the Excavator substituted something other than Compressed {material:?}"
+                    );
+                }
+            }
+        }
+
+        assert!(procs > 0, "1500 rolls at the cap never procced");
+    }
+
+    /// **The determinism contract at this enchant's level.** A save stores a position
+    /// in the sequence, so the same seed must mint the same windfalls — otherwise a
+    /// reloaded run re-rolls its luck and "send me your save" stops being true the
+    /// moment the Excavator fires.
+    #[test]
+    fn the_same_seed_mints_the_same_windfalls() {
+        fn run(seed: u64) -> usize {
+            let enchants = with_excavator(10);
+            let mut rng = Rng::from_seed(seed);
+            (0..2000)
+                .filter(|_| {
+                    enchants
+                        .resolve_excavator(Material::Iron, &mut rng)
+                        .is_some()
+                })
+                .count()
+        }
+
+        assert_eq!(run(7), run(7), "same seed must replay identically");
+        assert_ne!(run(7), run(99), "different seeds must diverge");
+    }
+
+    /// A bought level must actually buy something. Level 1 is the one worth pinning:
+    /// it is the level a player reaches first, and the level a botched `saturating_sub`
+    /// or an off-by-one in the ramp would silently flatten to nothing.
+    #[test]
+    fn a_level_one_excavator_still_procs() {
+        let enchants = with_excavator(1);
+        let mut rng = Rng::from_seed(19);
+
+        assert!(
+            (0..5000).any(|_| enchants
+                .resolve_excavator(Material::Coal, &mut rng)
+                .is_some()),
+            "5000 rolls at level 1 never procced"
+        );
+    }
+
+    /// **The other half of the reproducibility contract, now that the resolution is
+    /// split in two.** The spatials draw inside `Mine`, the Excavator draws here, and
+    /// nothing but this test says the first group goes first.
+    ///
+    /// A prefix is the exact statement wanted: it pins that the spatials come first,
+    /// *in their order*, and that none of them was dropped from the grid's loop —
+    /// three claims one `starts_with` covers. It also decides where a fifth triggered
+    /// enchant goes: appended, or this fails.
+    #[test]
+    fn spatial_proc_order_is_a_prefix_of_proc_order() {
+        assert!(
+            PROC_ORDER.starts_with(&SPATIAL_PROC_ORDER),
+            "the spatial enchants no longer draw first, or no longer draw in order"
+        );
+        assert_eq!(
+            PROC_ORDER[SPATIAL_PROC_ORDER.len()..],
+            [EnchantType::Excavator],
+            "the Excavator is no longer the last thing a swing draws"
+        );
     }
 }

@@ -5,7 +5,7 @@
 //! the top of the `MINE_SIZES` table.
 
 use crate::block::Block;
-use crate::enchant::{Enchants, PROC_ORDER};
+use crate::enchant::{Enchants, SPATIAL_PROC_ORDER};
 use crate::error::CoreError;
 use crate::mine_kind::MineKind;
 use crate::rng::Rng;
@@ -450,18 +450,24 @@ impl Mine {
     /// Rolls every spatial enchant against the swing that just broke `impact`, and
     /// breaks the shapes that fired — returning the blocks they took.
     ///
-    /// One roll per enchant per **interactive** break, in [`PROC_ORDER`], which is
-    /// the order they consume the generator and therefore part of what a save
-    /// replays. The auto-miner never reaches here: it is credited in closed form
+    /// One roll per enchant per **interactive** break, in [`SPATIAL_PROC_ORDER`],
+    /// which is the order they consume the generator and therefore part of what a
+    /// save replays. The auto-miner never reaches here: it is credited in closed form
     /// (`rate × elapsed`), so it cannot draw, and the enchants pay out for playing
     /// rather than for idling.
+    ///
+    /// **This is not every enchant that procs.** `SPATIAL_PROC_ORDER` is a prefix of
+    /// `PROC_ORDER`: [`Excavator`](crate::enchant::EnchantType) rolls too, but it
+    /// substitutes a drop instead of reshaping the grid, so it resolves in `enchant`
+    /// through [`Enchants::resolve_excavator`] and draws *after* everything here. A
+    /// caller resolving a swing owes the sequence both halves in that order.
     ///
     /// **A level-0 enchant is skipped before it draws**, not rolled at 0 permille.
     /// The two are indistinguishable in outcome and completely different in the
     /// sequence: a roll that always fails still advances the generator, so an
     /// enchant the player has not bought would shift every later draw in the run.
-    /// Skipping is also what will let [`Excavator`](crate::enchant::EnchantType)
-    /// join `PROC_ORDER` later without disturbing a single existing save.
+    /// Skipping is what let the Excavator be appended to `PROC_ORDER` without
+    /// disturbing a single save written before it existed.
     ///
     /// **No chain reaction.** Only the cell the player actually mined rolls; the
     /// cells a blast takes do not roll again. That is what bounds the work — a
@@ -481,6 +487,7 @@ impl Mine {
     /// world here would be a parameter no line reads.
     ///
     /// [`Enchants::upgrade`]: crate::enchant::Enchants
+    /// [`Enchants::resolve_excavator`]: crate::enchant::Enchants
     // Dead outside the tests until the phase-7 tick calls it, for `dig`'s reason:
     // nothing in core bounds how often a front-end could ask for a swing.
     #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
@@ -493,7 +500,7 @@ impl Mine {
         let size = self.get_size();
         let mut broken = Vec::new();
 
-        for kind in PROC_ORDER {
+        for kind in SPATIAL_PROC_ORDER {
             let level = enchants.get_level(kind);
             if level == 0 {
                 continue;
@@ -1851,8 +1858,8 @@ mod tests {
     /// are identical in outcome and completely different in the sequence. Proven
     /// against a twin generator asked for the same work minus the resolution.
     ///
-    /// This is also what will let Excavator join `PROC_ORDER` later without
-    /// disturbing a run that never bought it.
+    /// This is what let Excavator be appended to `PROC_ORDER` without disturbing a
+    /// run that never bought it, and what a fifth triggered enchant will rely on.
     #[test]
     fn an_enchant_at_level_zero_costs_no_entropy() {
         let (mut resolved, mut untouched) = (rng(), rng());
@@ -1923,7 +1930,7 @@ mod tests {
     }
 
     /// **The golden vector of the proc sequence.** These counts pin the order the
-    /// enchants draw in (`PROC_ORDER`), the way the roll is made
+    /// enchants draw in (`SPATIAL_PROC_ORDER`), the way the roll is made
     /// (`chance_permille`, an integer comparison on `below(1000)`), and the curve
     /// behind it. Any of the three changing moves these numbers.
     ///
