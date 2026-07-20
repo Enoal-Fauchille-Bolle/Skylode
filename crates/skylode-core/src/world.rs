@@ -100,6 +100,30 @@ impl World {
         }
     }
 
+    /// The material that pays for the five special enchants in this world: Lapis
+    /// in the Overworld, Quartz in the Nether, Amethyst in the End.
+    ///
+    /// The counterpart to [`enchant_cap`](World::enchant_cap): the cap says *how
+    /// far* the specials can be pushed in a world, this says *what* pushing them
+    /// costs there. True to Minecraft, where Lapis is the enchanting currency, and
+    /// the reason each world's enchant material is distinct — an enchant bought in
+    /// the End is an Amethyst sink, which is what puts it in tension with prestige.
+    ///
+    /// A **design fact**, not a balance dial: the three materials are named and
+    /// fixed in `docs/MECHANICS.md`, so this does not belong in
+    /// [`tunables`](crate::tunables). It is keyed by the world variant, so — like
+    /// `enchant_cap` — it lives here, where a fourth dimension would be a compile
+    /// error rather than a world with no enchant currency. Fortune and Efficiency
+    /// are keyed by neither world (Emerald, the pickaxe path) and are priced
+    /// elsewhere; this covers only the five specials, whose cap *is* the world's.
+    pub fn enchant_material(self) -> Material {
+        match self {
+            Self::Overworld => Material::Lapis,
+            Self::Nether => Material::Quartz,
+            Self::End => Material::Amethyst,
+        }
+    }
+
     /// Returns the materials that can be found in the world.
     pub fn materials(self) -> &'static [Material] {
         match self {
@@ -209,6 +233,26 @@ mod tests {
                     world.name()
                 );
             }
+        }
+    }
+
+    /// The enchant currency ladder `docs/MECHANICS.md` fixes: Lapis, Quartz,
+    /// Amethyst. And it must be a material the world actually produces — a world
+    /// whose enchant material fell from no block in it would price its specials in
+    /// a currency the player could never earn there.
+    #[test]
+    fn each_world_prices_its_specials_in_a_material_it_produces() {
+        assert_eq!(World::Overworld.enchant_material(), Material::Lapis);
+        assert_eq!(World::Nether.enchant_material(), Material::Quartz);
+        assert_eq!(World::End.enchant_material(), Material::Amethyst);
+
+        for world in ALL_WORLDS {
+            assert!(
+                world.materials().contains(&world.enchant_material()),
+                "{} prices enchants in {:?}, which it does not produce",
+                world.name(),
+                world.enchant_material()
+            );
         }
     }
 
