@@ -17,6 +17,8 @@
 //!
 //! [`Clear`]: ratatui::widgets::Clear
 
+pub mod too_small;
+
 use ratatui::layout::Rect;
 
 /// A modal overlay that captures input.
@@ -37,13 +39,6 @@ pub enum Modal {}
 /// dip modal 64×13): a percentage would re-derive a number the wireframe already
 /// settled, and would drift as the terminal grows. Both dimensions are clamped,
 /// so an oversized box on a small terminal is truncated rather than overflowing.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by the modal overlays in a later pass; see UI-EN.md §5.7"
-    )
-)]
 pub fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);

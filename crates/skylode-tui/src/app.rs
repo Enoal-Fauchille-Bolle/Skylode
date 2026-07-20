@@ -19,7 +19,7 @@ use crate::{
     action::Action,
     event::{Event, EventHandler},
     keymap,
-    overlay::Modal,
+    overlay::{Modal, too_small},
     screen::Screen,
     toast::{TOAST_TTL, Toasts},
     view::View,
@@ -114,6 +114,18 @@ impl App {
     /// screen rather than being covered by it.
     fn render(&self, frame: &mut Frame) {
         let area = frame.area();
+
+        // The terminal-too-small filter, in front of everything (UI-EN.md §6.2).
+        // It is not a screen and not a modal: below the 80×24 budget it replaces
+        // the whole frame regardless of which tab or overlay is up, and yields it
+        // back untouched once the window grows, because it reads no state. Drawing
+        // it here — before the tab bar even splits the area — is what "a filter,
+        // not a state with edges" means in code.
+        if !too_small::fits(area) {
+            too_small::render(frame, area);
+            return;
+        }
+
         // The tab bar takes exactly one row and the screen takes the rest —
         // "the grid is fixed, the chrome flexes" starts here.
         let [tabs_area, body_area] =
@@ -169,7 +181,13 @@ mod tests {
     /// the uninhabited error rather than an `unwrap` the lints would flag. Same
     /// trick as the `Modal` slot above: no value can exist, so there is no arm.
     fn render_to_buffer(app: &App) -> Buffer {
-        let mut terminal = match Terminal::new(TestBackend::new(80, 24)) {
+        render_to_sized_buffer(app, 80, 24)
+    }
+
+    /// The same, at an arbitrary size — for the too-small filter, whose whole job
+    /// is what happens below 80×24.
+    fn render_to_sized_buffer(app: &App, width: u16, height: u16) -> Buffer {
+        let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
             Ok(terminal) => terminal,
             Err(infallible) => match infallible {},
         };
@@ -309,6 +327,20 @@ mod tests {
         // The Inventory placeholder prints the held counts from the snapshot.
         assert!(frame.contains("Inventory"), "{frame}");
         assert!(frame.contains("480"), "{frame}");
+    }
+
+    #[test]
+    fn a_cramped_terminal_shows_the_filter_instead_of_the_open_screen() {
+        // Sitting on a non-default tab, under the budget: the filter must win over
+        // whatever was up, drawing its message and none of the tab bar.
+        let mut app = App::new();
+        app.update(Action::SelectScreen(2));
+        let frame = whole_frame(&render_to_sized_buffer(&app, 54, 18));
+        assert!(frame.contains("Skylode needs 80 x 24"), "{frame}");
+        assert!(
+            !frame.contains("2 Inventory"),
+            "the tab bar leaked through: {frame}"
+        );
     }
 
     #[test]
