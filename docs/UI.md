@@ -191,7 +191,7 @@ to look like.
 │                                        ││ Richness  level 0 / 9   value 10%  │
 └────────────────────────────────────────┘└────────────────────────────────────┘
  Break  61%  Iron Block  ████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
- XP  Lv 23   1 240 / 3 200  ███████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+ XP  Lv 23   1 240 / 2 300  ███████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
  Boost  12s  ×1.50          ██████████████████████████████████░░░░░░░░░░░░░░░░
 
                      ┌──────────────────────────────────────┐
@@ -454,7 +454,7 @@ is a level, not a price, so the affordability mark has nothing to say.
  1 Mine │ 2 Mines │ 3 Inventory │ 4 Upgrades │ [5 Stats]       Prestige II  ×1.4
 ┌─ Progression ──────────────┐┌─ This run ─────────────────────────────────────┐
 │ Mining level    23 / 50    ││ ✓  Break your first block                      │
-│ XP        1 240 / 3 200    ││ ✓  Reach the Nether             Lv 15          │
+│ XP        1 240 / 2 300    ││ ✓  Reach the Nether             Lv 15          │
 │                            ││ ✓  Diamond pickaxe                             │
 │ Nether     Lv 15      ✓    ││ ▸  Reach the End          Lv 30    23/30       │
 │ End        Lv 30      ✗    ││    Netherite pickaxe                           │
@@ -466,7 +466,7 @@ is a level, not a price, so the affordability mark has nothing to say.
 │ Held         0 Amethyst    ││ 20:14  Excavator!  +1 Compressed Iron          │
 │                            ││ 20:13  Explosive — 9 blocks cleared            │
 │ Blocks broken   418 297    ││ 20:13  Mine refilled                           │
-│ Playtime        14h 22m    ││ 20:11  Level 23 — +2 Compressed Gold, Haste    │
+│ Playtime        14h 22m    ││ 20:11  Level 23 — +115 Quartz, +80 A. Debris   │
 │ This run         3h 07m    ││ 20:09  Compress first: need 6 Compressed Iron  │
 │                            ││ 20:04  Jackhammer — 8 blocks                   │
 │                            ││ 20:02  Welcome back — 6h away, +12 480 Iron    │
@@ -503,27 +503,27 @@ fn tick(&mut self, input: Input) -> Vec<Event>   // phase 7
 ```text
 0---------1---------2---------3---------4---------5---------6---------7---------
  1 Mine │ 2 Mines │ 3 Inventory │ 4 Upgrades │ 5 Stats │ [6 Levels]
-┌─ Levels ─── Lv 23 · 1 240 / 3 200 XP to Lv 24 ───────────────────────────────┐
+┌─ Levels ─── Lv 23 · 1 240 / 2 300 XP to Lv 24 ───────────────────────────────┐
 │     Lv   Grants                                                         XP   │
-│  ✓ 13   +8 Coal, boost ×1.5 30s                                        820  ░│
-│  ✓ 14   +12 Coal, boost ×1.5 30s                                       980  ░│
-│  ✓ 15   The Nether opens                                             1 150  ░│
-│  ✓ 16   +2 Compressed Coal, boost ×1.5 30s                           1 340  ░│
-│  ✓ 17   +1 Compressed Iron, boost ×1.5 30s                           1 550  ░│
-│  ✓ 18   +30 Netherrack, boost ×1.5 30s                               1 780  █│
-│  ✓ 19   +2 Compressed Iron, boost ×1.5 30s                           2 030  █│
-│  ✓ 20   +1 Compressed Quartz, +20 Lapis, boost ×1.5 30s              2 310  █│
-│  ✓ 21   +50 Redstone, boost ×1.5 30s                                 2 620  █│
-│  ✓ 22   +2 Compressed Quartz, boost ×1.5 30s                         2 960  █│
-│ ▸● 23   +2 Compressed Gold, +40 Redstone, boost ×1.5 30s             3 200  █│
-│    24   +3 Compressed Quartz, boost ×1.5 30s                         3 720  █│
-│    25   +1 Compressed Ancient Debris, boost ×1.5 30s                 4 180  █│
-│    26   +4 Compressed Gold, boost ×1.5 30s                           4 690  ░│
-│    27   +2 Compressed Ancient Debris, boost ×1.5 30s                 5 250  ░│
-│    28   +60 Obsidian, boost ×1.5 30s                                 5 870  ░│
-│    29   +5 Compressed Diamond, boost ×1.5 30s                        6 550  ░│
-│    30   The End opens                                                7 300  ░│
-│    31   +2 Compressed End Stone, boost ×1.5 30s                      8 120  ░│
+│  ✓ 13   +65 Lapis, +45 Gold, +19 Diamond                             1 300  ░│
+│  ✓ 14   +70 Lapis, +49 Gold, +21 Diamond                             1 400  ░│
+│  ✓ 15   The Nether opens, +1 charge                                  1 500  ░│
+│  ✓ 16   +80 Quartz, +56 Netherrack, +24 A. Debris                    1 600  ░│
+│  ✓ 17   +85 Quartz, +59 Netherrack, +25 A. Debris                    1 700  ░│
+│  ✓ 18   +90 Quartz, +63 Netherrack, +27 A. Debris, +45 Emerald       1 800  █│
+│  ✓ 19   +95 Quartz, +66 Netherrack, +28 A. Debris                    1 900  █│
+│  ✓ 20   +100 Quartz, +70 Netherrack, +30 A. Debris, +1 charge        2 000  █│
+│  ✓ 21   +105 Quartz, +73 A. Debris, +31 Obsidian, +52 Emerald        2 100  █│
+│  ✓ 22   +110 Quartz, +77 A. Debris, +33 Obsidian                     2 200  █│
+│ ▸● 23   +115 Quartz, +80 A. Debris, +34 Obsidian                     2 300  █│
+│    24   +120 Quartz, +84 A. Debris, +36 Obsidian, +60 Emerald        2 400  █│
+│    25   +125 Quartz, +87 A. Debris, +37 Obsidian, +1 charge          2 500  █│
+│    26   +130 Quartz, +91 Obsidian, +39 Crying Obs.                   2 600  ░│
+│    27   +135 Quartz, +94 Obsidian, +40 Crying Obs., +67 Emerald      2 700  ░│
+│    28   +140 Quartz, +98 Obsidian, +42 Crying Obs.                   2 800  ░│
+│    29   +145 Quartz, +101 Obsidian, +43 Crying Obs.                  2 900  ░│
+│    30   The End opens, +1 charge                                     3 000  ░│
+│    31   +233 End Stone, +77 Amethyst                                 3 100  ░│
 └──────────────────────────────────────────────────────────────────────────────┘
  ↑↓  scroll     Home  jump to Lv 23     Tab  next screen     ?  help
 ```
@@ -538,14 +538,24 @@ level *is* one line and there is nothing to detail.
 
 **The XP column is per-level, counted from zero.** Each level-up resets XP to 0, so
 the column is the requirement for *that* level, matching the status bar's
-`1 240 / 3 200`.
+`1 240 / 2 300`.
 
-**Levels 15 and 30 grant a world and no loot.** Every level-up gives exactly one
+**Levels 15 and 30 grant a world and no loot.** A level-up's *payout* is exactly one
 thing — loot, or a world, never both and never nothing — so those rows are visibly a
-different kind of line, and need no "no loot" label.
+different kind of line, and need no "no loot" label. The **garnishes** are not
+governed by that rule: a boost charge lands every fifth level, 15 and 30 included,
+because a charge announces nothing and so dilutes nothing. Emerald, which lands every
+third level, *is* loot and skips them.
 
-> The loot bundles and XP figures are **placeholders**; the curve is a phase-10
-> tunable. The frame proves the layout, not the balance.
+**Grants are quoted as raw totals, not split into denominations** — `+115 Quartz`,
+not `+1 Compressed 15 Quartz`, the form §6.4's offline summary already uses for a
+gain. Three materials per row leave no width for the long form, and the strict
+two-denomination rule governs **paying**, never receiving.
+
+> The loot bundles follow the model settled in
+> [MECHANICS.md](MECHANICS.md#level-up-rewards) and are **real**. The XP figures
+> follow the `level × 100` curve the code currently ships, which
+> [ROADMAP.md](ROADMAP.md) still lists as an open tunable — real, but provisional.
 
 **Core reads.** `loot_for_level(n)` and `xp_for_level(n)` for **every** `n`, not
 just the level that fired — a roadmap that can only show the past is a history, and
@@ -695,10 +705,14 @@ ticket about a bug that is not one.
 There is no level-up modal. The loot is a toast, the world unlock is a toast, and the
 place to *look* at levels is a screen the player opens.
 
+The toast names the **payout** and nothing else. A world level stays one line — the
+boost charge it also grants is a number going up, with no message worth splitting the
+announcement for.
+
 ```text
                   ┌──────────────────────────────────────────┐
-                  │ Level 23   +2 Compressed Gold, +40       │
-                  │            Redstone, Haste x1.5 for 30s  │
+                  │ Level 23   +115 Quartz, +80 Ancient      │
+                  │            Debris, +34 Obsidian          │
                   └──────────────────────────────────────────┘
 
                   ┌──────────────────────────────────────────┐
