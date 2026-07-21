@@ -137,11 +137,18 @@ copy would only be an invariant to maintain by hand — and prestige, which rese
 mining level, re-locks the worlds for free rather than needing to clear anything.
 The lock a mine reports names *what is owed* (a level, a tier, or both) rather than
 a bare boolean, because the Mines screen prints the requirement.
-Grant level-up rewards (an ore / Compressed bundle plus a short Haste window). Grant
-XP on break — **per item the block *contained*, before Fortune** (1 for an ore cell,
-9 for a dense one): Fortune and Excavator act on the loot and must not touch XP, or
-one investment would advance both axes and the two-axis gating would collapse into
-one (see [MECHANICS.md](MECHANICS.md#progression-and-gating)).
+Grant level-up rewards. A level-up pays exactly one **payout** — a world at 15 and
+30, a bundle of ore everywhere else — plus garnishes on their own rhythms: a boost
+**charge** every fifth level, Emerald every third. The schedule is a pure function of
+the level with no randomness, because the Levels screen draws rungs the player has
+not reached yet. The bundle shares the enchant fuel table rather than owning one, and
+its budget is linear in the level (see
+[MECHANICS.md](MECHANICS.md#level-up-rewards)).
+
+Grant XP on break — **per block, before Fortune**, from `Block::xp_value`: Fortune
+and Excavator act on the loot and must not touch XP, or one investment would advance
+both axes and the two-axis gating would collapse into one (see
+[MECHANICS.md](MECHANICS.md#progression-and-gating)).
 
 ## Phase 7 - The runtime core
 

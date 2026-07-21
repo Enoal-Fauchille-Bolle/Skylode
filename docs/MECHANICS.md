@@ -12,8 +12,8 @@ Progression runs on two independent axes:
 
 - **Mining level (XP) unlocks worlds.** Mining grants XP. The level rises up to a
   cap of **50**. Reaching a level threshold opens a new world (dimension):
-  **Nether at level 15, End at level 30** (tunable). Each level-up also drops a
-  small reward (see below).
+  **Nether at level 15, End at level 30** (tunable). Every level-up pays something
+  (see below): a world at those two thresholds, a bundle of ore everywhere else.
 - **Pickaxe tier unlocks mines and sets speed.** Inside an unlocked world, each
   individual mine is gated by the pickaxe tier that can break its ore (based on
   Minecraft's tool rules, see [worlds and materials](#worlds-and-materials)). The
@@ -25,13 +25,66 @@ carries progression.
 
 ### Level-up rewards
 
-Each level-up that does not open a world drops a bundle of **ores or Compressed
-ore** (scaled to the level) plus a **temporary boost** (a short Redstone boost).
-The two world-unlock levels, 15 and 30, grant that world instead and no loot:
-every level-up gives exactly one thing, loot or a world — never both, never
-nothing. Level-ups never gate content by themselves; only the world thresholds
-do. The reward keeps early levels satisfying and gives a reason to keep the XP bar
-moving.
+A level-up hands over exactly one **payout**, plus up to two **garnishes** that run
+on their own rhythms and ignore which payout fired. Level-ups never gate content by
+themselves; only the world thresholds do.
+
+**The payout is a world or a bundle of ore, never both and never neither.** Levels
+15 and 30 open a dimension and pay no ore: that world *is* the reward, and a bundle
+on top of it would split the announcement in two and dilute the one that matters.
+Every other level from 2 to 50 pays ore. Level 1 is where the player starts, so it
+is never *reached* and pays nothing at all.
+
+**The whole schedule is a pure function of the level, with no randomness.** The
+Levels screen draws the entire 1→50 ladder in advance, including rungs the player
+has not reached, so a reward that were drawn could not be shown before it fired —
+and freezing the draw would mean carrying a PRNG state in the save for nothing.
+
+#### The ore bundle
+
+The bundle's budget is **`10 × level` raw items**, linear rather than geometric. It
+is deliberately *not* on the [cost curve](#upgrade-costs): that curve is indexed by a
+track's step (0 to 15 at most), and reading it at a mining level instead would run
+the exponent to 50 and hand out more in one level-up than the most expensive purchase
+in the game costs. Over a full run the bundles total about 3 % of everything the
+player must buy — an opening hand, not an income.
+
+**The bundle mirrors a price.** It quotes the same materials in the same proportions
+as the [enchant cost](#enchants) of the matching rung — the world's enchant material
+at **50 %**, and that rung's abundant and scarce fuel ores at **35 %** and **15 %** —
+so the player recognises what they receive because it is the shape of what they
+spend. Sharing that table rather than copying it is also what keeps the two from
+drifting: re-balancing enchant fuel re-balances the rewards in the same edit.
+
+| Levels | 50 % | 35 % | 15 % |
+| --- | --- | --- | --- |
+| 2–6 | Lapis | Stone | Coal |
+| 7–10 | Lapis | Iron | Gold |
+| 11–14 | Lapis | Gold | Diamond |
+| 16–20 | Quartz | Netherrack | Ancient Debris |
+| 21–25 | Quartz | Ancient Debris | Obsidian |
+| 26–29 | Quartz | Obsidian | Crying Obsidian |
+| 31–50 | End Stone and Amethyst, on the ramp below | | |
+
+The End is **two lines, not three**, for the reason its enchant price is: the
+dimension holds one mine whose rare cell already *is* the enchant material, so a
+third line would be a second line of Amethyst. The two split on the same rare ramp
+the End's prices climb — 25 % Amethyst at level 31 rising to 91 % at level 50 — so
+the bundle keeps paying in the proportion the player is spending.
+
+#### The garnishes
+
+- **A boost charge every five levels** (5, 10, … 50 — ten in a run), **including at
+  15 and 30**. The charge is not a running boost: it is held until the player fires
+  it, and every boost in the game is identical, so the reserve is a count and nothing
+  more. This is what makes crossing several levels at once — a lump of offline
+  experience — safe: charges accumulate instead of burning down in an unwatched
+  window. Redstone itself is never granted; the charges are what would have bought.
+- **Emerald every three levels**, worth **25 % of the budget on top of it**, so those
+  levels are visibly better rather than differently split. Not at 15 and 30: Emerald
+  is ore, and those levels pay a world. Emerald earns its own rhythm because
+  [Fortune](#fortune) is the one permanent purchase whose currency stops being mined
+  once the Overworld is behind the player.
 
 ## Mining model
 
