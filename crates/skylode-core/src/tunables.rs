@@ -116,9 +116,11 @@ pub const END_UNLOCK_LEVEL: u32 = 30;
 
 /// The highest mining level the player can reach.
 ///
-/// `Player::add_experience` climbs without bound today; this is the ceiling phase 6
-/// will clamp it to. Must stay at or above [`END_UNLOCK_LEVEL`] so the last world is
-/// actually reachable.
+/// Enforced in exactly one place,
+/// [`Player::xp_for_level`](crate::player::Player::xp_for_level), which stops quoting
+/// a price past this level; every loop that walks the curve then terminates on the
+/// missing price rather than on a guard of its own. Must stay at or above
+/// [`END_UNLOCK_LEVEL`] so the last world is actually reachable.
 pub const LEVEL_CAP: u32 = 50;
 
 // --- Offline accrual (phase 7) ---
