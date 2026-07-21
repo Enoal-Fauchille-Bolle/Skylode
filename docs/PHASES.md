@@ -131,7 +131,12 @@ feeding the phase-3 multiplier.
 
 Wire mining level to the two-axis gate. Cap the level at 50, stopping
 `Player::add_experience` from climbing without bound. Add world unlocks at the
-threshold levels (Nether, then End) and the set of unlocked worlds in the state.
+threshold levels (Nether, then End). The unlocked set is **derived from the level,
+not stored**: it is a monotone function of state the save already holds, so a second
+copy would only be an invariant to maintain by hand — and prestige, which resets the
+mining level, re-locks the worlds for free rather than needing to clear anything.
+The lock a mine reports names *what is owed* (a level, a tier, or both) rather than
+a bare boolean, because the Mines screen prints the requirement.
 Grant level-up rewards (an ore / Compressed bundle plus a short Haste window). Grant
 XP on break — **per item the block *contained*, before Fortune** (1 for an ore cell,
 9 for a dense one): Fortune and Excavator act on the loot and must not touch XP, or
