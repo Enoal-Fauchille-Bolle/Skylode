@@ -40,6 +40,14 @@
 //!   curve. Strictly monotone, and that much is settled.
 //! - `mine::MINE_SIZES` — the mine-size ladder. Keyed by a size level rather than a
 //!   variant, but the same reasoning puts it beside the type that walks it.
+//! - [`World::unlock_level`](crate::world::World::unlock_level) — the mining level
+//!   each dimension opens at. The **one entry on this list that is a `match` over
+//!   constants declared below**, and deliberately so: the two thresholds are dials
+//!   ([`NETHER_UNLOCK_LEVEL`], [`END_UNLOCK_LEVEL`]) whose *ordering* is asserted at
+//!   compile time here, where both are in scope, while the lookup keyed by the
+//!   variant belongs with the enum — so that a fourth dimension is a compile error
+//!   rather than a world unlocking at level 0. Splitting them buys both guarantees;
+//!   neither half alone gives the other.
 //!
 //! ## Everything else
 //!
@@ -104,14 +112,18 @@ pub const HASTE_PER_LEVEL: f32 = 0.2;
 /// Mining level that unlocks the Nether.
 ///
 /// The lower of the two world gates; paired with [`END_UNLOCK_LEVEL`] it is what
-/// makes mining level, not just pickaxe tier, a real axis of progression.
+/// makes mining level, not just pickaxe tier, a real axis of progression. Read
+/// through [`World::unlock_level`](crate::world::World::unlock_level), never
+/// compared against by hand.
 pub const NETHER_UNLOCK_LEVEL: u32 = 15;
 
 /// Mining level that unlocks the End.
 ///
 /// Strictly above [`NETHER_UNLOCK_LEVEL`] and at or below [`LEVEL_CAP`]: the three
 /// together must stay ordered, or a world would unlock after the level cap has
-/// frozen the player short of it. The invariant is tested.
+/// frozen the player short of it. The invariant is tested here over the two
+/// constants, and again in [`world`](crate::world) over the whole enum — which is
+/// where a *fourth* dimension slotted in out of order would be caught.
 pub const END_UNLOCK_LEVEL: u32 = 30;
 
 /// The highest mining level the player can reach.

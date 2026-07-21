@@ -5,7 +5,11 @@
 //! [`Material`]s can be found within it, which drives mine generation and
 //! progression gating.
 
-use crate::{block::Block, material::Material};
+use crate::{
+    block::Block,
+    material::Material,
+    tunables::{END_UNLOCK_LEVEL, NETHER_UNLOCK_LEVEL},
+};
 
 /// One of the game's three dimensions.
 ///
@@ -124,6 +128,80 @@ impl World {
         }
     }
 
+    /// The mining level that opens this world.
+    ///
+    /// The level axis of the two-axis gate: mining level opens *worlds*, pickaxe
+    /// tier opens *mines* inside them (see
+    /// [`MineKind::gating_tier`](crate::mine_kind::MineKind::gating_tier)), and
+    /// `docs/MECHANICS.md` is explicit that neither axis alone carries
+    /// progression.
+    ///
+    /// The two later thresholds are read from
+    /// [`NETHER_UNLOCK_LEVEL`] and [`END_UNLOCK_LEVEL`] rather than written here:
+    /// they are dials phase 10 may turn, and the ordering invariant that keeps
+    /// them coherent — `Nether < End <= LEVEL_CAP` — is asserted at *compile
+    /// time* beside them. What lives here is the keyed lookup, which is the shape
+    /// that makes a fourth dimension a compile error instead of a world silently
+    /// unlocking at level 0.
+    ///
+    /// **The Overworld returns `1`, not `0`.** A new player starts at level 1 and
+    /// [`Player::xp_for_level`](crate::player::Player::xp_for_level) refuses to
+    /// quote a price for level 0, which names no rung of the ladder — so the
+    /// starting world's threshold is the starting level, and `is_unlocked_at`
+    /// needs no special case for it.
+    pub fn unlock_level(self) -> u32 {
+        match self {
+            Self::Overworld => 1,
+            Self::Nether => NETHER_UNLOCK_LEVEL,
+            Self::End => END_UNLOCK_LEVEL,
+        }
+    }
+
+    /// Whether a player at `level` may mine in this world.
+    ///
+    /// Takes the level rather than a `&Player` so the rule can be tested — and
+    /// asked about a hypothetical level — without building a player. The
+    /// player-facing form is
+    /// [`Player::has_unlocked`](crate::player::Player::has_unlocked).
+    ///
+    /// **Derived, never stored.** The unlocked set is a monotone function of the
+    /// mining level, which the save already holds, so keeping a second copy would
+    /// be an invariant to maintain by hand. It also survives prestige for free:
+    /// the deep reset takes the mining level back to the start, and the worlds
+    /// re-lock on their own rather than needing to be cleared.
+    pub fn is_unlocked_at(self, level: u32) -> bool {
+        level >= self.unlock_level()
+    }
+
+    /// The world that reaching exactly `level` opens, if any.
+    ///
+    /// `docs/MECHANICS.md` fixes that **every level-up gives exactly one thing,
+    /// loot or a world, never both and never nothing**: levels
+    /// [15](NETHER_UNLOCK_LEVEL) and [30](END_UNLOCK_LEVEL) grant their dimension
+    /// *instead* of the usual bundle. This is the query that rule is written in
+    /// terms of, so the level-up reward path can branch on it rather than
+    /// re-deriving the two thresholds.
+    ///
+    /// An **associated function**, not a method, for the reason
+    /// [`Player::xp_for_level`](crate::player::Player::xp_for_level) is one: its
+    /// whole job is to answer about a level nobody is standing on — the Levels
+    /// screen draws the whole 1→50 ladder in advance, world unlocks marked.
+    ///
+    /// [`None`] for level 1: the Overworld is where the player starts, and
+    /// starting is not a level-up. Granting it here would hand the first level a
+    /// "world unlocked" it never crossed a threshold for.
+    ///
+    /// The two constants appear **as patterns**, so should a rebalance ever make
+    /// them equal, the compiler reports an unreachable arm instead of silently
+    /// dropping one of the two unlocks.
+    pub fn unlocked_by_reaching(level: u32) -> Option<Self> {
+        match level {
+            NETHER_UNLOCK_LEVEL => Some(Self::Nether),
+            END_UNLOCK_LEVEL => Some(Self::End),
+            _ => None,
+        }
+    }
+
     /// Returns the materials that can be found in the world.
     pub fn materials(self) -> &'static [Material] {
         match self {
@@ -163,6 +241,7 @@ mod tests {
     use super::*;
     use crate::block::ALL_BLOCKS;
     use crate::material::ALL_MATERIALS;
+    use crate::tunables::LEVEL_CAP;
 
     #[test]
     fn worlds_have_display_names() {
@@ -254,6 +333,87 @@ mod tests {
                 world.enchant_material()
             );
         }
+    }
+
+    /// The gate itself, checked on both sides of each threshold. Off by one here
+    /// either strands the player one level short of a dimension or hands it to
+    /// them a level early.
+    #[test]
+    fn a_world_opens_on_its_threshold_and_not_a_level_before() {
+        assert!(World::Overworld.is_unlocked_at(1));
+
+        assert!(!World::Nether.is_unlocked_at(NETHER_UNLOCK_LEVEL - 1));
+        assert!(World::Nether.is_unlocked_at(NETHER_UNLOCK_LEVEL));
+
+        assert!(!World::End.is_unlocked_at(END_UNLOCK_LEVEL - 1));
+        assert!(World::End.is_unlocked_at(END_UNLOCK_LEVEL));
+    }
+
+    /// The invariant `tunables` const-asserts over its two constants, restated
+    /// over the *enum* — so a fourth dimension slotted in with a threshold out of
+    /// order fails here, where naming two constants could not see it. And every
+    /// threshold must sit at or below [`LEVEL_CAP`], or a world would open after
+    /// the cap has frozen the player short of it.
+    #[test]
+    fn unlock_levels_climb_with_the_world_and_stay_within_the_cap() {
+        for pair in ALL_WORLDS.windows(2) {
+            let [earlier, later] = pair else { continue };
+            assert!(
+                earlier.unlock_level() < later.unlock_level(),
+                "{} opens at {} and {} at {}, so the ladder is not a ladder",
+                earlier.name(),
+                earlier.unlock_level(),
+                later.name(),
+                later.unlock_level()
+            );
+        }
+
+        for world in ALL_WORLDS {
+            assert!(
+                world.unlock_level() <= LEVEL_CAP,
+                "{} opens at {}, past the level cap of {LEVEL_CAP}",
+                world.name(),
+                world.unlock_level()
+            );
+        }
+    }
+
+    /// [`World::unlock_level`] and [`World::unlocked_by_reaching`] are two views
+    /// of one table — the standing gate and the moment it is crossed — and a
+    /// level-up that announced a world the gate had not opened, or opened one
+    /// silently, would be one of them drifting from the other.
+    ///
+    /// The Overworld is the deliberate exception: it is where the player starts,
+    /// so it is never *reached*.
+    #[test]
+    fn the_gate_and_the_crossing_agree_at_every_level() {
+        for level in 0..=LEVEL_CAP {
+            let granted = World::unlocked_by_reaching(level);
+            let expected = ALL_WORLDS
+                .into_iter()
+                .find(|world| *world != World::Overworld && world.unlock_level() == level);
+            assert_eq!(
+                granted, expected,
+                "reaching level {level} grants {granted:?} but the thresholds say {expected:?}"
+            );
+        }
+    }
+
+    /// Starting is not a level-up. If level 1 granted the Overworld, the reward
+    /// path would owe the player a "world unlocked" for a threshold they never
+    /// crossed — and `docs/MECHANICS.md` allows exactly one thing per level-up.
+    #[test]
+    fn starting_in_the_overworld_is_not_a_world_unlock() {
+        assert_eq!(World::unlocked_by_reaching(1), None);
+        assert_eq!(World::unlocked_by_reaching(0), None);
+        assert_eq!(
+            World::unlocked_by_reaching(NETHER_UNLOCK_LEVEL),
+            Some(World::Nether)
+        );
+        assert_eq!(
+            World::unlocked_by_reaching(END_UNLOCK_LEVEL),
+            Some(World::End)
+        );
     }
 
     /// A world with no blocks cannot generate a mine.
