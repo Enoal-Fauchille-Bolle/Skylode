@@ -149,9 +149,9 @@ fidelity to Minecraft is kept for hardness only — see [DECISIONS.md](DECISIONS
 
 ### XP
 
-XP is granted **per item the block contained, before Fortune**: 1 for an ore cell,
-9 for a dense one — `Block::drops`, not what the player walks away with. Fortune
-and Excavator multiply or substitute the loot; neither touches the experience.
+XP is a **property of the block, granted before Fortune** — `Block::xp_value`, not
+what the player walks away with. Fortune and Excavator multiply or substitute the
+loot; neither touches the experience.
 
 That "before Fortune" is what holds the two progression axes apart. Levels open
 worlds, ore opens pickaxes. If Fortune multiplied XP as well as loot, a single
@@ -159,8 +159,25 @@ investment would advance both axes at once, and *"neither axis alone carries
 progression"* would quietly stop being true. Fortune is a yield lever, and stays
 one.
 
-The rule still pays richness its due: a dense cell contains nine, so it grants
-nine XP. Enriching a mine speeds up levelling as well as income — see
+**XP is its own table, not the drop count.** It once was the drop count — one per
+ore cell, nine per dense one — which had a consequence nobody chose: the three
+endgame mines are exactly the three with no dense form, so their cells granted one
+apiece while an Iron Block granted nine, and the Iron mine out-levelled the End.
+Each mine now has a base that rises with the progression, from Stone at 1 to the End
+at 24, and **a cell of value is worth three times its mine's common cell** — three
+rather than nine, so the dial still moves the level bar without the crafting ratio
+deciding the level curve.
+
+That ordering is a *property* rather than a balance pass: a full grid is worth
+`base × (1 + 2w)` for a dial weight `w`, so it stays proportional to the base at
+every dial setting, and rising bases order the twelve mines at all settings at once.
+It holds per grid, and per second once a boost is running. It does **not** hold per
+second without one: Ancient Debris and Obsidian take 67 and 70 seconds a grid where
+every other mine takes ten. That is the gap the [Redstone boost](#instamine) exists
+to close, so the one regime where the order breaks is the one the player is meant to
+spend Redstone on.
+
+Enriching a mine still speeds up levelling as well as income — see
 [mine richness](#mine-richness).
 
 ### Randomness
@@ -259,6 +276,16 @@ Amethyst funds prestige and the End enchant cap. The dial arbitrates between the
 *grow, or harvest*. Since Amethyst is already dual-use, the End mine becomes a
 three-way call on the scarcest resource in the game: cash out (prestige), power up
 (enchant cap), or reinvest (richness).
+
+**The dial also changes a mine's speed, and not always in the player's favour.** The
+two cells of a mine can differ in hardness, so shifting weight between them shifts how
+long a grid takes. Enriching the Quartz mine makes it **2.4x slower** (Netherrack 0.4
+against Quartz Ore 3.0); enriching the End mine makes it **1.4x faster** (End Stone
+3.0 against Amethyst 1.5); the Obsidian mine is unaffected, both its cells being 50.
+This falls out of keeping Minecraft's hardness table 1:1 rather than being designed,
+but it reads as design and is kept: the Quartz dial is a genuine trade — rarer ore,
+slower grid — while the End, which yields the fewest items per grid in the game, is
+paid a speed bonus for enriching.
 
 **The dial, not a weight cap, is what keeps a run from stranding.** An earlier
 version of this design capped the valuable cell's weight strictly below 100% and
@@ -415,7 +442,7 @@ Amethyst) each own a distinct function, so no two ores are redundant.
 ### Mine gating table
 
 Which pickaxe tier can open which mine follows Minecraft's tool rules. The current
-mapping lives in `materials.rs` (`min_pickaxe_tier`): Stone/Coal need Wooden, Iron
+mapping lives in `block.rs` (`min_pickaxe_tier`): Stone/Coal need Wooden, Iron
 needs Stone, Gold/Redstone/Diamond/Emerald need Iron, Lapis needs Stone, Ancient
 Debris/Obsidian/Crying Obsidian need Diamond, Quartz and Amethyst are soft (Wooden)
 but sit behind their world's XP gate. The End's rich role is carried by Amethyst
@@ -432,10 +459,26 @@ enchant level available in each dimension:
 - **End enchants use Amethyst** (maximum cap: **10**).
 
 All five enchants are available as soon as you can enchant (Overworld, once Lapis
-is reachable); progressing to a new world only raises the **level cap**. Every
-enchant upgrade costs the world's enchant material **plus a mix of raw ores from
-the earlier mines**, which keeps old mines useful as permanent enchant fuel long
-after their tier is passed.
+is reachable); progressing to a new world only raises the **level cap**. **Fortune
+is capped by the world too** — its ceiling of 10 is unchanged, but it is reached
+3 / 6 / 10 like the specials rather than being available in full from level 1.
+Efficiency is the only enchant the world does not cap; the pickaxe tier does.
+
+A special enchant's price is the world's enchant material **plus the two ores of
+that level's rung** — an abundant one and a scarce one, drawn from the mines the
+player is working *now*: Stone and Coal at level 1, Iron and Gold at 2, Gold and
+Diamond at 3, then Netherrack and Ancient Debris, Ancient Debris and Obsidian,
+Obsidian and Crying Obsidian. The pair is keyed by the **level**, never by where
+the player stands, so level 1 costs Stone and Coal whether it is bought in the
+first minute or from the End. The three lines share one total, 50 / 35 / 15.
+
+The End is the exception its geography forces: one mine, whose rare cell *is* the
+enchant material. Levels 7 to 10 therefore quote **two** lines, End Stone and
+Amethyst, the Amethyst share climbing as the level does — which is what finally
+gives End Stone a use beyond its own mine.
+
+**Fortune costs Emerald and nothing else.** It is the one enchant keyed to neither
+the world nor the tier, so it has no "current rung's ore" to consume.
 
 The cap is **one number per world, shared by all five** — not a cap per
 `(enchant, world)` pair. It is the *gate*: how much the player may invest. What
@@ -571,13 +614,31 @@ The UI is expected to tell the two failures apart — "compress first" and "go
 mine more" are different messages, and only one of them is bad news.
 
 - **Cost curve shape:** costs grow geometrically per step (`cost(n) = base *
-  growth^n`), split across a Compressed part and a raw remainder. The base and
-  growth constants are tunables set at implementation time, not fixed here.
-- **Most costs are a single material; a few are a mix.** A price is a list of
+  growth^n`), split across a Compressed part and a raw remainder. The constants are
+  tunables set at implementation time, not fixed here — but there is **one pair per
+  track**, not one for the game. A slope compounds over however many steps a track
+  has and is only meaningful against that track's own production growth: size takes a
+  mine from 9 cells to 200 across nine steps, while Netherite's Efficiency runs
+  fifteen steps and multiplies nothing. One slope for both leaves the short track
+  free or the long one unaffordable.
+- **The base governs the early game, the slope governs the late one.** Step zero
+  costs the base whatever the slope, so raising a slope to make the game harder
+  inflates only the endgame. This is why the enchant ladder carries a *high* base and
+  the *gentlest* slope: its ten levels are split 3 / 3 / 4 across the worlds, and a
+  steep curve would make the Overworld's three a rounding error, leaving the ores
+  that fuel them barely demanded.
+- **Most costs are a single material; several are a mix.** A price is a list of
   lines, one per material. The ordinary pickaxe upgrades and the nine same-material
-  mine tracks quote a single line; the enchant cost (world material plus an
-  earlier-mine fuel ore), the two-material richness tracks, and Netherite's
-  Efficiency 6→15 (Obsidian plus Crying Obsidian) quote several.
+  mine tracks quote a single line. Four prices quote more, and all four **share** one
+  total rather than adding lines on top of it: a special enchant (world material plus
+  its rung's two ores), both tracks of a two-material mine, Netherite's Efficiency
+  6→15 (Obsidian plus Crying Obsidian), and the End's enchants.
+- **Where a price mixes two materials, the rare share climbs with the step.** One
+  ramp, ending at the same 91 % the richness dial reaches at its own ceiling — so the
+  dial setting a recipe wants *moves up* as the player climbs it, and the mine's top
+  rung is exactly what the track's last step asks for. Pinned at a fixed fraction, as
+  Netherite's enhancement once was, the optimum never moves and most of that mine's
+  richness track is not worth buying.
 - On PikaNetwork, upgrades are identified by Minecraft enchantment, level, and
   material (for example "Efficiency V Stone Pickaxe"). Our naming convention is to
   be decided.
@@ -588,10 +649,13 @@ Both mine tracks — [size](#mine-size) and [richness](#mine-richness) — are p
 that mine's own material**, on the same geometric curve, so every mine funds its own
 growth out of what it produces.
 
-On the two mines that hold two materials, the richness cost is a **mix that shifts
+On the three mines that hold two materials, **both tracks** cost a **mix that shifts
 as it climbs**: mostly End Stone at the low levels, increasingly Amethyst at the
 high ones. The cost curve therefore tracks the mine's own production curve — each
-level is paid mostly in whatever the mine currently makes most of.
+level is paid mostly in whatever the mine currently makes most of. Size shares that
+shape with richness because "the mine's own material" means *both* of a two-material
+mine's materials; reading it as the common cell alone left Crying Obsidian paying
+for nothing but the pickaxe.
 
 That shift trades one brake for a better one. Paying purely in the common material
 would be self-limiting by arithmetic: enriching dries up the currency that buys
@@ -603,8 +667,9 @@ Amethyst — is closed by the [richness cap](#mine-richness): a bounded producti
 against an unbounded cost curve.
 
 The nine single-material mines have nothing to mix, but they show the same shape in
-the other denomination: raw early, increasingly Compressed as the level climbs,
-exactly as the pickaxe costs already read.
+the other denomination: the opening steps are quoted mostly in raw items, and the
+Compressed part grows to dominate as the track climbs — exactly as the pickaxe costs
+read.
 
 ## Auto-miner and offline progression
 
