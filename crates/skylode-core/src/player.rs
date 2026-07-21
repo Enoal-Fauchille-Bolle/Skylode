@@ -9,7 +9,13 @@
 //! from outside. At [`LEVEL_CAP`] the invariant holds in its degenerate form:
 //! there is no next level to cover, and the bank is emptied to say so.
 
-use crate::{inventory::Inventory, pickaxe::Pickaxe, tunables::LEVEL_CAP};
+use crate::{
+    inventory::Inventory,
+    mine_kind::{MineKind, MineLock},
+    pickaxe::Pickaxe,
+    tunables::LEVEL_CAP,
+    world::World,
+};
 
 /// The player's persistent progression state.
 pub struct Player {
@@ -147,6 +153,53 @@ impl Player {
         (1..LEVEL_CAP).contains(&level).then(|| level * 100)
     }
 
+    /// Whether the player's mining level has opened `world`.
+    ///
+    /// A **query, not a stored set.** The unlocked worlds are an interval that
+    /// grows with [`get_level`](Player::get_level), so there is nothing to keep
+    /// in sync — and nothing for phase 8's prestige to remember to clear when it
+    /// resets the level. See [`World::is_unlocked_at`].
+    pub fn has_unlocked(&self, world: World) -> bool {
+        world.is_unlocked_at(self.level)
+    }
+
+    /// The furthest world the player's mining level has opened.
+    ///
+    /// Returns a [`World`] and not an [`Option`]: the Overworld opens at level 1
+    /// and the player starts there, so "no world" is not a state that exists.
+    ///
+    /// This is the argument the enchant path has been waiting for.
+    /// [`EnchantType::max_level`](crate::enchant::EnchantType::max_level) and
+    /// [`economy::buy_enchant`](crate::economy::buy_enchant) both take *the
+    /// highest world unlocked* — not the world the player happens to be mining
+    /// in — because [`World::enchant_cap`] is a ceiling reaching a dimension
+    /// raises permanently, not a bonus that lapses when you walk back to the
+    /// Overworld.
+    ///
+    /// Tested from the furthest world **downwards**, so the first arm that holds
+    /// is the answer. The reverse order would report the Overworld for every
+    /// player, since it is unlocked for all of them — the fallthrough is the
+    /// *floor*, not a case.
+    pub fn highest_unlocked_world(&self) -> World {
+        if self.has_unlocked(World::End) {
+            World::End
+        } else if self.has_unlocked(World::Nether) {
+            World::Nether
+        } else {
+            World::Overworld
+        }
+    }
+
+    /// Why `kind` is closed to this player, or that it is open.
+    ///
+    /// The two-axis gate answered in one call: the level half comes from the
+    /// mine's [`World`], the tier half from the player's pickaxe. See
+    /// [`MineKind::lock`], which owns the rule; this only supplies the player's
+    /// two numbers.
+    pub fn mine_lock(&self, kind: MineKind) -> MineLock {
+        kind.lock(self.level, self.pickaxe.get_tier())
+    }
+
     /// Returns the player's current pickaxe.
     pub fn get_pickaxe(&self) -> &Pickaxe {
         &self.pickaxe
@@ -167,6 +220,8 @@ impl Player {
 mod tests {
     use super::*;
     use crate::pickaxe::PickaxeTier;
+    use crate::tunables::{END_UNLOCK_LEVEL, NETHER_UNLOCK_LEVEL};
+    use crate::world::ALL_WORLDS;
 
     #[test]
     fn a_new_player_starts_at_level_one_with_a_wooden_pickaxe() {
@@ -358,6 +413,84 @@ mod tests {
         assert_eq!(player.add_experience(600), 2);
         assert_eq!(player.level, 4);
         assert_eq!(player.experience, 100);
+    }
+
+    /// The worlds open in order as the level climbs, and one level short of a
+    /// threshold is still short. Checked through the player rather than through
+    /// [`World::is_unlocked_at`] directly, since it is the player's level the gate
+    /// is meant to read.
+    #[test]
+    fn the_worlds_open_one_after_the_other_as_the_level_climbs() {
+        let mut player = Player::new();
+        for (level, expected) in [
+            (1, World::Overworld),
+            (NETHER_UNLOCK_LEVEL - 1, World::Overworld),
+            (NETHER_UNLOCK_LEVEL, World::Nether),
+            (END_UNLOCK_LEVEL - 1, World::Nether),
+            (END_UNLOCK_LEVEL, World::End),
+            (LEVEL_CAP, World::End),
+        ] {
+            player.level = level;
+            assert_eq!(
+                player.highest_unlocked_world(),
+                expected,
+                "at level {level} the furthest world should be {}",
+                expected.name()
+            );
+        }
+    }
+
+    /// `has_unlocked` and `highest_unlocked_world` are two views of one interval,
+    /// so a world at or below the furthest one must read as unlocked and every
+    /// world above it must not. This is what makes the *set* the design asks for
+    /// derivable, rather than something the state has to carry.
+    #[test]
+    fn everything_up_to_the_furthest_world_is_unlocked_and_nothing_past_it() {
+        let mut player = Player::new();
+        for level in 1..=LEVEL_CAP {
+            player.level = level;
+            let furthest = player.highest_unlocked_world();
+            for world in ALL_WORLDS {
+                assert_eq!(
+                    player.has_unlocked(world),
+                    world.unlock_level() <= furthest.unlock_level(),
+                    "at level {level}, {} disagrees with a furthest world of {}",
+                    world.name(),
+                    furthest.name()
+                );
+            }
+        }
+    }
+
+    /// What the phase-5 enchant path has been waiting for: the cap it prices
+    /// against is the *highest world unlocked*, so levelling up must be what
+    /// raises it. Goes through
+    /// [`World::enchant_cap`](crate::world::World::enchant_cap) rather than
+    /// comparing worlds, because a query that named the right world but fed the
+    /// wrong number to `buy_enchant` would still be broken.
+    #[test]
+    fn levelling_up_is_what_raises_the_enchant_ceiling() {
+        let mut player = Player::new();
+        let ceiling = |player: &Player| player.highest_unlocked_world().enchant_cap();
+
+        assert_eq!(ceiling(&player), World::Overworld.enchant_cap());
+        player.level = NETHER_UNLOCK_LEVEL;
+        assert_eq!(ceiling(&player), World::Nether.enchant_cap());
+        player.level = END_UNLOCK_LEVEL;
+        assert_eq!(ceiling(&player), World::End.enchant_cap());
+    }
+
+    /// The player-facing form of the two-axis gate, and the one case that proves
+    /// it reads *both* of the player's numbers: a fresh player is short a
+    /// dimension and a pickaxe for the Obsidian mine, and open on the Stone one.
+    #[test]
+    fn a_fresh_player_is_short_of_both_axes_on_the_late_mines() {
+        let player = Player::new();
+        assert!(player.mine_lock(MineKind::Stone).is_open());
+
+        let lock = player.mine_lock(MineKind::Obsidian);
+        assert_eq!(lock.missing_level(), Some(NETHER_UNLOCK_LEVEL));
+        assert_eq!(lock.missing_tier(), Some(PickaxeTier::Diamond));
     }
 
     /// The piecemeal/lump agreement has to survive the cap too, since that is

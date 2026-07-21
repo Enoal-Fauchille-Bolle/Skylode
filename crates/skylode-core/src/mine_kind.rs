@@ -142,6 +142,27 @@ impl MineKind {
         self.common_block().min_pickaxe_tier()
     }
 
+    /// Why this mine is closed to a player at `level` holding a `tier` pickaxe —
+    /// or that it is open.
+    ///
+    /// The two axes `docs/MECHANICS.md` insists on, resolved together: the mining
+    /// level opens the mine's [`World`], the pickaxe tier opens the mine itself.
+    /// Neither alone admits the player.
+    ///
+    /// Takes the two numbers rather than a `Player`, so the rule can be asked
+    /// about a hypothetical pickaxe — "what would Diamond open?" is a question the
+    /// Upgrades screen asks before the purchase — and tested without building a
+    /// player. [`Player::mine_lock`](crate::player::Player::mine_lock) is the
+    /// player-facing form.
+    pub fn lock(self, level: u32, tier: PickaxeTier) -> MineLock {
+        let world = self.world();
+        let gate = self.gating_tier();
+        MineLock {
+            level: (!world.is_unlocked_at(level)).then(|| world.unlock_level()),
+            tier: (tier < gate).then_some(gate),
+        }
+    }
+
     /// The material the common cell drops: the mine's own growth currency.
     ///
     /// Size and the low levels of richness are paid in this — Iron for the Iron
@@ -187,6 +208,51 @@ impl MineKind {
     }
 }
 
+/// What a mine is still waiting on before the player may enter it.
+///
+/// **A "why", not a bool.** A closed door the front-end can only render as
+/// *locked* is a dead end; the Mines screen prints `Lv 30` beside the End mine
+/// (`organization/UI-EN.md` §5.3), so the core owes the requirement itself.
+///
+/// **Two independent [`Option`]s, not an enum of cases**, because the two axes
+/// are independent and the interface treats them so: the detail pane draws them
+/// as two rows with two separate ticks — `World  Nether  Lv 15 ✓` above `Gate
+/// Diamond pickaxe ✓` — and needs to answer for each on its own. An enum would
+/// need a third variant for "both", duplicating every field of the other two,
+/// and would then have to be taken apart again to draw the pair. Both fields
+/// [`None`] is the open mine, which [`is_open`](MineLock::is_open) names so no
+/// caller has to spell out the conjunction.
+///
+/// **It carries the requirement, not the player's current values.** A
+/// [`CoreError`](crate::error::CoreError) carries both sides of a comparison
+/// because it travels away from the context that produced it; this is a query,
+/// answered to a caller who is holding the [`Player`](crate::player::Player) and
+/// already knows their own level and tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MineLock {
+    /// The mining level the mine's world opens at, if the player is short of it.
+    level: Option<u32>,
+    /// The pickaxe tier the mine needs, if the player's is below it.
+    tier: Option<PickaxeTier>,
+}
+
+impl MineLock {
+    /// Whether the mine is open: nothing owed on either axis.
+    pub fn is_open(self) -> bool {
+        self.level.is_none() && self.tier.is_none()
+    }
+
+    /// The mining level still owed, or [`None`] if the world is already open.
+    pub fn missing_level(self) -> Option<u32> {
+        self.level
+    }
+
+    /// The pickaxe tier still owed, or [`None`] if the pickaxe already suffices.
+    pub fn missing_tier(self) -> Option<PickaxeTier> {
+        self.tier
+    }
+}
+
 /// Every [`MineKind`] variant, for tests that must cover the whole enum.
 ///
 /// Test-only; see [`ALL_BLOCKS`](crate::block::ALL_BLOCKS) for the rationale. The
@@ -214,6 +280,7 @@ mod tests {
     use super::*;
     use crate::enchant::Enchants;
     use crate::pickaxe::Pickaxe;
+    use crate::tunables::{END_UNLOCK_LEVEL, LEVEL_CAP, NETHER_UNLOCK_LEVEL};
 
     #[test]
     fn all_mines_covers_every_variant() {
@@ -348,6 +415,81 @@ mod tests {
             two_material,
             vec![MineKind::Quartz, MineKind::Obsidian, MineKind::Amethyst]
         );
+    }
+
+    /// A fresh player — level 1, Wooden pickaxe — must find *something* open, or
+    /// the run is unwinnable from its first frame: every other mine is bought
+    /// with ore, and there would be nowhere to earn any.
+    #[test]
+    fn the_starter_mine_is_open_to_a_brand_new_player() {
+        assert!(MineKind::Stone.lock(1, PickaxeTier::Wooden).is_open());
+    }
+
+    /// The other end of the same claim: at the level cap with the top pickaxe,
+    /// nothing is still closed. A mine gated above what the game can reach would
+    /// be content no player could ever see — the sibling of
+    /// [`no_mine_holds_a_cell_its_gating_tier_cannot_break`](self), which pins
+    /// that the tier admitting a mine can break everything inside it.
+    #[test]
+    fn no_mine_stays_closed_to_a_maxed_player() {
+        for &mine in ALL_MINES {
+            let lock = mine.lock(LEVEL_CAP, PickaxeTier::Netherite);
+            assert!(
+                lock.is_open(),
+                "{mine:?} is still locked at the level cap with a Netherite pickaxe: {lock:?}"
+            );
+        }
+    }
+
+    /// The level axis alone. The End mine's cells are Wooden-tier, so a player one
+    /// level short of the End is held by the *world* and nothing else — which is
+    /// exactly the state `UI-EN.md` §5.3 draws, and the reason the lock has to name
+    /// a level rather than report a bare "locked".
+    #[test]
+    fn a_mine_in_a_shut_world_owes_only_a_level() {
+        let lock = MineKind::Amethyst.lock(END_UNLOCK_LEVEL - 1, PickaxeTier::Netherite);
+        assert!(!lock.is_open());
+        assert_eq!(lock.missing_level(), Some(END_UNLOCK_LEVEL));
+        assert_eq!(lock.missing_tier(), None);
+    }
+
+    /// The tier axis alone: in the Nether with a pickaxe too weak for Obsidian.
+    /// The world is open, so the answer the player needs is a pickaxe, not a level
+    /// — the two-axis gate rendered from the other side.
+    #[test]
+    fn an_open_world_can_still_owe_a_pickaxe() {
+        let lock = MineKind::Obsidian.lock(NETHER_UNLOCK_LEVEL, PickaxeTier::Stone);
+        assert!(!lock.is_open());
+        assert_eq!(lock.missing_level(), None);
+        assert_eq!(lock.missing_tier(), Some(PickaxeTier::Diamond));
+    }
+
+    /// Both axes at once, which is why the lock is a pair and not a single case:
+    /// a fresh player looking at the Obsidian mine is short a whole dimension
+    /// *and* four pickaxe tiers, and the screen has a row for each.
+    #[test]
+    fn a_mine_can_owe_both_a_level_and_a_pickaxe() {
+        let lock = MineKind::Obsidian.lock(1, PickaxeTier::Wooden);
+        assert_eq!(lock.missing_level(), Some(NETHER_UNLOCK_LEVEL));
+        assert_eq!(lock.missing_tier(), Some(PickaxeTier::Diamond));
+        assert!(!lock.is_open());
+    }
+
+    /// The lock is derived from the mine's own two answers, so it must not drift
+    /// from them: it may only ever quote its world's threshold and its own gating
+    /// tier. Walked over every mine, since a hand-picked example would miss the
+    /// one variant wired to the wrong world.
+    #[test]
+    fn the_lock_only_ever_quotes_the_mines_own_requirements() {
+        for &mine in ALL_MINES {
+            let lock = mine.lock(1, PickaxeTier::Wooden);
+            if let Some(level) = lock.missing_level() {
+                assert_eq!(level, mine.world().unlock_level(), "{mine:?}");
+            }
+            if let Some(tier) = lock.missing_tier() {
+                assert_eq!(tier, mine.gating_tier(), "{mine:?}");
+            }
+        }
     }
 
     /// Names go straight to the UI, so two mines sharing one would be two entries
