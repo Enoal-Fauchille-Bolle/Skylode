@@ -197,6 +197,66 @@ impl Block {
         }
     }
 
+    /// The experience breaking this block grants, before
+    /// [Fortune](crate::pickaxe::Pickaxe::fortune_multiplier) — which never multiplies
+    /// it (see [`drops`](Block::drops)).
+    ///
+    /// **Not a function of the drop count, and that is the correction it exists to
+    /// make.** XP once *was* the drop count — one per ore cell, nine per dense one —
+    /// which tied the level curve to a number chosen for Minecraft's crafting
+    /// fidelity, and had a consequence nobody picked: the three endgame mines are
+    /// exactly the three with no dense form, so their cells granted one apiece while
+    /// an Iron Block granted nine. The Iron mine out-levelled the End, 4 968 XP a full
+    /// grid against 3 820. Loot and experience are now two tables, and
+    /// [`RAW_PER_DENSE_BLOCK`] governs only the first.
+    ///
+    /// **A cell of value is worth three times its mine's common cell**, everywhere —
+    /// including on the two-material mines, where the rare cell drops a single item.
+    /// Three rather than nine so the richness dial still moves the level bar without
+    /// the loot ratio dominating it.
+    ///
+    /// **The mines are ordered, and the ordering is a property rather than a balance
+    /// pass.** A full grid is worth `base * (1 + 2w)` for a dial weight `w`, so it is
+    /// proportional to the mine's base at *every* dial setting — rising bases order the
+    /// twelve mines at all settings at once, which is what
+    /// `xp_rises_with_the_progression_at_every_dial_setting` pins. The ordering holds
+    /// per grid and per second *with* a boost; it does not hold per second without
+    /// one, because Ancient Debris and Obsidian take 67 and 70 seconds a grid where
+    /// every other mine takes ten. That is the gap the boost exists to close
+    /// (`docs/DECISIONS.md`), so the one regime where the order breaks is the one the
+    /// player is meant to spend Redstone on.
+    ///
+    /// Provisional; phase 10 balances the twelve bases. Nothing grants XP yet — the
+    /// phase-7 tick is what will read this.
+    pub fn xp_value(self) -> u32 {
+        match self {
+            Self::Stone => 1,
+            Self::Cobblestone => 3,
+            Self::CoalOre => 2,
+            Self::CoalBlock => 6,
+            Self::IronOre => 3,
+            Self::IronBlock => 9,
+            Self::LapisOre => 4,
+            Self::LapisBlock => 12,
+            Self::GoldOre => 4,
+            Self::GoldBlock => 12,
+            Self::RedstoneOre => 4,
+            Self::RedstoneBlock => 12,
+            Self::EmeraldOre => 6,
+            Self::EmeraldBlock => 18,
+            Self::DiamondOre => 8,
+            Self::DiamondBlock => 24,
+            Self::Netherrack => 10,
+            Self::QuartzOre => 30,
+            Self::AncientDebris => 14,
+            Self::NetheriteBlock => 42,
+            Self::Obsidian => 18,
+            Self::CryingObsidian => 54,
+            Self::Endstone => 24,
+            Self::Amethyst => 72,
+        }
+    }
+
     /// Amount of raw material dropped, before
     /// [Fortune](crate::pickaxe::Pickaxe::fortune_multiplier). Dense forms yield
     /// [`RAW_PER_DENSE_BLOCK`]; everything else yields 1.
@@ -400,6 +460,104 @@ mod tests {
             assert!(
                 amount >= 1,
                 "{block:?} drops nothing, so mining it is a tax"
+            );
+        }
+    }
+
+    /// A cell of value is worth exactly three times its mine's common cell, on all
+    /// twelve mines — including the three whose value cell drops a single item, which
+    /// is the whole reason XP stopped being the drop count.
+    #[test]
+    fn a_cell_of_value_is_worth_three_of_its_mines_common_cell() {
+        for &mine in crate::mine_kind::ALL_MINES {
+            assert_eq!(
+                mine.value_block().xp_value(),
+                3 * mine.common_block().xp_value(),
+                "{mine:?}: the value cell is not worth three of the common one"
+            );
+        }
+    }
+
+    /// The mines grant XP in progression order, and — the load-bearing part — they do
+    /// so at **every** richness setting, not merely at the top.
+    ///
+    /// A full grid is worth `base * (1 + 2w)` for a dial weight `w`, so it stays
+    /// proportional to the mine's base whatever the dial does; rising bases therefore
+    /// order the twelve mines everywhere at once. That is why this walks three
+    /// settings rather than asserting one table: it is testing the *property*, and a
+    /// single-point check would pass on a table that inverted somewhere in between.
+    #[test]
+    fn xp_rises_with_the_progression_at_every_dial_setting() {
+        use crate::mine_kind::MineKind;
+
+        // Mines that share a rung are grouped, since ties are deliberate.
+        const ORDER: &[&[MineKind]] = &[
+            &[MineKind::Stone],
+            &[MineKind::Coal],
+            &[MineKind::Iron],
+            &[MineKind::Lapis, MineKind::Gold, MineKind::Redstone],
+            &[MineKind::Emerald],
+            &[MineKind::Diamond],
+            &[MineKind::Quartz],
+            &[MineKind::AncientDebris],
+            &[MineKind::Obsidian],
+            &[MineKind::Amethyst],
+        ];
+
+        // `weight` is the value cell's share of a grid, in percent: the two ends of
+        // the dial and a point in between.
+        for weight in [10u32, 50, 91] {
+            let grid = |mine: MineKind| -> u32 {
+                (100 - weight) * mine.common_block().xp_value()
+                    + weight * mine.value_block().xp_value()
+            };
+
+            for pair in ORDER.windows(2) {
+                let (earlier, later) = (pair[0], pair[1]);
+                for &a in earlier {
+                    for &b in later {
+                        assert!(
+                            grid(b) > grid(a),
+                            "at dial weight {weight}%, {b:?} ({}) grants no more \
+                             than {a:?} ({})",
+                            grid(b),
+                            grid(a)
+                        );
+                    }
+                }
+                // Mines sharing a rung must grant exactly the same, or the tie is a
+                // typo rather than a decision.
+                for &a in earlier {
+                    assert_eq!(grid(a), grid(earlier[0]), "{a:?} breaks its rung's tie");
+                }
+            }
+        }
+    }
+
+    /// XP and loot are two tables now, and the separation is the point: a dense block
+    /// still drops nine but grants three times its ore, so the richness dial moves the
+    /// level bar without the crafting ratio deciding the level curve.
+    #[test]
+    fn xp_is_not_the_drop_count() {
+        for &(ore, dense) in DENSE_FORMS {
+            assert_eq!(dense.drop_amount(), RAW_PER_DENSE_BLOCK);
+            assert_eq!(
+                dense.xp_value(),
+                3 * ore.xp_value(),
+                "{dense:?} grants XP in proportion to its loot rather than its table"
+            );
+        }
+    }
+
+    /// Every block is worth some experience. A cell granting none would make part of
+    /// a grid pure spent time on the level axis, the same fault
+    /// `every_block_drops_at_least_one_item` rules out on the loot axis.
+    #[test]
+    fn every_block_grants_some_experience() {
+        for &block in ALL_BLOCKS {
+            assert!(
+                block.xp_value() > 0,
+                "{block:?} grants no experience, so mining it is a tax on levelling"
             );
         }
     }
