@@ -158,6 +158,37 @@ pub const COST_BASE: u32 = 10;
 /// economy exists to be would leak.
 pub const COST_GROWTH: f64 = 1.15;
 
+// --- Boosts (phase 5) ---
+
+/// What a temporary Redstone [`Boost`](crate::boost::Boost) multiplies mining
+/// power by while it runs.
+///
+/// Provisional; phase 10 sets the final value. Unlike most dials here it has a
+/// **floor the design fixes rather than balance**: the boost exists to reach the
+/// two blocks no permanent upgrade can. A maxed pickaxe is worth 705, so anything
+/// at or below `1500 / 705 ≈ 2.13` leaves Obsidian unreachable and the boost with
+/// no job — which is the mirror of the ceiling
+/// [`HASTE_PER_LEVEL`] is held under for the same reason. Must
+/// stay above `1.0`, or a "boost" would slow the player down.
+pub const BOOST_MULTIPLIER: f32 = 2.5;
+
+/// How long a bought Redstone boost runs, in phase-7 ticks.
+///
+/// Ticks rather than a [`Duration`] because the tick loop is what counts it down,
+/// and a wall-clock read inside the core would break determinism. At the fixed
+/// 20 tps this is 30 seconds. Provisional; must stay above zero, or a boost would
+/// lapse on the tick it was bought.
+pub const BOOST_DURATION_TICKS: u32 = 600;
+
+/// The raw Redstone one boost costs.
+///
+/// **Flat, not a step on [`COST_BASE`]'s curve.** The geometric curve is indexed by
+/// *how far up a permanent ladder* the player already is; a boost is a consumable
+/// with no level held, so there is no `n` to read it at, and pricing it off the
+/// count already bought would make it dearer with no design reason. 500 raw quotes
+/// as `5 Compressed Redstone`, which is what the player sees. Provisional.
+pub const BOOST_COST: u32 = 500;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +229,18 @@ mod tests {
     #[test]
     fn a_level_of_haste_is_always_worth_buying() {
         const { assert!(HASTE_PER_LEVEL > 0.0) }
+    }
+
+    /// A boost must speed the player up and must last long enough to be used. The
+    /// *design* floor — high enough to reach Obsidian — is not asserted here, since
+    /// it is a claim about the hardness table and the tier curve, not about this
+    /// number alone; `mine` pins it against the real threshold instead.
+    #[test]
+    fn a_boost_is_faster_than_no_boost_and_lasts_a_while() {
+        const {
+            assert!(BOOST_MULTIPLIER > 1.0);
+            assert!(BOOST_DURATION_TICKS > 0);
+            assert!(BOOST_COST > 0);
+        }
     }
 }

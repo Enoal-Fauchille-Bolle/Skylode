@@ -36,6 +36,7 @@
 //! [`upgrade_size_level`]: crate::mine::Mine::upgrade_size_level
 //! [`set_richness_setting`]: crate::mine::Mine::set_richness_setting
 
+use crate::boost::Boost;
 use crate::enchant::EnchantType;
 use crate::error::CoreError;
 use crate::inventory::Inventory;
@@ -44,7 +45,9 @@ use crate::mine::Mine;
 use crate::mine_kind::MineKind;
 use crate::pickaxe::{Pickaxe, PickaxeTier};
 use crate::rng::Rng;
-use crate::tunables::{COST_BASE, COST_GROWTH, RAW_PER_COMPRESSED};
+use crate::tunables::{
+    BOOST_COST, BOOST_DURATION_TICKS, BOOST_MULTIPLIER, COST_BASE, COST_GROWTH, RAW_PER_COMPRESSED,
+};
 use crate::world::World;
 
 /// The total raw cost of the `n`-th step on the geometric curve
@@ -583,6 +586,39 @@ pub fn buy_mine_richness(inventory: &mut Inventory, mine: &mut Mine) -> Result<(
         &mine_richness_cost(mine.kind(), mine.get_richness_level()),
     )?;
     mine.upgrade_richness_level()
+}
+
+/// What one temporary Redstone [`Boost`] costs — a single flat line of Redstone.
+///
+/// Takes no state, unlike every other `*_cost` in this module, and that is the
+/// whole difference between a consumable and a ladder: [`cost_curve`] is indexed by
+/// *how far up a track the player already is*, and a boost has no level held to
+/// read. Pricing it off the number already bought would make it climb for no design
+/// reason, and would need a counter in the save to do it. Provisional, like the
+/// other tables here; see [`BOOST_COST`].
+///
+/// Still a [`Cost`], not a bare number, so the Upgrades screen renders it through
+/// the same two-denomination path as everything else — `5 Compressed Redstone`.
+pub fn boost_cost() -> Cost {
+    Cost::single(Material::Redstone, BOOST_COST)
+}
+
+/// Buys one temporary Redstone boost: debit, then **hand the boost back**.
+///
+/// The one purchase that returns a value instead of mutating a target, because the
+/// target does not exist yet: active boosts live on phase 7's game state
+/// (`docs/SYSTEMS.md`), and so does the rule for what a second boost does to a
+/// running one. So this pays and produces, exactly as
+/// [`resolve_excavator`](crate::enchant::Enchants::resolve_excavator) produces an
+/// [`Item`] the phase-7 tick will bank, and the caller that owns the collection
+/// decides where it lands. Repeatable at a flat price ([`boost_cost`]).
+///
+/// Refuses with [`CoreError::InsufficientItems`] and changes nothing, like every
+/// other buy — there is no cap to check first, since a consumable has no ceiling to
+/// hit.
+pub fn buy_boost(inventory: &mut Inventory) -> Result<Boost, CoreError> {
+    pay(inventory, &boost_cost())?;
+    Ok(Boost::new(BOOST_MULTIPLIER, BOOST_DURATION_TICKS))
 }
 
 /// Repeats a single purchase up to `max_count` times, stopping at the first
@@ -1225,6 +1261,81 @@ mod tests {
         assert_eq!(bought, 2, "only two levels are affordable");
         assert_eq!(efficiency_of(&pickaxe), 2);
         assert_eq!(inventory.count(Item::Raw(Material::Stone)), 3);
+    }
+
+    /// An inventory holding exactly `count` times what `cost` demands, in the
+    /// denominations it demands them in.
+    ///
+    /// Reads the cost rather than stocking a raw total, because payment is
+    /// **strict**: a price that quotes Compressed units is not satisfied by the
+    /// equivalent pile of raw items. Deriving the stock this way also survives a
+    /// phase-10 re-balance that moves a price across the 100-item boundary.
+    fn stocked_for(cost: &Cost, count: u32) -> Inventory {
+        let mut inventory = Inventory::new();
+        for (item, amount) in cost.lines().iter().flat_map(CostLine::requirements) {
+            inventory.add(item, amount * count);
+        }
+        inventory
+    }
+
+    /// The boost is paid for in Redstone and handed back live — the purchase that
+    /// produces a value rather than mutating a target, since phase 7 owns the
+    /// target.
+    #[test]
+    fn buying_a_boost_debits_redstone_and_yields_a_running_one() {
+        let mut inventory = stocked_for(&boost_cost(), 1);
+        inventory.add(Item::Raw(Material::Redstone), 7); // pocket change it must not touch
+
+        let Ok(boost) = buy_boost(&mut inventory) else {
+            unreachable!("the stock is the cost, so the buy cannot refuse")
+        };
+
+        assert!(!boost.is_expired());
+        assert!(
+            boost.multiplier() > 1.0,
+            "a boost that multiplies by 1 was sold for nothing"
+        );
+        assert_eq!(
+            inventory.count(Item::Compressed(Material::Redstone)),
+            0,
+            "the quoted denomination was not the one debited"
+        );
+        assert_eq!(inventory.count(Item::Raw(Material::Redstone)), 7);
+    }
+
+    /// A boost is a consumable with no ceiling, so the *only* thing that can refuse
+    /// it is the price — and a refusal leaves the Redstone untouched.
+    ///
+    /// The stock here is deliberately **raw Redstone worth more than the price**:
+    /// costs are paid in the denomination they are quoted in, so a player sitting on
+    /// loose ore must compress it first. That rule holds at the boost door like
+    /// everywhere else.
+    #[test]
+    fn an_unaffordable_boost_changes_nothing() {
+        let mut inventory = stocked(&[(Material::Redstone, BOOST_COST * 2)]);
+        let before = inventory.clone();
+
+        assert!(buy_boost(&mut inventory).is_err());
+        assert_eq!(inventory, before, "the inventory moved on a refusal");
+    }
+
+    /// Unlike every ladder in this module, the boost's price does not climb: two
+    /// boosts cost exactly twice one. This is what makes it a consumable rather
+    /// than a track, and it is asserted because the *shape* is the decision — the
+    /// number itself is phase-10 balance.
+    #[test]
+    fn a_second_boost_costs_the_same_as_the_first() {
+        let mut inventory = stocked_for(&boost_cost(), 2);
+
+        assert!(buy_boost(&mut inventory).is_ok());
+        assert!(
+            buy_boost(&mut inventory).is_ok(),
+            "the second boost was dearer than the first"
+        );
+        assert!(
+            buy_boost(&mut inventory).is_err(),
+            "a stock of exactly two boosts bought a third"
+        );
     }
 
     #[test]

@@ -757,8 +757,10 @@ impl Mine {
 mod tests {
     use super::*;
     use crate::block::ALL_BLOCKS;
+    use crate::boost::Boost;
     use crate::enchant::{EnchantType, Enchants};
     use crate::pickaxe::{Pickaxe, PickaxeTier};
+    use crate::tunables::{BOOST_DURATION_TICKS, BOOST_MULTIPLIER};
     use crate::world::World;
 
     /// A generator on a fixed seed. The composition tests only need *a*
@@ -1503,6 +1505,47 @@ mod tests {
                 power < block.hardness() * TICKS_PER_HARDNESS,
                 "a maxed hasted pickaxe ({power}) already one-shots {block:?}, which \
                  is the Redstone boost's job — it now has none"
+            );
+        }
+    }
+
+    /// The other half of the claim above, and the reason
+    /// [`Boost`](crate::boost::Boost) exists at all: the temporary Redstone boost
+    /// **closes the gap the permanent ceiling leaves**. Its sibling proves Ancient
+    /// Debris and Obsidian are out of reach of everything the player can buy
+    /// forever; this proves they are not out of reach of what the player can buy
+    /// for thirty seconds.
+    ///
+    /// Together they bracket [`BOOST_MULTIPLIER`](crate::tunables::BOOST_MULTIPLIER)
+    /// from below the way the pair above brackets `HASTE_PER_LEVEL` from above —
+    /// which is why the *design* floor is asserted here, against the real hardness
+    /// threshold, and not as a magic ratio in `tunables`. A re-balance that lowers
+    /// the boost, weakens the tier curve, or hardens Obsidian fails this test and
+    /// re-asks the question.
+    ///
+    /// Goes through [`Boost::multiplier`] rather than the raw constant, so it also
+    /// pins that a *running* boost really does multiply — a boost that reported
+    /// `1.0` while live would pass every test in `boost` that checks expiry, and
+    /// only this one would notice.
+    #[test]
+    fn the_redstone_boost_is_what_finally_instamines_the_obsidian() {
+        let tier = PickaxeTier::Netherite;
+        let world = World::End;
+        let mut enchants = Enchants::new();
+        for _ in 0..tier.efficiency_cap() {
+            assert!(enchants.upgrade_efficiency(tier).is_ok());
+        }
+        for _ in 0..EnchantType::Haste.max_level(tier, world) {
+            assert!(enchants.upgrade(EnchantType::Haste, tier, world).is_ok());
+        }
+        let boost = Boost::new(BOOST_MULTIPLIER, BOOST_DURATION_TICKS);
+        let power = Pickaxe::new(tier, enchants).mining_power() * boost.multiplier();
+
+        for block in [Block::AncientDebris, Block::Obsidian] {
+            assert!(
+                power >= block.hardness() * TICKS_PER_HARDNESS,
+                "a boosted maxed pickaxe ({power}) still cannot one-shot {block:?}, \
+                 so nothing in the game ever does"
             );
         }
     }

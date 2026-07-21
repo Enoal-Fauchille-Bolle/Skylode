@@ -17,6 +17,8 @@
 //!   convert it with.
 //! - [`economy`]: what upgrades cost, and the transactional path that pays for
 //!   them.
+//! - [`boost`]: the temporary Redstone speed boost — the other half of the haste
+//!   product the pickaxe does not carry.
 //! - [`mine`]: a generated grid of blocks the player digs through, sized by
 //!   level.
 //! - [`mine_kind`]: the twelve canonical mines and their identity (block pool,
@@ -29,6 +31,7 @@
 //! - [`error`]: what the rules refuse, and why.
 
 pub mod block;
+pub mod boost;
 pub mod economy;
 pub mod enchant;
 pub mod error;
