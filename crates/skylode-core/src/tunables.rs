@@ -10,7 +10,7 @@
 //! A *design fact* is settled, and settled numbers live with the thing they
 //! describe and never come here: `TICKS_PER_HARDNESS` (30) and
 //! [`Block::hardness`](crate::block::Block::hardness) are Minecraft's values kept
-//! 1:1, `RAW_PER_DENSE_BLOCK` (9) and [`FORTUNE_CAP`](crate::enchant) are settled
+//! 1:1, `RAW_PER_DENSE_BLOCK` (9) and Efficiency's `level² + 1` are settled
 //! with their reasons in `docs/MECHANICS.md`. Filing one of those under a module
 //! called *tunables* would not describe it — it would **invite someone to turn it**,
 //! and the name would be the whole of their justification.
@@ -57,10 +57,19 @@
 //! front without a litter of `#[expect(dead_code)]`.
 //!
 //! One shape rule survives from step 2, for the keyed-by-nothing half: **curve
-//! *parameters*, never a price table.** The economy's cost is a curve,
-//! `cost(n) = base * growth^n`; what lives here is the two parameters, and the
-//! `economy` module (phase 5) generates every price from them. A hundred prices are
-//! two numbers, not a hundred constants.
+//! *parameters*, never a price table.** Every price in the economy is a step on some
+//! curve `cost(n) = base * growth^n`; what lives here is the *parameters*, and the
+//! `economy` module generates the prices from them. Several hundred prices are a
+//! handful of numbers, not several hundred constants.
+//!
+//! There is more than one such curve — one per upgrade track — and that is not a
+//! breach of the rule but the reason it needs restating. A slope compounds over
+//! however many steps a track has, and it is only meaningful against **that track's**
+//! production growth, so a nine-step track and a fifteen-step one cannot share one
+//! number without the longer one running away. What the rule forbids is a *table of
+//! prices*; four tracks with four slopes is still four numbers generating everything.
+//! Which curve a track reads is the track's own business, expressed in `economy` by
+//! the helper it calls.
 
 use std::time::Duration;
 
@@ -70,7 +79,8 @@ use std::time::Duration;
 /// [`Haste`](crate::enchant::EnchantType::Haste) adds back: level `n` multiplies
 /// mining power by `1 + HASTE_PER_LEVEL * n`.
 ///
-/// A curve parameter, like [`COST_GROWTH`] — the factor, not a table of factors —
+/// A curve parameter, like the economy's `*_COST_GROWTH` slopes — the factor, not a
+/// table of factors —
 /// which is why it lives here and not beside [`EnchantType`](crate::enchant::EnchantType)
 /// under this module's second rule. That rule is about values that are *one per
 /// variant*, and Haste's **cap** is exactly that: it is
@@ -159,18 +169,81 @@ pub const RAW_PER_COMPRESSED: u32 = 100;
 
 // --- Economy (phase 5) ---
 
-/// Base term of the geometric cost curve `cost(n) = base * growth^n`.
+/// Base term of the geometric cost curve `cost(n) = base * growth^n`, shared by
+/// every track except the enchant ladder ([`ENCHANT_COST_BASE`]).
+///
+/// **The base governs the early game; the slope governs the late one.** This is the
+/// single most useful thing to know before turning either, and it follows from the
+/// curve itself: step zero costs `base * growth^0`, which is the base *whatever the
+/// slope*. So raising a `*_GROWTH` to make the game harder leaves the opening
+/// untouched and inflates only the endgame — and raising the base lifts the whole
+/// curve without changing how steeply it climbs. A balance pass that wants "a harder
+/// start" reaches here; one that wants "a longer endgame" reaches for a slope.
+///
+/// Also the unit the boost is quoted in ([`BOOST_COST`]), so a re-balance moves the
+/// consumable with the ladders instead of leaving it behind.
 ///
 /// Provisional; phase 10 balance sets the final value. Must stay above zero, or the
 /// whole curve collapses to zero and nothing ever costs anything.
-pub const COST_BASE: u32 = 10;
+pub const COST_BASE: u32 = 100;
 
-/// Growth factor of the geometric cost curve `cost(n) = base * growth^n`.
+/// Growth factor of the **mine size** track's cost curve.
+///
+/// The steepest slope in the game, and deliberately so: size is the track that
+/// multiplies production. Its nine steps take a mine from 9 cells to 200 — a factor
+/// of **22** — so a slope whose nine steps climb by less than that makes the track
+/// *easier* to fund the further it is climbed, and the sink leaks exactly where it
+/// should bite. At `1.55` the price climbs by 33 across the track, which keeps every
+/// step costing between one and two and a half full grids instead of a fifth of one.
 ///
 /// Provisional; phase 10 balance sets the final value. Must stay strictly above
-/// `1.0`, or successive upgrades would cost the same or *less*, and the sink the
-/// economy exists to be would leak.
-pub const COST_GROWTH: f64 = 1.15;
+/// `1.0`, or successive upgrades would cost the same or *less*.
+pub const SIZE_COST_GROWTH: f64 = 1.55;
+
+/// Growth factor of the **mine richness** track's cost curve.
+///
+/// Gentler than [`SIZE_COST_GROWTH`] because it is measured against a smaller gain:
+/// richness multiplies a same-material mine's yield by 4.6 across its ten rungs,
+/// where size multiplies cell count by 22. Pricing the two on one slope would make
+/// whichever of them was mis-matched either free or unbuyable — the reason this crate
+/// carries a slope per track rather than the single `COST_GROWTH` it once had.
+///
+/// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`.
+pub const RICHNESS_COST_GROWTH: f64 = 1.35;
+
+/// Growth factor shared by the two **pickaxe** tracks: Efficiency within a tier, and
+/// the tier jump itself.
+///
+/// The one slope that must survive a **fifteen-step** track (Netherite's Efficiency
+/// climb) as well as a five-step one, which is what holds it below the size slope. At
+/// `1.55` the fifteenth step alone would cost 643 full Obsidian grids — over five
+/// hours of mining for a single Efficiency level — because a slope compounds over
+/// however many steps a track has, and two tracks of different lengths cannot share
+/// one without the longer one running away.
+///
+/// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`.
+pub const UPGRADE_COST_GROWTH: f64 = 1.45;
+
+/// Base term of the **enchant** ladder's cost curve — an order of magnitude above
+/// [`COST_BASE`], and paired with the game's gentlest slope.
+///
+/// **A high base with a low slope is what spreads a budget across the worlds.** An
+/// enchant's ten levels are split 3 / 3 / 4 between the Overworld, the Nether and the
+/// End, so with a steep slope the Overworld's three levels are a rounding error —
+/// 2.3 % of the enchant's lifetime cost — and the ores that fuel them are never
+/// really demanded. Since the base governs the early steps (see [`COST_BASE`]),
+/// flattening the curve and lifting its floor moves the Overworld's share to 11.5 %
+/// without making the End's levels cheap in absolute terms. This is the whole reason
+/// the enchant ladder does not read off [`COST_BASE`] like everything else.
+///
+/// Provisional; phase 10 balance sets the final value. Must stay above zero.
+pub const ENCHANT_COST_BASE: u32 = 1_000;
+
+/// Growth factor of the **enchant** ladder's cost curve — the gentlest in the game,
+/// for the reason [`ENCHANT_COST_BASE`] is the highest.
+///
+/// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`.
+pub const ENCHANT_COST_GROWTH: f64 = 1.25;
 
 // --- Boosts (phase 5) ---
 
@@ -194,14 +267,21 @@ pub const BOOST_MULTIPLIER: f32 = 2.5;
 /// lapse on the tick it was bought.
 pub const BOOST_DURATION_TICKS: u32 = 600;
 
-/// The raw Redstone one boost costs.
+/// The raw Redstone one boost costs: three times [`COST_BASE`].
 ///
-/// **Flat, not a step on [`COST_BASE`]'s curve.** The geometric curve is indexed by
-/// *how far up a permanent ladder* the player already is; a boost is a consumable
-/// with no level held, so there is no `n` to read it at, and pricing it off the
-/// count already bought would make it dearer with no design reason. 500 raw quotes
-/// as `5 Compressed Redstone`, which is what the player sees. Provisional.
-pub const BOOST_COST: u32 = 500;
+/// **Flat on the curve, but quoted in its base — the two are not the same claim.**
+/// Flat means there is no `n`: the geometric curve is indexed by how far up a
+/// permanent ladder the player already is, and a consumable holds no level, so
+/// pricing it off the count already bought would make it dearer for no design reason.
+/// That is unchanged. What the multiple of [`COST_BASE`] adds is a *unit*: the boost
+/// is worth three opening upgrades, and it stays worth three of them after a
+/// re-balance instead of drifting into irrelevance while every ladder around it
+/// moves. A hard-coded number surviving a re-balance of the curve is precisely how
+/// this economy came to have a boost that cost fifty opening upgrades.
+///
+/// 300 raw quotes as `3 Compressed Redstone`, which is what the player sees.
+/// Provisional.
+pub const BOOST_COST: u32 = 3 * COST_BASE;
 
 #[cfg(test)]
 mod tests {
@@ -219,11 +299,50 @@ mod tests {
         }
     }
 
+    /// Every curve in the economy must actually be a *growing* curve: a base above
+    /// zero, and a slope strictly above one. A slope at or below `1.0` makes each
+    /// step cost the same or *less* than the last, so the sink the economy exists to
+    /// be leaks — and it leaks silently, since every price still looks plausible.
+    ///
+    /// Walked over all four slopes rather than one, because they are independent
+    /// dials now: a re-balance that flattened only the richness track would slip past
+    /// an assertion that named the size track.
     #[test]
-    fn the_cost_curve_actually_grows() {
+    fn every_cost_curve_actually_grows() {
         const {
             assert!(COST_BASE > 0);
-            assert!(COST_GROWTH > 1.0);
+            assert!(ENCHANT_COST_BASE > 0);
+            assert!(SIZE_COST_GROWTH > 1.0);
+            assert!(RICHNESS_COST_GROWTH > 1.0);
+            assert!(UPGRADE_COST_GROWTH > 1.0);
+            assert!(ENCHANT_COST_GROWTH > 1.0);
+        }
+    }
+
+    /// The size track is the steepest, and that ordering is the design rather than an
+    /// accident of tuning: size is what multiplies *production* (9 cells to 200
+    /// across its nine steps), so its price has to climb faster than any track that
+    /// multiplies less. If a re-balance ever puts richness or the pickaxe tracks
+    /// above it, the mine that grows fastest also becomes the cheapest to grow.
+    #[test]
+    fn the_size_track_is_the_steepest() {
+        const {
+            assert!(SIZE_COST_GROWTH > RICHNESS_COST_GROWTH);
+            assert!(SIZE_COST_GROWTH > UPGRADE_COST_GROWTH);
+            assert!(SIZE_COST_GROWTH > ENCHANT_COST_GROWTH);
+        }
+    }
+
+    /// The enchant ladder trades slope for base, and both halves of that trade have
+    /// to hold or it buys nothing. A high base with a *steep* slope would be the
+    /// worst of both; a low base with a gentle one would make the whole ladder cheap.
+    /// The pairing is what spreads an enchant's budget across the three worlds
+    /// instead of concentrating it in the End — see [`ENCHANT_COST_BASE`].
+    #[test]
+    fn the_enchant_ladder_trades_slope_for_base() {
+        const {
+            assert!(ENCHANT_COST_BASE > COST_BASE);
+            assert!(ENCHANT_COST_GROWTH < UPGRADE_COST_GROWTH);
         }
     }
 

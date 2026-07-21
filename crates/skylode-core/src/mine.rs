@@ -32,7 +32,11 @@ const MINE_SIZES: [(u8, u8); 10] = [
 ///
 /// Derived from `MINE_SIZES` rather than written out, so extending the table
 /// raises the ceiling and no second place has to be remembered.
-const MAX_SIZE_LEVEL: u32 = MINE_SIZES.len() as u32 - 1;
+///
+/// `pub(crate)` for [`economy`](crate::economy), which prices the track and needs the
+/// same bound to know how far its cost ramp runs. It read a local copy of the number
+/// before, and a copy is exactly what this constant exists to avoid.
+pub(crate) const MAX_SIZE_LEVEL: u32 = MINE_SIZES.len() as u32 - 1;
 
 /// How much [`mining_power`](crate::pickaxe::Pickaxe::mining_power) a block costs
 /// per point of [`hardness`](Block::hardness): a cell yields at
@@ -64,7 +68,13 @@ const TICKS_PER_HARDNESS: f32 = 30.0;
 /// Richness is a *curve*, not an irregular table like `MINE_SIZES`, so it is a
 /// formula ([`value_weight`]) plus this bound rather than a laid-out array. The
 /// count is provisional; phase 10 balance sets the final shape.
-const MAX_RICHNESS_LEVEL: u32 = 9;
+///
+/// `pub(crate)` for [`economy`](crate::economy), for the reason [`MAX_SIZE_LEVEL`] is:
+/// the cost ramp has to span exactly the rungs that exist. That module kept its own
+/// `RICHNESS_MIX_SPAN` at the same value, with nothing but care keeping the two in
+/// step — a re-balance moving one and not the other would have made the rare share
+/// overshoot or never arrive, silently.
+pub(crate) const MAX_RICHNESS_LEVEL: u32 = 9;
 
 /// Weight (out of 100) of the *value* cell at richness `0`: the "mixed mine as
 /// first specified". Non-zero, so a mine at richness 0 already sprinkles in its

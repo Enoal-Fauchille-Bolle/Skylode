@@ -71,6 +71,13 @@ impl Boost {
     /// sites read [`BOOST_MULTIPLIER`](crate::tunables::BOOST_MULTIPLIER), whose
     /// invariants are asserted at *compile time* in `tunables`. Checking here would
     /// hand every caller an error case that no input can produce.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "awaiting the phase-7 tick, which activates a bought charge"
+        )
+    )]
     pub(crate) fn new(multiplier: f32, ticks: u32) -> Self {
         Self {
             multiplier,

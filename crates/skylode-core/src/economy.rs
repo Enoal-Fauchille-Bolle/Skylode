@@ -36,17 +36,18 @@
 //! [`upgrade_size_level`]: crate::mine::Mine::upgrade_size_level
 //! [`set_richness_setting`]: crate::mine::Mine::set_richness_setting
 
-use crate::boost::Boost;
 use crate::enchant::EnchantType;
 use crate::error::CoreError;
 use crate::inventory::Inventory;
 use crate::material::{Item, Material};
 use crate::mine::Mine;
+use crate::mine::{MAX_RICHNESS_LEVEL, MAX_SIZE_LEVEL};
 use crate::mine_kind::MineKind;
 use crate::pickaxe::{Pickaxe, PickaxeTier};
 use crate::rng::Rng;
 use crate::tunables::{
-    BOOST_COST, BOOST_DURATION_TICKS, BOOST_MULTIPLIER, COST_BASE, COST_GROWTH, RAW_PER_COMPRESSED,
+    BOOST_COST, COST_BASE, ENCHANT_COST_BASE, ENCHANT_COST_GROWTH, RAW_PER_COMPRESSED,
+    RICHNESS_COST_GROWTH, SIZE_COST_GROWTH, UPGRADE_COST_GROWTH,
 };
 use crate::world::World;
 
@@ -54,10 +55,17 @@ use crate::world::World;
 /// `base * growth^n`, rounded to a whole number of raw items.
 ///
 /// `n` is the **0-indexed step being bought**: the first upgrade of a track is
-/// `cost_curve(0)` = [`COST_BASE`], and each further step multiplies by
-/// [`COST_GROWTH`]. Which state maps to `n` is each track's own business (a
-/// pickaxe's Efficiency level, a mine's size level, …); this function only knows
-/// the curve.
+/// `cost_curve(base, growth, 0)` = `base`, and each further step multiplies by
+/// `growth`. Which state maps to `n` is each track's own business (a pickaxe's
+/// Efficiency level, a mine's size level, …); this function only knows the curve.
+///
+/// **The curve is passed in, not read from a constant**, because a slope is only
+/// meaningful against the production growth of the track it prices. Size takes a mine
+/// from 9 cells to 200 over nine steps; Netherite's Efficiency has fifteen steps and
+/// multiplies nothing. One slope for both makes the shorter track free or the longer
+/// one unaffordable — at the size track's slope, the last Efficiency level costs 643
+/// full grids. Callers reach for the named per-track helper below rather than this
+/// function, so no call site has to remember which pair of constants it wanted.
 ///
 /// **`f64` and `round`, not integer arithmetic.** `growth` is `1.15`, which has
 /// no exact integer form, so the curve is evaluated in floating point and rounded
@@ -78,10 +86,132 @@ use crate::world::World;
 /// **`powf(f64::from(n))`, not `powi(n as i32)`.** The exponent must be widened
 /// through `f64`, not narrowed through `i32`: a `u32` fits exactly in an `f64`
 /// mantissa, but `n as i32` *wraps a large `n` to a negative exponent* — turning
-/// `cost_curve(u32::MAX)` into `10 * 1.15⁻¹ ≈ 9`, the cheap price the saturation
+/// `cost_curve(u32::MAX)` into `base * growth⁻¹`, the cheap price the saturation
 /// exists to rule out.
-pub fn cost_curve(n: u32) -> u32 {
-    (f64::from(COST_BASE) * COST_GROWTH.powf(f64::from(n))).round() as u32
+pub fn cost_curve(base: u32, growth: f64, n: u32) -> u32 {
+    (f64::from(base) * growth.powf(f64::from(n))).round() as u32
+}
+
+/// The price of the `n`-th step of a mine's **size** track — the steepest curve in
+/// the game, because size is the track that multiplies production.
+fn size_curve(n: u32) -> u32 {
+    cost_curve(COST_BASE, SIZE_COST_GROWTH, n)
+}
+
+/// The price of the `n`-th step of a mine's **richness** track, on a gentler slope
+/// than [`size_curve`]: richness multiplies a same-material mine's yield by 4.6 across
+/// its rungs where size multiplies cell count by 22.
+fn richness_curve(n: u32) -> u32 {
+    cost_curve(COST_BASE, RICHNESS_COST_GROWTH, n)
+}
+
+/// The price of the `n`-th step of either **pickaxe** track — Efficiency within a
+/// tier, or the tier jump. Shared, because they are two halves of one ladder, and
+/// held below [`size_curve`]'s slope because Netherite's Efficiency runs fifteen steps.
+fn upgrade_curve(n: u32) -> u32 {
+    cost_curve(COST_BASE, UPGRADE_COST_GROWTH, n)
+}
+
+/// The price of the `n`-th level of an **enchant**: the one track with its own base,
+/// ten times the others, paired with the gentlest slope.
+///
+/// That pairing is what spreads an enchant's cost across the three worlds. An
+/// enchant's ten levels are split 3 / 3 / 4 between them, and since step zero costs
+/// the base whatever the slope, a high base with a flat slope is the only shape that
+/// makes the Overworld's three levels a real expense — 11.5 % of the ladder rather
+/// than 2.3 %. See [`ENCHANT_COST_BASE`].
+fn enchant_curve(n: u32) -> u32 {
+    cost_curve(ENCHANT_COST_BASE, ENCHANT_COST_GROWTH, n)
+}
+
+/// Where the **recipe** ramps start: a quarter of the total, in permille.
+///
+/// Applies to the two prices that buy a *recipe* rather than a mine — Netherite's
+/// Efficiency `6..=15` and the End's enchants. Both open on a rare-material minority,
+/// because the player meets them holding a mine still tuned toward its common cell.
+///
+/// The **mine** tracks start at zero instead, and the difference is not a tuning
+/// choice: a mine's first rung has to be payable out of what an *un-enriched* mine
+/// produces, and an un-enriched mine has barely any of its rare cell. A recipe has no
+/// such constraint — the player brings the materials to it.
+const RECIPE_RAMP_START_PERMILLE: u32 = 250;
+
+/// Where every ramp ends, in permille: the same 91 % the richness dial reaches at its
+/// own ceiling.
+///
+/// **Matching `value_weight(MAX_RICHNESS_LEVEL)` is the whole point**, not a
+/// coincidence to be tidied away. It is what makes the dial's top rung the setting the
+/// last step of a track actually wants, so the optimum ratio the player farms toward
+/// *moves* up the dial as they climb instead of sitting at one rung. Pinned at a fixed
+/// share — as Netherite's Efficiency once was, at a flat 3:1 — the optimum parks at
+/// dial 1.7 of 9, and the seven rungs above it can only overshoot the recipe, which
+/// leaves most of that mine's own richness track not worth buying.
+const RARE_RAMP_END_PERMILLE: u32 = 910;
+
+/// The rare material's share of a composite price, in permille: a linear ramp from
+/// `start` to [`RARE_RAMP_END_PERMILLE`] across `span` steps, read at `step`.
+///
+/// The single ramp behind **all four** of the game's composite prices — a mine's two
+/// tracks on the three two-material mines, Netherite's Efficiency `6..=15`, and the
+/// End's enchants. They differ in where they start ([`RECIPE_RAMP_START_PERMILLE`] for
+/// the two recipes, zero for the two mine tracks) and in how many steps they run over;
+/// that they climb *toward the dial's own ceiling* is one rule, stated once. Before
+/// this they were three unrelated fractions that happened to share a module.
+///
+/// **Saturating rather than wrapping at the ends.** `step` is clamped to `span`, so a
+/// caller that walks past the last rung — a save carrying a level the current table no
+/// longer defines, which phase 9 must survive — reads the top of the ramp rather than
+/// running off it. A `span` of zero yields `start`, since a ramp with no steps has
+/// nowhere to climb.
+///
+/// Arithmetic in `u64`: the product can exceed `u32` on an absurd span even though
+/// real spans are single digits, and the guard costs nothing.
+fn rare_permille(step: u32, span: u32, start: u32) -> u32 {
+    if span == 0 {
+        return start;
+    }
+    let step = u64::from(step.min(span));
+    let climb = u64::from(RARE_RAMP_END_PERMILLE.saturating_sub(start));
+    start + (climb * step / u64::from(span)) as u32
+}
+
+/// Splits `total` into a `(common, rare)` pair, the rare part taking
+/// [`rare_permille`] of it.
+///
+/// The common part is `total - rare` rather than its own multiplication, which is what
+/// makes the split **exact**: the two parts always add back to the total, so moving a
+/// price from one material to two never changes what it costs. A price that quietly
+/// gained or lost an item every time its shape changed would be a rounding error the
+/// player pays.
+fn split_rare(total: u32, step: u32, span: u32, start: u32) -> (u32, u32) {
+    let rare = (u64::from(total) * u64::from(rare_permille(step, span, start)) / 1_000) as u32;
+    (total - rare, rare)
+}
+
+/// A price in a mine's own material: one line on the nine same-material mines, and a
+/// common-to-rare [mix](split_rare) on the three that hold two materials.
+///
+/// Shared by both mine tracks. Size and richness quote the same shape for the same
+/// reason — a mine funds its growth out of what it produces, and on a two-material
+/// mine it produces two things. A line is dropped when its part rounds to nothing,
+/// which is why richness step 0 is a single common line.
+fn mine_cost(kind: MineKind, total: u32, step: u32, span: u32) -> Cost {
+    let (common, value) = (kind.common_material(), kind.value_material());
+    if common == value {
+        return Cost::single(common, total);
+    }
+
+    // Zero, not `RECIPE_RAMP_START_PERMILLE`: a mine's first rung must be payable out
+    // of what the un-enriched mine already produces.
+    let (common_part, rare_part) = split_rare(total, step, span, 0);
+    let mut lines = Vec::new();
+    if common_part > 0 {
+        lines.push(CostLine::from_raw_total(common, common_part));
+    }
+    if rare_part > 0 {
+        lines.push(CostLine::from_raw_total(value, rare_part));
+    }
+    Cost::new(lines)
 }
 
 /// A price in one material, split across the two denominations the player holds
@@ -227,21 +357,11 @@ fn tier_index(tier: PickaxeTier) -> u32 {
 /// ordinary tier upgrade below.
 const NETHERITE_BASE_EFFICIENCY: u8 = 5;
 
-/// The post-Netherite enhancement is paid mostly in the common Obsidian, with one
-/// part in this many owed in the rare Crying Obsidian — a provisional 3:1.
-///
-/// `docs/MECHANICS.md` settles that the enhancement *consumes both*, and that the
-/// player tunes their Obsidian mine's richness dial toward the recipe's optimum
-/// ratio; this is the provisional stand-in for that ratio. Phase 10 sets the real
-/// one; the settled part is that Crying is the minority share of a two-material
-/// cost.
-const CRYING_SHARE_DIVISOR: u32 = 4;
-
 /// The cost of the next **Efficiency** level on `tier`, given the level already
 /// held — the first of the pickaxe's two separately-priced actions.
 ///
-/// `cost_curve(current_level)` in the tier's material, so the price climbs within
-/// a tier and **restarts** at the next: a tier jump resets Efficiency, and the
+/// [`upgrade_curve`] at the level held, in the tier's material, so the price climbs
+/// within a tier and **restarts** at the next: a tier jump resets Efficiency, and the
 /// fresh climb is cheap *in count* but paid in a scarcer material (Stone → Coal →
 /// Iron → …). The material is the cross-tier escalation, the curve the within-tier
 /// one — together they keep every rung worth more than the last without one long
@@ -251,22 +371,36 @@ const CRYING_SHARE_DIVISOR: u32 = 4;
 /// Efficiency `1..=5` is the ordinary tier upgrade in Ancient Debris, but `6..=15`
 /// is the *post-Netherite enhancement*, which `docs/MECHANICS.md` pays in Obsidian
 /// **and** Crying Obsidian both — the Obsidian mine's two materials. So past the
-/// standard cap this returns a **two-material** cost: mostly the common Obsidian,
-/// one part in [`CRYING_SHARE_DIVISOR`] the rare Crying. It is the one pickaxe cost
-/// that is not a single material, which is why the split lives here rather than in
-/// [`pickaxe_material`].
+/// standard cap this returns a **two-material** cost, on the same
+/// [ramp](rare_permille) the End's enchants and the two-material mine tracks use: a
+/// quarter Crying at the first enhancement level, climbing to the dial's own ceiling
+/// at the last.
+///
+/// **The climbing share is what gives that mine's dial a reason to move.** At the flat
+/// 3:1 this once used, the ratio the recipe wanted never changed, so the optimum dial
+/// setting sat at 1.7 of 9 for the whole enhancement and the seven rungs above it
+/// could only overshoot it — a richness track the player was better off not buying.
+/// Ramped, the optimum walks up the dial alongside the Efficiency level, and the
+/// mine's last rung is exactly what its last level asks for.
+///
+/// It is the one pickaxe cost that is not a single material, which is why the split
+/// lives here rather than in [`pickaxe_material`].
 pub fn pickaxe_efficiency_cost(tier: PickaxeTier, current_level: u8) -> Cost {
-    let total = cost_curve(u32::from(current_level));
+    let total = upgrade_curve(u32::from(current_level));
 
     if tier == PickaxeTier::Netherite && current_level >= NETHERITE_BASE_EFFICIENCY {
-        let crying = total / CRYING_SHARE_DIVISOR;
-        let obsidian = total - crying;
+        let span = u32::from(tier.efficiency_cap() - NETHERITE_BASE_EFFICIENCY - 1);
+        let step = u32::from(current_level - NETHERITE_BASE_EFFICIENCY);
+        let (obsidian, crying) = split_rare(total, step, span, RECIPE_RAMP_START_PERMILLE);
+
         let mut lines = Vec::new();
-        if obsidian > 0 {
-            lines.push(CostLine::from_raw_total(Material::Obsidian, obsidian));
-        }
-        if crying > 0 {
-            lines.push(CostLine::from_raw_total(Material::CryingObsidian, crying));
+        for (material, amount) in [
+            (Material::Obsidian, obsidian),
+            (Material::CryingObsidian, crying),
+        ] {
+            if amount > 0 {
+                lines.push(CostLine::from_raw_total(material, amount));
+            }
         }
         return Cost::new(lines);
     }
@@ -274,37 +408,35 @@ pub fn pickaxe_efficiency_cost(tier: PickaxeTier, current_level: u8) -> Cost {
     Cost::single(pickaxe_material(tier), total)
 }
 
-/// The cost of advancing **to** `target_tier` — the pickaxe's second priced
-/// action, kept distinct from buying Efficiency (Enoal's call to price the two
-/// apart, mirroring the two phases already inside
-/// [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe::upgrade)).
+/// The cost of advancing **out of** `from` — the pickaxe's second priced action, kept
+/// distinct from buying Efficiency (Enoal's call to price the two apart, mirroring the
+/// two phases already inside [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe::upgrade)).
 ///
-/// `cost_curve(tier_index(target_tier))` in the target tier's material, so
-/// reaching Netherite is paid in Ancient Debris and reaching Diamond in Diamond,
-/// as the worlds table reads. Provisional.
-pub fn pickaxe_tier_cost(target_tier: PickaxeTier) -> Cost {
-    Cost::single(
-        pickaxe_material(target_tier),
-        cost_curve(tier_index(target_tier)),
-    )
+/// **The tier being left, not the one being reached**, and both halves of the price
+/// come from it: [`upgrade_curve`] at *its* index, in *its* material. Leaving Gold
+/// costs Gold. The jump is the last thing a tier is for, so it is priced as that
+/// tier's final purchase rather than as a down payment on the next — the player spends
+/// what they have been mining all along, not a material the mine they are about to
+/// unlock has not given them yet.
+///
+/// Taking the material from one tier and the curve index from another, as this once
+/// did, made the price describe two concepts at once and left no answer to "which tier
+/// is this the price of?". Provisional in its numbers; the keying is not.
+///
+/// A corollary worth naming: [`Netherite`](PickaxeTier::Netherite) is never a source,
+/// since there is nothing past it to reach — the mirror of the old shape, where
+/// [`Wooden`](PickaxeTier::Wooden) was never a target.
+pub fn pickaxe_tier_cost(from: PickaxeTier) -> Cost {
+    Cost::single(pickaxe_material(from), upgrade_curve(tier_index(from)))
 }
-
-/// How much of an enchant's total is also owed in earlier-mine ore: one part in
-/// this many — provisional.
-///
-/// The provisional stand-in for `docs/MECHANICS.md`'s "mix of raw ores from the
-/// earlier mines". Phase 10 sets the real ratio; what is settled is that there
-/// *is* a second line, so old mines stay useful as enchant fuel.
-const ENCHANT_FUEL_DIVISOR: u32 = 3;
 
 /// The material an enchant `kind` is bought with in `world`, or `None` for
 /// [`Efficiency`](EnchantType::Efficiency) — which is a pickaxe upgrade, priced by
 /// [`pickaxe_efficiency_cost`], not an enchant-shop purchase.
 ///
-/// [`Fortune`](EnchantType::Fortune) is Emerald, its own Overworld currency keyed
-/// by neither tier nor world; the five specials are the world's
-/// [`enchant_material`](World::enchant_material), climbing Lapis → Quartz →
-/// Amethyst as the cap climbs with the world.
+/// [`Fortune`](EnchantType::Fortune) is Emerald, its own currency, in every world; the
+/// five specials are the world's [`enchant_material`](World::enchant_material),
+/// climbing Lapis → Quartz → Amethyst as the cap climbs with the world.
 fn enchant_material(kind: EnchantType, world: World) -> Option<Material> {
     match kind {
         EnchantType::Efficiency => None,
@@ -317,95 +449,160 @@ fn enchant_material(kind: EnchantType, world: World) -> Option<Material> {
     }
 }
 
-/// The earlier-mine ore that also fuels enchants bought in `world` — provisional.
+/// The share of an enchant's price owed in its **abundant** fuel ore, in permille.
+const FUEL_ABUNDANT_PERMILLE: u32 = 350;
+
+/// The share owed in its **scarce** fuel ore, in permille — the smaller of the two, so
+/// the pair reads as "a lot of this, some of that" rather than two equal demands.
+const FUEL_SCARCE_PERMILLE: u32 = 150;
+
+/// The pair of ores that fuels the `level`-th level of a special enchant: an abundant
+/// one and a scarce one, both from the mines the player is working **now**.
 ///
-/// One earlier material per world: Coal in the Overworld, an Overworld ore in the
-/// Nether, a Nether ore in the End — always something the player mined on the way
-/// here, never the enchant's own material. Provisional; the *shape* it pins is a
-/// second [`CostLine`] in an earlier material.
-fn enchant_fuel_material(world: World) -> Material {
-    match world {
-        World::Overworld => Material::Coal,
-        World::Nether => Material::Iron,
-        World::End => Material::Quartz,
+/// **Keyed by the level, not by the world**, and that is the whole design. The level
+/// *is* the progression scale: each rung slides the pair one notch up the ladder of
+/// what the player can currently mine, so every ore serves once as the abundant half
+/// and once as the scarce half before dropping out. Keying by the world instead would
+/// name one ore for a whole dimension and leave the rest of it unasked-for.
+///
+/// It also makes the table **total without a bounds check**. The world cap is what
+/// stops a player reaching level 7 outside the End, so a level always lands on the
+/// band of the world that could sell it — and a level bought late is still fuelled by
+/// the ores of its own rung, never by whatever the player happens to have unlocked
+/// since. Level 1 costs Stone and Coal whether it is bought at the very start or in
+/// the End.
+///
+/// `None` past the last entry: the End's four levels are priced by a different shape
+/// (see [`enchant_cost`]), since that dimension holds a single mine whose rare cell is
+/// already the enchant material.
+fn enchant_fuel(level: u8) -> Option<(Material, Material)> {
+    match level {
+        1 => Some((Material::Stone, Material::Coal)),
+        2 => Some((Material::Iron, Material::Gold)),
+        3 => Some((Material::Gold, Material::Diamond)),
+        4 => Some((Material::Netherrack, Material::AncientDebris)),
+        5 => Some((Material::AncientDebris, Material::Obsidian)),
+        6 => Some((Material::Obsidian, Material::CryingObsidian)),
+        _ => None,
     }
 }
+
+/// How many levels the End's enchant ramp runs over: levels 7 through 10.
+///
+/// Derived as the gap between the last world's cap and the one before it, so a
+/// re-balance of [`World::enchant_cap`] moves the ramp with it instead of leaving it
+/// spanning a band that no longer exists.
+const END_ENCHANT_SPAN: u32 = 3;
 
 /// The cost of the next level of enchant `kind` in `world`, given the level held
 /// — or `None` for Efficiency, which the pickaxe path prices instead.
 ///
-/// Two lines: the enchant's own material for the full `cost_curve(level)`, plus a
-/// **provisional** fuel line of an earlier ore ([`enchant_fuel_material`]) for one
-/// part in [`ENCHANT_FUEL_DIVISOR`] of it — the "mix of earlier mines' ores" that
-/// keeps old mines useful long after their tier is passed. The fuel line is
-/// dropped only if it would round to nothing (a defensive guard against a tiny
-/// base cost; at the current base it never does). Multi-material shape settled,
-/// numbers provisional.
+/// Three shapes, and each is the shape its own materials force:
+///
+/// - **[`Fortune`](EnchantType::Fortune): one line of Emerald.** No fuel. Fortune is
+///   the one enchant whose material is keyed to neither the world nor the tier, so
+///   there is no "current tier's ore" for it to consume; a fuel line here was an
+///   accident of pricing every enchant through one path.
+/// - **The five specials, levels 1–6: three lines.** The world's enchant material,
+///   plus the [pair of ores](enchant_fuel) of that level — 50 % / 35 % / 15 % of one
+///   total. The fuel ores come from the mines the player is working *now*, which is
+///   what makes a dimension's own mines matter while the player is in it.
+/// - **The five specials, levels 7–10: two lines.** The End holds one mine, and its
+///   rare cell *is* the enchant material, so a third line would be a second line of
+///   Amethyst — which [`Cost`] forbids by construction. The total splits between End
+///   Stone and Amethyst on the same [ramp](rare_permille) the recipes use, so the End
+///   fuels its enchants out of the only mine it has.
+///
+/// **The lines share the total rather than adding to it.** A fuel line that was added
+/// on top would make the quoted curve a lie about what the step costs, and it would
+/// leave the four composite prices in the game disagreeing about what "a price" means.
+/// Numbers provisional; the shapes are settled.
 pub fn enchant_cost(kind: EnchantType, current_level: u8, world: World) -> Option<Cost> {
     let material = enchant_material(kind, world)?;
-    let total = cost_curve(u32::from(current_level));
+    let total = enchant_curve(u32::from(current_level));
+    let level = current_level + 1;
 
-    let mut lines = vec![CostLine::from_raw_total(material, total)];
-    let fuel = total / ENCHANT_FUEL_DIVISOR;
-    if fuel > 0 {
-        lines.push(CostLine::from_raw_total(enchant_fuel_material(world), fuel));
+    if kind == EnchantType::Fortune {
+        return Some(Cost::single(material, total));
+    }
+
+    let Some((abundant, scarce)) = enchant_fuel(level) else {
+        // The End: one mine, and its rare cell is already the enchant material.
+        //
+        // The band's *first* level is step 0, so the ramp opens at its start rather
+        // than one notch up — and its last is step `END_ENCHANT_SPAN`, so it reaches
+        // the top exactly once instead of saturating a level early.
+        let step = u32::from(level).saturating_sub(u32::from(World::Nether.enchant_cap()) + 1);
+        let (common, rare) = split_rare(total, step, END_ENCHANT_SPAN, RECIPE_RAMP_START_PERMILLE);
+        // End Stone comes from the mine that holds it rather than from a new `World`
+        // method: the pairing of a world's filler with its rare cell is a fact about
+        // that mine, and `MineKind` already answers it.
+        return Some(Cost::new(vec![
+            CostLine::from_raw_total(MineKind::Amethyst.common_material(), common),
+            CostLine::from_raw_total(material, rare),
+        ]));
+    };
+
+    let abundant_part = (u64::from(total) * u64::from(FUEL_ABUNDANT_PERMILLE) / 1_000) as u32;
+    let scarce_part = (u64::from(total) * u64::from(FUEL_SCARCE_PERMILLE) / 1_000) as u32;
+    // The principal takes the remainder, so the three lines add back to the total
+    // exactly — the same reason `split_rare` computes its common part that way.
+    let principal = total - abundant_part - scarce_part;
+
+    let mut lines = Vec::new();
+    for (material, amount) in [
+        (material, principal),
+        (abundant, abundant_part),
+        (scarce, scarce_part),
+    ] {
+        if amount > 0 {
+            lines.push(CostLine::from_raw_total(material, amount));
+        }
     }
     Some(Cost::new(lines))
 }
 
 /// The cost of the next size level of a `kind` mine, given the level held.
 ///
-/// `cost_curve(current_size_level)` in the mine's own common material — every mine
-/// funds its own growth out of what it mostly produces
-/// ([`MineKind::common_material`]).
-pub fn mine_size_cost(kind: MineKind, current_size_level: u32) -> Cost {
-    Cost::single(kind.common_material(), cost_curve(current_size_level))
-}
-
-/// Over how many richness levels the two-material cost mix slides from all-common
-/// to (nearly) all-rare — provisional, and matching `mine`'s richness rung count.
+/// [`size_curve`] in the mine's own material — every mine funds its own growth out of
+/// what it produces. On the nine same-material mines that is a single line of
+/// [`common_material`](MineKind::common_material); on the three two-material ones it is
+/// the same common-to-rare mix richness quotes, because **a two-material mine produces
+/// two things and "its own material" means both of them**.
 ///
-/// Kept local and provisional for the reason [`ENCHANT_FUEL_DIVISOR`] is; phase 10
-/// reconciles it with `mine`'s own `MAX_RICHNESS_LEVEL`.
-const RICHNESS_MIX_SPAN: u32 = 9;
+/// Reading "its own ore" as the common cell alone is what left Crying Obsidian funding
+/// nothing but the Efficiency climb, and made size the one track on those mines that
+/// ignored half their output.
+pub fn mine_size_cost(kind: MineKind, current_size_level: u32) -> Cost {
+    mine_cost(
+        kind,
+        size_curve(current_size_level),
+        current_size_level,
+        MAX_SIZE_LEVEL,
+    )
+}
 
 /// The cost of the next richness level of a `kind` mine, given the level held.
 ///
-/// On the nine same-material mines this is `cost_curve(level)` in the mine's own
+/// On the nine same-material mines this is [`richness_curve`] in the mine's own
 /// material, exactly like size. On the three two-material mines it is a **shifting
-/// mix** of the same total: split between the common material and the rare one,
-/// the rare share climbing with the level — mostly End Stone low down, increasingly
+/// mix** of the same total: split between the common material and the rare one, the
+/// rare share climbing with the level — mostly End Stone low down, increasingly
 /// Amethyst high up (`docs/MECHANICS.md`). That shift is what puts high richness in
 /// tension with prestige, since the rare material is what prestige spends too.
 ///
 /// The rare share is **provisional** (phase 10); the *shape* is settled — common
-/// before rare, common-heavy low, rare-heavy high, and the common part **never
-/// fully gone** across the real levels, because the rare share tops out at
-/// `(MAX_RICHNESS_LEVEL - 1) / RICHNESS_MIX_SPAN < 1`. The common line is dropped
-/// only at level 0, where the rare share is zero and the mix is a single line.
+/// before rare, common-heavy low, rare-heavy high, and the common part **never fully
+/// gone**, because the ramp tops out at [`RARE_RAMP_END_PERMILLE`], below the whole.
+/// The common line is dropped only at level 0, where the rare share is zero and the
+/// mix collapses to a single line.
 pub fn mine_richness_cost(kind: MineKind, current_richness_level: u32) -> Cost {
-    let total = cost_curve(current_richness_level);
-    let (common, value) = (kind.common_material(), kind.value_material());
-
-    if common == value {
-        return Cost::single(common, total);
-    }
-
-    // u64 intermediate so the share cannot overflow even on an absurd total; the
-    // real totals are tiny, but the guard costs nothing and states the intent.
-    let rare_share = current_richness_level.min(RICHNESS_MIX_SPAN);
-    let rare_part =
-        (u64::from(total) * u64::from(rare_share) / u64::from(RICHNESS_MIX_SPAN)) as u32;
-    let common_part = total - rare_part;
-
-    let mut lines = Vec::new();
-    if common_part > 0 {
-        lines.push(CostLine::from_raw_total(common, common_part));
-    }
-    if rare_part > 0 {
-        lines.push(CostLine::from_raw_total(value, rare_part));
-    }
-    Cost::new(lines)
+    mine_cost(
+        kind,
+        richness_curve(current_richness_level),
+        current_richness_level,
+        MAX_RICHNESS_LEVEL,
+    )
 }
 
 // --- Transactional spending (step 3) ---
@@ -498,9 +695,11 @@ pub fn buy_pickaxe_tier(inventory: &mut Inventory, pickaxe: &mut Pickaxe) -> Res
             cap,
         });
     }
-    let next = tier.next().ok_or(CoreError::PickaxeFullyUpgraded)?;
+    // `next` is checked but not priced: the jump is paid in the tier being *left*
+    // (see `pickaxe_tier_cost`). What it establishes is that there is somewhere to go.
+    tier.next().ok_or(CoreError::PickaxeFullyUpgraded)?;
 
-    pay(inventory, &pickaxe_tier_cost(next))?;
+    pay(inventory, &pickaxe_tier_cost(tier))?;
     // Efficiency is at the cap and a next tier exists, so `upgrade` performs the
     // jump (not an Efficiency bump) and cannot fail.
     pickaxe.upgrade()
@@ -588,7 +787,7 @@ pub fn buy_mine_richness(inventory: &mut Inventory, mine: &mut Mine) -> Result<(
     mine.upgrade_richness_level()
 }
 
-/// What one temporary Redstone [`Boost`] costs — a single flat line of Redstone.
+/// What one temporary Redstone [`Boost`](crate::boost::Boost) costs — a single flat line of Redstone.
 ///
 /// Takes no state, unlike every other `*_cost` in this module, and that is the
 /// whole difference between a consumable and a ladder: [`cost_curve`] is indexed by
@@ -598,27 +797,34 @@ pub fn buy_mine_richness(inventory: &mut Inventory, mine: &mut Mine) -> Result<(
 /// other tables here; see [`BOOST_COST`].
 ///
 /// Still a [`Cost`], not a bare number, so the Upgrades screen renders it through
-/// the same two-denomination path as everything else — `5 Compressed Redstone`.
+/// the same two-denomination path as everything else — `3 Compressed Redstone`.
 pub fn boost_cost() -> Cost {
     Cost::single(Material::Redstone, BOOST_COST)
 }
 
-/// Buys one temporary Redstone boost: debit, then **hand the boost back**.
+/// Buys one Redstone boost **charge**: debit, and nothing else.
 ///
-/// The one purchase that returns a value instead of mutating a target, because the
-/// target does not exist yet: active boosts live on phase 7's game state
-/// (`docs/SYSTEMS.md`), and so does the rule for what a second boost does to a
-/// running one. So this pays and produces, exactly as
-/// [`resolve_excavator`](crate::enchant::Enchants::resolve_excavator) produces an
-/// [`Item`] the phase-7 tick will bank, and the caller that owns the collection
-/// decides where it lands. Repeatable at a flat price ([`boost_cost`]).
+/// **A charge, not a running boost, and the distinction is the whole signature.** A
+/// bought boost does not start — the player holds it and fires it when the mine in
+/// front of them is worth it. Returning a [`Boost`](crate::boost::Boost) here would
+/// hand the caller an
+/// object already counting down its ticks, so a charge sitting in
+/// reserve would be indistinguishable from one burning, and a player who bought three
+/// before a session would find all three expired.
+///
+/// The reserve is therefore a plain count on phase 7's game state, not a collection of
+/// [`Boost`](crate::boost::Boost)s: every boost in the game is identical, so a stored
+/// one carries no information beyond *how many*. [`Boost`](crate::boost::Boost) stays
+/// the type of a boost that is **running**, minted at activation from
+/// [`BOOST_MULTIPLIER`](crate::tunables::BOOST_MULTIPLIER) and
+/// [`BOOST_DURATION_TICKS`](crate::tunables::BOOST_DURATION_TICKS); this function only
+/// sells the right to mint one.
 ///
 /// Refuses with [`CoreError::InsufficientItems`] and changes nothing, like every
 /// other buy — there is no cap to check first, since a consumable has no ceiling to
-/// hit.
-pub fn buy_boost(inventory: &mut Inventory) -> Result<Boost, CoreError> {
-    pay(inventory, &boost_cost())?;
-    Ok(Boost::new(BOOST_MULTIPLIER, BOOST_DURATION_TICKS))
+/// hit. Repeatable at a flat price ([`boost_cost`]).
+pub fn buy_boost(inventory: &mut Inventory) -> Result<(), CoreError> {
+    pay(inventory, &boost_cost())
 }
 
 /// Repeats a single purchase up to `max_count` times, stopping at the first
@@ -651,28 +857,52 @@ pub fn buy_repeatedly(max_count: u32, mut buy_once: impl FnMut() -> Result<(), C
 mod tests {
     use super::*;
 
-    /// The curve opens at exactly [`COST_BASE`]: the first step of any track costs
-    /// the base term, since `growth^0 = 1`. This is the anchor every later price
-    /// is a multiple of.
+    /// Every per-track curve, as `(name, step -> price)` — so the invariants below
+    /// are asserted on all four rather than on whichever one was written first.
+    ///
+    /// The tracks are independent dials now, and a re-balance that flattened only the
+    /// richness curve would slip past a test naming only the size one.
+    /// A track's cost curve, named: `(track, step -> price)`.
+    type NamedCurve = (&'static str, fn(u32) -> u32);
+
+    const CURVES: &[NamedCurve] = &[
+        ("size", size_curve),
+        ("richness", richness_curve),
+        ("upgrade", upgrade_curve),
+        ("enchant", enchant_curve),
+    ];
+
+    /// Each curve opens at exactly its own base: the first step of a track costs the
+    /// base term, since `growth^0 = 1`. This is the anchor every later price on that
+    /// track is a multiple of — and the reason the *base* is what a balance pass turns
+    /// to change the early game, whatever it does to the slope.
     #[test]
-    fn the_curve_opens_at_the_base_cost() {
-        assert_eq!(cost_curve(0), COST_BASE);
+    fn each_curve_opens_at_its_own_base_cost() {
+        assert_eq!(size_curve(0), COST_BASE);
+        assert_eq!(richness_curve(0), COST_BASE);
+        assert_eq!(upgrade_curve(0), COST_BASE);
+        assert_eq!(enchant_curve(0), ENCHANT_COST_BASE);
     }
 
-    /// Prices must strictly rise, step after step — that is the whole point of a
-    /// geometric sink. Asserted over a range wider than any real upgrade track (60
-    /// steps) but well short of the `u32::MAX` clamp, past which the saturating
-    /// cast deliberately stops the climb.
+    /// Prices must strictly rise, step after step, on every track — that is the whole
+    /// point of a geometric sink. Asserted over 20 steps: wider than any real track
+    /// (size runs 9, the enchant ladder 10, Netherite's Efficiency 15) but short of
+    /// the `u32::MAX` clamp, past which the saturating cast deliberately stops the
+    /// climb. **The steeper the slope the sooner that clamp arrives** — the size curve
+    /// reaches it around step 38, where the old single 1.15 slope needed 143 — which
+    /// is why this range is stated against the tracks rather than picked large.
     #[test]
-    fn the_curve_strictly_increases_over_the_range_tracks_use() {
-        for n in 0..60 {
-            assert!(
-                cost_curve(n + 1) > cost_curve(n),
-                "step {} ({}) is no dearer than step {n} ({})",
-                n + 1,
-                cost_curve(n + 1),
-                cost_curve(n)
-            );
+    fn every_curve_strictly_increases_over_the_range_tracks_use() {
+        for &(name, curve) in CURVES {
+            for n in 0..20 {
+                assert!(
+                    curve(n + 1) > curve(n),
+                    "{name}: step {} ({}) is no dearer than step {n} ({})",
+                    n + 1,
+                    curve(n + 1),
+                    curve(n)
+                );
+            }
         }
     }
 
@@ -680,8 +910,69 @@ mod tests {
     /// saturating `f64 as u32` cast is what guarantees it: an absurd step clamps to
     /// `u32::MAX`, the most expensive answer, never a small one.
     #[test]
-    fn the_curve_saturates_rather_than_wrapping() {
-        assert_eq!(cost_curve(u32::MAX), u32::MAX);
+    fn every_curve_saturates_rather_than_wrapping() {
+        for &(name, curve) in CURVES {
+            assert_eq!(curve(u32::MAX), u32::MAX, "{name} wrapped to a cheap price");
+        }
+    }
+
+    /// The ramp reaches both of its ends exactly, and never leaves them. The end
+    /// matters most: it is the dial's own ceiling, and a ramp stopping short of it
+    /// would leave the last rung of a mine's richness track buying nothing the
+    /// recipe wants.
+    #[test]
+    fn the_rare_ramp_spans_exactly_its_two_ends() {
+        for span in 1..12u32 {
+            for start in [0, RECIPE_RAMP_START_PERMILLE] {
+                assert_eq!(rare_permille(0, span, start), start);
+                assert_eq!(rare_permille(span, span, start), RARE_RAMP_END_PERMILLE);
+                // Past the last rung the ramp saturates rather than running off:
+                // phase 9 may hand back a level this table no longer defines.
+                assert_eq!(rare_permille(span + 5, span, start), RARE_RAMP_END_PERMILLE);
+            }
+        }
+    }
+
+    /// The rare share climbs, never dips — the whole reason the ramp replaced a fixed
+    /// fraction. A share that went backwards would move the optimum dial setting
+    /// *down* as the player climbed, which is the opposite of the intent.
+    #[test]
+    fn the_rare_ramp_never_goes_backwards() {
+        for span in 1..12u32 {
+            for step in 0..span {
+                assert!(
+                    rare_permille(step + 1, span, 0) >= rare_permille(step, span, 0),
+                    "span {span}: the rare share fell between step {step} and {}",
+                    step + 1
+                );
+            }
+        }
+    }
+
+    /// Splitting a price across two materials must not change what it costs. The
+    /// common part is computed as the remainder for exactly this reason: a split that
+    /// rounded both halves independently would gain or lose an item, and the player
+    /// would pay the rounding.
+    #[test]
+    fn splitting_a_price_never_changes_its_total() {
+        for total in [0, 1, 7, 100, 999, 12_345, u32::MAX] {
+            for step in 0..=9 {
+                let (common, rare) = split_rare(total, step, 9, 0);
+                assert_eq!(common + rare, total, "total {total} at step {step}");
+            }
+        }
+    }
+
+    /// A ramp with no steps has nowhere to climb, so it answers with its start rather
+    /// than dividing by zero. Not reachable from any real track — every span is a
+    /// table length — but the function is total and says so.
+    #[test]
+    fn a_ramp_with_no_span_stays_at_its_start() {
+        assert_eq!(
+            rare_permille(0, 0, RECIPE_RAMP_START_PERMILLE),
+            RECIPE_RAMP_START_PERMILLE
+        );
+        assert_eq!(rare_permille(7, 0, 0), 0);
     }
 
     /// The split is exact and reversible: the two denominations always add back up
@@ -839,7 +1130,7 @@ mod tests {
         // still the curve's, merely split across two materials.
         assert_eq!(
             raw_total(&above),
-            cost_curve(5),
+            upgrade_curve(5),
             "splitting the cost across two materials must not change the total"
         );
     }
@@ -968,6 +1259,206 @@ mod tests {
         assert_eq!(high.lines()[1].material, rare);
     }
 
+    /// D-3, stated as the test that would have caught the old shape: leaving a tier
+    /// is paid in **that tier's** material. Diamond funds the jump to Netherite, not
+    /// Ancient Debris — which the player has no way to mine until they arrive.
+    #[test]
+    fn a_tier_jump_is_paid_in_the_tier_being_left() {
+        let expected = [
+            (PickaxeTier::Wooden, Material::Stone),
+            (PickaxeTier::Stone, Material::Coal),
+            (PickaxeTier::Iron, Material::Iron),
+            (PickaxeTier::Gold, Material::Gold),
+            (PickaxeTier::Diamond, Material::Diamond),
+        ];
+        for (from, material) in expected {
+            let cost = pickaxe_tier_cost(from);
+            assert_eq!(cost.lines().len(), 1, "{from:?}: a jump is one material");
+            assert_eq!(
+                cost.lines()[0].material,
+                material,
+                "leaving {from:?} must be paid in {material:?}"
+            );
+        }
+    }
+
+    /// Fortune is Emerald and **nothing else**. The fuel line it used to carry came
+    /// from pricing every enchant through one path, not from a decision: Fortune's
+    /// material is keyed to neither the world nor the tier, so it has no "current
+    /// tier's ore" to consume.
+    #[test]
+    fn fortune_is_one_line_of_emerald_in_every_world() {
+        for world in [World::Overworld, World::Nether, World::End] {
+            for level in 0..10 {
+                let Some(cost) = enchant_cost(EnchantType::Fortune, level, world) else {
+                    unreachable!("Fortune is a shop enchant")
+                };
+                assert_eq!(
+                    cost.lines().len(),
+                    1,
+                    "Fortune picked up a second line at level {level} in {}",
+                    world.name()
+                );
+                assert_eq!(cost.lines()[0].material, Material::Emerald);
+            }
+        }
+    }
+
+    /// D-7: the fuel pair is a function of the **level**, not of where the player
+    /// stands. Level 1 costs Stone and Coal bought from the End exactly as it does
+    /// from the Overworld — the level is the progression scale, so a rung is fuelled
+    /// by the ores of its own rung forever.
+    #[test]
+    fn enchant_fuel_follows_the_level_not_the_world() {
+        let Some(from_overworld) = enchant_cost(EnchantType::Nuke, 0, World::Overworld) else {
+            unreachable!("Nuke is a shop enchant")
+        };
+        let Some(from_end) = enchant_cost(EnchantType::Nuke, 0, World::End) else {
+            unreachable!("Nuke is a shop enchant")
+        };
+
+        let fuel = |cost: &Cost| -> Vec<Material> {
+            cost.lines()[1..].iter().map(|l| l.material).collect()
+        };
+        assert_eq!(fuel(&from_overworld), vec![Material::Stone, Material::Coal]);
+        assert_eq!(
+            fuel(&from_end),
+            vec![Material::Stone, Material::Coal],
+            "level 1 changed its fuel because the player had reached the End"
+        );
+
+        // Only the principal moves with the world — that is what the world keys.
+        assert_eq!(from_overworld.lines()[0].material, Material::Lapis);
+        assert_eq!(from_end.lines()[0].material, Material::Amethyst);
+    }
+
+    /// Every fuel ore belongs to the world whose band the level sits in — the point of
+    /// the change. An enchant bought in the Nether must never ask for Overworld iron.
+    #[test]
+    fn enchant_fuel_never_reaches_back_to_an_earlier_world() {
+        for (level, world) in [(3u8, World::Nether), (4, World::Nether), (5, World::Nether)] {
+            let Some(cost) = enchant_cost(EnchantType::Haste, level, world) else {
+                unreachable!("Haste is a shop enchant")
+            };
+            for line in &cost.lines()[1..] {
+                assert_eq!(
+                    line.material.worlds(),
+                    &[World::Nether],
+                    "level {} is fuelled by {:?}, which is not a Nether ore",
+                    level + 1,
+                    line.material
+                );
+            }
+        }
+    }
+
+    /// The three lines of an enchant price **share** the step's total; they do not add
+    /// to it. A fuel line stacked on top would make the quoted curve a lie about what
+    /// the step costs.
+    #[test]
+    fn an_enchant_price_shares_one_total_across_its_lines() {
+        for world in [World::Overworld, World::Nether, World::End] {
+            for level in 0..10 {
+                let Some(cost) = enchant_cost(EnchantType::Excavator, level, world) else {
+                    unreachable!("Excavator is a shop enchant")
+                };
+                assert_eq!(
+                    raw_total(&cost),
+                    enchant_curve(u32::from(level)),
+                    "level {} in {} does not add up to its curve step",
+                    level + 1,
+                    world.name()
+                );
+            }
+        }
+    }
+
+    /// The End quotes **two** lines, not three, and the second is the enchant material
+    /// itself. A third line would be a second line of Amethyst, which `Cost` forbids
+    /// by construction — the End holds one mine, and its rare cell is what enchants
+    /// there are bought with.
+    #[test]
+    fn the_end_fuels_its_enchants_from_its_only_mine() {
+        for level in 6..10u8 {
+            let Some(cost) = enchant_cost(EnchantType::Jackhammer, level, World::End) else {
+                unreachable!("Jackhammer is a shop enchant")
+            };
+            let materials: Vec<Material> = cost.lines().iter().map(|l| l.material).collect();
+            assert_eq!(
+                materials,
+                vec![Material::Endstone, Material::Amethyst],
+                "level {} in the End",
+                level + 1
+            );
+        }
+
+        // And the Amethyst share climbs across the band, as the ramp promises.
+        let first = enchant_cost(EnchantType::Jackhammer, 6, World::End);
+        let last = enchant_cost(EnchantType::Jackhammer, 9, World::End);
+        let share = |c: &Option<Cost>| -> f64 {
+            let Some(c) = c else { return 0.0 };
+            f64::from(part(c, Material::Amethyst)) / f64::from(raw_total(c))
+        };
+        assert!(
+            share(&last) > share(&first),
+            "the Amethyst share does not climb across the End's band"
+        );
+
+        // The band's ends land on the ramp's ends exactly. Off by one, the first
+        // level opens a notch up the ramp and the last two both saturate at the top —
+        // which costs the band a rung at each end without failing anything above.
+        assert!(
+            (share(&first) - 0.25).abs() < 0.01,
+            "the End's first level opens at {:.3}, not at the ramp's start",
+            share(&first)
+        );
+        assert!(
+            (share(&last) - 0.91).abs() < 0.01,
+            "the End's last level ends at {:.3}, not at the ramp's ceiling",
+            share(&last)
+        );
+    }
+
+    /// D-6: on a two-material mine, **size** is paid in both materials, like richness.
+    /// Reading "the mine's own ore" as the common cell alone left Crying Obsidian
+    /// funding nothing but the Efficiency climb.
+    #[test]
+    fn two_material_mine_size_is_paid_in_both_materials() {
+        let cost = mine_size_cost(MineKind::Obsidian, 4);
+        assert_eq!(cost.lines().len(), 2);
+        assert_eq!(cost.lines()[0].material, Material::Obsidian, "common first");
+        assert_eq!(cost.lines()[1].material, Material::CryingObsidian);
+
+        // The nine same-material mines are untouched: one line, as before.
+        assert_eq!(mine_size_cost(MineKind::Iron, 4).lines().len(), 1);
+    }
+
+    /// The rare share of Netherite's enhancement **climbs**, and that is what gives
+    /// the Obsidian mine's dial a reason to move. Pinned at a fixed fraction, the
+    /// optimum dial setting never changed and seven of the mine's ten rungs could only
+    /// overshoot the recipe.
+    #[test]
+    fn the_netherite_enhancement_asks_for_more_crying_as_it_climbs() {
+        let share = |level: u8| -> f64 {
+            let cost = pickaxe_efficiency_cost(PickaxeTier::Netherite, level);
+            f64::from(part(&cost, Material::CryingObsidian)) / f64::from(raw_total(&cost))
+        };
+
+        for level in 5..14u8 {
+            assert!(
+                share(level + 1) > share(level),
+                "the Crying share did not climb from Efficiency {} to {}",
+                level + 1,
+                level + 2
+            );
+        }
+        assert!(share(5) < 0.3, "the enhancement must open Obsidian-heavy");
+        assert!(
+            share(14) > 0.8,
+            "and end Crying-heavy, at the dial's ceiling"
+        );
+    }
+
     // --- Transactional spending (step 3) ---
 
     fn rng() -> Rng {
@@ -1001,17 +1492,21 @@ mod tests {
         pickaxe
     }
 
+    /// Stocked from the price itself rather than from a number: payment is strict, so
+    /// the test has to hold the exact denominations quoted, and deriving them is what
+    /// keeps this test true across a re-balance (see [`stocked_for`]).
     #[test]
     fn buying_efficiency_debits_and_raises_the_level() {
         let mut pickaxe = Pickaxe::default(); // Wooden, Efficiency 0
-        let mut inventory = stocked(&[(Material::Stone, 100)]);
+        let cost = pickaxe_efficiency_cost(PickaxeTier::Wooden, 0);
+        let mut inventory = stocked_for(&cost, 1);
 
         assert_eq!(buy_pickaxe_efficiency(&mut inventory, &mut pickaxe), Ok(()));
         assert_eq!(efficiency_of(&pickaxe), 1);
         assert_eq!(
-            inventory.count(Item::Raw(Material::Stone)),
-            90,
-            "cost_curve(0) = 10 Stone"
+            inventory,
+            Inventory::new(),
+            "the buy took exactly the price and no more"
         );
     }
 
@@ -1020,17 +1515,10 @@ mod tests {
     #[test]
     fn an_unaffordable_efficiency_buy_changes_nothing() {
         let mut pickaxe = Pickaxe::default();
-        let mut inventory = stocked(&[(Material::Stone, 5)]); // needs 10
+        let mut inventory = Inventory::new(); // holds nothing at all
         let before = inventory.clone();
 
-        assert_eq!(
-            buy_pickaxe_efficiency(&mut inventory, &mut pickaxe),
-            Err(CoreError::InsufficientItems {
-                item: Item::Raw(Material::Stone),
-                needed: 10,
-                held: 5,
-            })
-        );
+        assert!(buy_pickaxe_efficiency(&mut inventory, &mut pickaxe).is_err());
         assert_eq!(efficiency_of(&pickaxe), 0, "the level moved on a refusal");
         assert_eq!(inventory, before, "the inventory moved on a refusal");
     }
@@ -1040,7 +1528,8 @@ mod tests {
     #[test]
     fn efficiency_refuses_at_the_cap_without_debiting() {
         let mut pickaxe = maxed_efficiency_at(PickaxeTier::Wooden); // Efficiency 5
-        let mut inventory = stocked(&[(Material::Stone, 10_000)]);
+        let mut inventory = stocked_for(&pickaxe_efficiency_cost(PickaxeTier::Wooden, 4), 20);
+        let before = inventory.clone();
 
         assert_eq!(
             buy_pickaxe_efficiency(&mut inventory, &mut pickaxe),
@@ -1049,7 +1538,7 @@ mod tests {
                 cap: 5,
             })
         );
-        assert_eq!(inventory.count(Item::Raw(Material::Stone)), 10_000);
+        assert_eq!(inventory, before, "a capped buy still took the ore");
     }
 
     /// A tier jump before Efficiency is maxed is refused and debits nothing — the
@@ -1057,28 +1546,31 @@ mod tests {
     #[test]
     fn a_tier_jump_needs_efficiency_maxed_first() {
         let mut pickaxe = Pickaxe::default(); // Wooden, Efficiency 0
-        let mut inventory = stocked(&[(Material::Coal, 10_000)]);
+        let mut inventory = stocked_for(&pickaxe_tier_cost(PickaxeTier::Wooden), 5);
+        let before = inventory.clone();
 
         assert_eq!(
             buy_pickaxe_tier(&mut inventory, &mut pickaxe),
             Err(CoreError::EfficiencyNotMaxed { current: 0, cap: 5 })
         );
         assert_eq!(pickaxe.get_tier(), PickaxeTier::Wooden);
-        assert_eq!(inventory.count(Item::Raw(Material::Coal)), 10_000);
+        assert_eq!(inventory, before);
     }
 
     #[test]
     fn buying_a_tier_jump_advances_and_resets_efficiency() {
         let mut pickaxe = maxed_efficiency_at(PickaxeTier::Wooden); // Wooden, Efficiency 5
-        let mut inventory = stocked(&[(Material::Coal, 100)]);
+        // Leaving Wooden is paid in Stone, the tier being left — not in Coal, the
+        // material of the tier being reached.
+        let mut inventory = stocked_for(&pickaxe_tier_cost(PickaxeTier::Wooden), 1);
 
         assert_eq!(buy_pickaxe_tier(&mut inventory, &mut pickaxe), Ok(()));
         assert_eq!(pickaxe.get_tier(), PickaxeTier::Stone);
         assert_eq!(efficiency_of(&pickaxe), 0, "a tier jump resets Efficiency");
         assert_eq!(
-            inventory.count(Item::Raw(Material::Coal)),
-            88,
-            "reaching Stone costs cost_curve(1) = 12 Coal"
+            inventory,
+            Inventory::new(),
+            "the jump took exactly the price of leaving Wooden"
         );
     }
 
@@ -1093,24 +1585,32 @@ mod tests {
         );
     }
 
+    /// A special enchant debits every line of its price at once — here the three of
+    /// an Overworld purchase: the world's material plus the level's two fuel ores.
     #[test]
     fn buying_a_special_enchant_debits_all_its_lines() {
         let mut pickaxe = Pickaxe::default();
-        // Fortune level 1 in the Overworld: 10 Emerald + 3 Coal (fuel).
-        let mut inventory = stocked(&[(Material::Emerald, 100), (Material::Coal, 100)]);
+        let Some(cost) = enchant_cost(EnchantType::Explosive, 0, World::Overworld) else {
+            unreachable!("Explosive is a shop enchant, so it has a price")
+        };
+        assert_eq!(
+            cost.lines().len(),
+            3,
+            "world material plus its two fuel ores"
+        );
+        let mut inventory = stocked_for(&cost, 1);
 
         assert_eq!(
             buy_enchant(
                 &mut inventory,
                 &mut pickaxe,
-                EnchantType::Fortune,
+                EnchantType::Explosive,
                 World::Overworld
             ),
             Ok(())
         );
-        assert_eq!(pickaxe.enchants().get_level(EnchantType::Fortune), 1);
-        assert_eq!(inventory.count(Item::Raw(Material::Emerald)), 90);
-        assert_eq!(inventory.count(Item::Raw(Material::Coal)), 97);
+        assert_eq!(pickaxe.enchants().get_level(EnchantType::Explosive), 1);
+        assert_eq!(inventory, Inventory::new(), "a line went undebited");
     }
 
     /// The multi-line partial-debit guard, stated as a test: short on the *second*
@@ -1119,23 +1619,36 @@ mod tests {
     #[test]
     fn a_special_enchant_short_on_one_line_debits_neither() {
         let mut pickaxe = Pickaxe::default();
-        // Enough Emerald, but only 2 Coal where the fuel line needs 3.
-        let mut inventory = stocked(&[(Material::Emerald, 100), (Material::Coal, 2)]);
+        let Some(cost) = enchant_cost(EnchantType::Explosive, 0, World::Overworld) else {
+            unreachable!("Explosive is a shop enchant, so it has a price")
+        };
+        // Everything the price asks for except its very last line.
+        let mut inventory = Inventory::new();
+        let mut requirements = cost
+            .lines()
+            .iter()
+            .flat_map(CostLine::requirements)
+            .peekable();
+        while let Some((item, amount)) = requirements.next() {
+            if requirements.peek().is_some() {
+                inventory.add(item, amount);
+            }
+        }
         let before = inventory.clone();
 
         assert!(
             buy_enchant(
                 &mut inventory,
                 &mut pickaxe,
-                EnchantType::Fortune,
+                EnchantType::Explosive,
                 World::Overworld
             )
             .is_err()
         );
-        assert_eq!(pickaxe.enchants().get_level(EnchantType::Fortune), 0);
+        assert_eq!(pickaxe.enchants().get_level(EnchantType::Explosive), 0);
         assert_eq!(
             inventory, before,
-            "the Emerald line was debited before the Coal line failed"
+            "the earlier lines were debited before the last one failed"
         );
     }
 
@@ -1143,7 +1656,15 @@ mod tests {
     fn a_special_enchant_refuses_at_its_world_cap() {
         // Explosive caps at 3 in the Overworld.
         let mut pickaxe = Pickaxe::default();
-        let mut inventory = stocked(&[(Material::Lapis, 10_000), (Material::Coal, 10_000)]);
+        let mut inventory = Inventory::new();
+        for level in 0..3 {
+            let Some(cost) = enchant_cost(EnchantType::Explosive, level, World::Overworld) else {
+                unreachable!("Explosive is a shop enchant")
+            };
+            for (item, amount) in cost.lines().iter().flat_map(CostLine::requirements) {
+                inventory.add(item, amount);
+            }
+        }
 
         for _ in 0..3 {
             assert!(
@@ -1177,7 +1698,7 @@ mod tests {
     #[test]
     fn efficiency_through_the_enchant_door_uses_the_pickaxe_path() {
         let mut pickaxe = Pickaxe::default();
-        let mut inventory = stocked(&[(Material::Stone, 100)]);
+        let mut inventory = stocked_for(&pickaxe_efficiency_cost(PickaxeTier::Wooden, 0), 1);
 
         assert_eq!(
             buy_enchant(
@@ -1190,8 +1711,8 @@ mod tests {
         );
         assert_eq!(efficiency_of(&pickaxe), 1);
         assert_eq!(
-            inventory.count(Item::Raw(Material::Stone)),
-            90,
+            inventory,
+            Inventory::new(),
             "Efficiency is priced in the tier material, not an enchant material"
         );
     }
@@ -1199,12 +1720,12 @@ mod tests {
     #[test]
     fn buying_mine_size_grows_the_grid_and_debits() {
         let mut mine = Mine::new(MineKind::Iron, &mut rng());
-        let mut inventory = stocked(&[(Material::Iron, 100)]);
+        let mut inventory = stocked_for(&mine_size_cost(MineKind::Iron, 0), 1);
         let before_level = mine.get_size_level();
 
         assert_eq!(buy_mine_size(&mut inventory, &mut mine, &mut rng()), Ok(()));
         assert_eq!(mine.get_size_level(), before_level + 1);
-        assert_eq!(inventory.count(Item::Raw(Material::Iron)), 90);
+        assert_eq!(inventory, Inventory::new());
     }
 
     /// Buying a richness level raises the ceiling and *only* the ceiling: the dial,
@@ -1212,7 +1733,7 @@ mod tests {
     #[test]
     fn buying_mine_richness_raises_the_ceiling_and_unlocks_the_dial() {
         let mut mine = Mine::new(MineKind::Amethyst, &mut rng());
-        let mut inventory = stocked(&[(Material::Endstone, 100)]);
+        let mut inventory = stocked_for(&mine_richness_cost(MineKind::Amethyst, 0), 1);
         assert_eq!(mine.get_richness_level(), 0);
         assert!(
             mine.set_richness_setting(1, &mut rng()).is_err(),
@@ -1221,7 +1742,7 @@ mod tests {
 
         assert_eq!(buy_mine_richness(&mut inventory, &mut mine), Ok(()));
         assert_eq!(mine.get_richness_level(), 1);
-        assert_eq!(inventory.count(Item::Raw(Material::Endstone)), 90);
+        assert_eq!(inventory, Inventory::new());
         assert!(
             mine.set_richness_setting(1, &mut rng()).is_ok(),
             "the dial reaches the freshly bought ceiling"
@@ -1233,7 +1754,8 @@ mod tests {
     #[test]
     fn buy_max_efficiency_stops_at_the_tier_cap() {
         let mut pickaxe = Pickaxe::default(); // Wooden, cap 5
-        let mut inventory = stocked(&[(Material::Stone, 10_000)]);
+        // Enough for the whole climb and more: the cap, not the purse, must stop it.
+        let mut inventory = stocked_for(&pickaxe_efficiency_cost(PickaxeTier::Wooden, 4), 10);
 
         let bought = buy_repeatedly(u32::MAX, || {
             buy_pickaxe_efficiency(&mut inventory, &mut pickaxe)
@@ -1253,14 +1775,21 @@ mod tests {
     #[test]
     fn buy_n_stops_when_the_stock_runs_out() {
         let mut pickaxe = Pickaxe::default();
-        // cost_curve(0) + cost_curve(1) = 10 + 12 = 22; a third would be 13 more.
-        let mut inventory = stocked(&[(Material::Stone, 25)]);
+        // Exactly the first two steps of the ladder, and not a scrap more.
+        let mut inventory = stocked_for(&pickaxe_efficiency_cost(PickaxeTier::Wooden, 0), 1);
+        for (item, amount) in pickaxe_efficiency_cost(PickaxeTier::Wooden, 1)
+            .lines()
+            .iter()
+            .flat_map(CostLine::requirements)
+        {
+            inventory.add(item, amount);
+        }
 
         let bought = buy_repeatedly(10, || buy_pickaxe_efficiency(&mut inventory, &mut pickaxe));
 
         assert_eq!(bought, 2, "only two levels are affordable");
         assert_eq!(efficiency_of(&pickaxe), 2);
-        assert_eq!(inventory.count(Item::Raw(Material::Stone)), 3);
+        assert_eq!(inventory, Inventory::new(), "the third step was part-paid");
     }
 
     /// An inventory holding exactly `count` times what `cost` demands, in the
@@ -1278,23 +1807,16 @@ mod tests {
         inventory
     }
 
-    /// The boost is paid for in Redstone and handed back live — the purchase that
-    /// produces a value rather than mutating a target, since phase 7 owns the
-    /// target.
+    /// The boost is paid for in Redstone and grants a **charge**, not a running
+    /// boost: nothing starts counting down at the till, because the player fires the
+    /// charge themselves. Phase 7 owns the reserve that counts them.
     #[test]
-    fn buying_a_boost_debits_redstone_and_yields_a_running_one() {
+    fn buying_a_boost_debits_the_quoted_denomination_only() {
         let mut inventory = stocked_for(&boost_cost(), 1);
         inventory.add(Item::Raw(Material::Redstone), 7); // pocket change it must not touch
 
-        let Ok(boost) = buy_boost(&mut inventory) else {
-            unreachable!("the stock is the cost, so the buy cannot refuse")
-        };
+        assert_eq!(buy_boost(&mut inventory), Ok(()));
 
-        assert!(!boost.is_expired());
-        assert!(
-            boost.multiplier() > 1.0,
-            "a boost that multiplies by 1 was sold for nothing"
-        );
         assert_eq!(
             inventory.count(Item::Compressed(Material::Redstone)),
             0,
@@ -1338,14 +1860,34 @@ mod tests {
         );
     }
 
+    /// Affordability is judged line by line and **in the quoted denomination**: a
+    /// purse holding the raw equivalent of a Compressed line does not satisfy it.
     #[test]
     fn can_afford_reads_every_line_strictly() {
-        let cost = enchant_cost(EnchantType::Fortune, 0, World::Overworld); // 10 Emerald + 3 Coal
+        let Some(cost) = enchant_cost(EnchantType::Explosive, 0, World::Overworld) else {
+            unreachable!("Explosive is a shop enchant")
+        };
 
-        let short = stocked(&[(Material::Emerald, 100), (Material::Coal, 2)]);
-        assert_eq!(cost.as_ref().map(|c| can_afford(&short, c)), Some(false));
+        let enough = stocked_for(&cost, 1);
+        assert!(can_afford(&enough, &cost));
 
-        let enough = stocked(&[(Material::Emerald, 100), (Material::Coal, 100)]);
-        assert_eq!(cost.as_ref().map(|c| can_afford(&enough, c)), Some(true));
+        // One item short on a single line is short overall.
+        let mut short = stocked_for(&cost, 1);
+        let (item, _) = cost.lines()[0].requirements()[0];
+        assert!(short.remove(item, 1).is_ok());
+        assert!(!can_afford(&short, &cost));
+
+        // The whole price in raw items does not buy a price quoted in Compressed.
+        let mut loose = Inventory::new();
+        for line in cost.lines() {
+            loose.add(
+                Item::Raw(line.material),
+                line.compressed * RAW_PER_COMPRESSED + line.raw,
+            );
+        }
+        assert!(
+            !can_afford(&loose, &cost),
+            "raw items satisfied a price quoted in Compressed units"
+        );
     }
 }
