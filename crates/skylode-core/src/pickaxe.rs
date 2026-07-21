@@ -302,12 +302,18 @@ impl PickaxeTier {
     /// extra Efficiency levels are what the upgrade path spends itself into.
     ///
     /// Efficiency is the one enchant keyed by the **tier**, which is why its
-    /// ceiling lives here and not beside the other caps. The five special
-    /// enchants are keyed by the world instead
-    /// ([`World::enchant_cap`](crate::world::World::enchant_cap)), and Fortune by
-    /// nothing at all. [`EnchantType::max_level`](crate::enchant::EnchantType::max_level)
-    /// is the generic front door that dispatches to whichever of the three
+    /// ceiling lives here and not beside the other caps. Every other enchant —
+    /// Fortune and the five specials alike — is keyed by the world instead
+    /// ([`World::enchant_cap`](crate::world::World::enchant_cap)).
+    /// [`EnchantType::max_level`](crate::enchant::EnchantType::max_level)
+    /// is the generic front door that dispatches to whichever of the two
     /// applies; each of them stays the single source of its own number.
+    ///
+    /// **That Efficiency is alone in its group is the load-bearing part.** A world
+    /// that also raised Efficiency's ceiling would let one investment advance both
+    /// progression axes, collapsing the two-axis gate into one — and it would put the
+    /// raised cap of 15 out of reach outside the End, deleting the final tier's whole
+    /// reward.
     ///
     /// Keeping this one here is what lets [`Pickaxe::upgrade`] ask its question —
     /// "how far can Efficiency go on *this tier*" — without being handed a

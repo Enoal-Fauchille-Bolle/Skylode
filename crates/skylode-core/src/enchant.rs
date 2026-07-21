@@ -19,23 +19,6 @@ use crate::rng::Rng;
 use crate::world::World;
 use std::collections::HashMap;
 
-/// The level ceiling of [`Fortune`](EnchantType::Fortune) — the one enchant keyed
-/// by neither the pickaxe tier nor the world.
-///
-/// **Not in [`tunables`](crate::tunables), and the reason is step 1 of that
-/// module's question, not step 2.** Being keyed by nothing, this would land there
-/// on the same grounds as
-/// [`HASTE_PER_LEVEL`](crate::tunables::HASTE_PER_LEVEL) — the obvious guess, and
-/// wrong. What separates them is that Haste's factor is a *dial*, marked provisional
-/// for the balance pass, and 10 is a *design fact*: past it the ore is abundant
-/// enough that further Fortune buys nothing, so the player is meant to move to
-/// another lever. `docs/MECHANICS.md` states it with that reason, and
-/// `docs/ROADMAP.md` does not list it among the numbers left open. Moving it under
-/// a module named *tunables* would not describe it — it would advertise it as
-/// turnable, and re-balancing it would silently delete the point at which Fortune is
-/// supposed to stop being the answer.
-const FORTUNE_CAP: u8 = 10;
-
 /// The radius of the smallest [`Explosive`](EnchantType::Explosive) square: a
 /// 3x3 around the impact.
 ///
@@ -199,21 +182,28 @@ pub struct Enchant {
 ///
 /// - [`Efficiency`](EnchantType::Efficiency) is keyed by the **pickaxe tier**
 ///   ([`PickaxeTier::efficiency_cap`]).
-/// - [`Fortune`](EnchantType::Fortune) is keyed by **nothing** ([`FORTUNE_CAP`]).
-/// - The other five — the *special* enchants — are keyed by the **world**
-///   ([`World::enchant_cap`]). All five are on sale from the Overworld onwards;
-///   a new dimension unlocks none of them and only raises their shared ceiling.
+/// - The other six — [`Fortune`](EnchantType::Fortune) and the five *specials* — are
+///   keyed by the **world** ([`World::enchant_cap`]). All six are on sale from the
+///   Overworld onwards; a new dimension unlocks none of them and only raises their
+///   shared ceiling.
 ///
 /// That is also why the two progression axes stay independent: the tier moves
-/// Efficiency, the mining level moves the world and with it the five specials, and
+/// Efficiency, the mining level moves the world and with it the other six, and
 /// neither axis alone advances the player.
+///
+/// **Fortune was once a third group, keyed by nothing**, capped at a flat 10. Its
+/// ceiling is still 10 — that is the world's own top cap — but it is now *reached*
+/// in three steps rather than one. Keyed by nothing, Fortune was the single upgrade
+/// in the game that a level-1 player could max, which made the one lever no
+/// progression paced. What the third group actually protected was Efficiency, and
+/// Efficiency still has it.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub enum EnchantType {
     /// Increases mining speed, by `level² + 1` added to the pickaxe's base power.
     /// Capped by the pickaxe tier: 5, or 15 at Netherite.
     Efficiency,
     /// Increases the drop rate of ores, multiplying the loot by `1 + level`.
-    /// Capped at [`FORTUNE_CAP`], whatever the tier and whatever the world.
+    /// Capped by the world, like the five specials: 3, 6, then 10.
     Fortune,
     /// On a proc, clears a **Chebyshev square** centred on the impact cell. The
     /// only spatial enchant whose level buys area as well as frequency, in three
@@ -311,10 +301,10 @@ impl EnchantType {
     /// Returns the maximum level this enchantment can reach.
     ///
     /// The generic front door to a cap: **pure dispatch, holding no number of its
-    /// own**. Each of the three groups above keeps the single source of its own
-    /// ceiling — [`PickaxeTier::efficiency_cap`], [`FORTUNE_CAP`],
-    /// [`World::enchant_cap`] — and this method only picks which one applies. A
-    /// table here would fork that knowledge in two and let the copies drift.
+    /// own**. Each of the two groups above keeps the single source of its own
+    /// ceiling — [`PickaxeTier::efficiency_cap`] and [`World::enchant_cap`] — and this
+    /// method only picks which one applies. A table here would fork that knowledge in
+    /// two and let the copies drift.
     ///
     /// Both arguments are **required, and neither is an `Option`**. Every enchant
     /// ignores at least one of them, so it is tempting to let a caller skip the one
@@ -332,10 +322,12 @@ impl EnchantType {
     pub fn max_level(self, pickaxe_tier: PickaxeTier, world: World) -> u8 {
         match self {
             Self::Efficiency => pickaxe_tier.efficiency_cap(),
-            Self::Fortune => FORTUNE_CAP,
-            Self::Explosive | Self::Jackhammer | Self::Nuke | Self::Excavator | Self::Haste => {
-                world.enchant_cap()
-            }
+            Self::Fortune
+            | Self::Explosive
+            | Self::Jackhammer
+            | Self::Nuke
+            | Self::Excavator
+            | Self::Haste => world.enchant_cap(),
         }
     }
 
@@ -817,22 +809,40 @@ mod tests {
     }
 
     /// The mirror of the test above, and together they are what keeps the two
-    /// progression axes from collapsing into one. The tier moves Efficiency; the
-    /// world moves the five specials. If a world also raised Efficiency's ceiling,
-    /// one investment would advance both axes at once.
+    /// progression axes from collapsing into one. The tier moves **Efficiency and
+    /// nothing else**; the world moves the other six. If a world also raised
+    /// Efficiency's ceiling, one investment would advance both axes at once — and
+    /// Netherite's cap of 15 would be unreachable outside the End, deleting the final
+    /// tier's whole reward.
+    ///
+    /// Fortune was once tested here alongside Efficiency, capped by neither axis. It
+    /// now sits with the specials: its ceiling of 10 is unchanged, but it is reached
+    /// world by world rather than available in full from level 1.
     #[test]
-    fn efficiency_and_fortune_ignore_the_world() {
-        for kind in [EnchantType::Efficiency, EnchantType::Fortune] {
-            for world in ALL_WORLDS {
-                assert_eq!(
-                    kind.max_level(ANY_TIER, world),
-                    kind.max_level(ANY_TIER, World::Overworld),
-                    "{} must not depend on the world, but {} changes it",
-                    kind.name(),
-                    world.name()
-                );
-            }
+    fn only_efficiency_ignores_the_world() {
+        for world in ALL_WORLDS {
+            assert_eq!(
+                EnchantType::Efficiency.max_level(ANY_TIER, world),
+                EnchantType::Efficiency.max_level(ANY_TIER, World::Overworld),
+                "Efficiency must not depend on the world, but {} changes it",
+                world.name()
+            );
         }
+    }
+
+    /// Fortune climbs with the world like the five specials — the amendment that
+    /// removed the third cap group. What it must *not* lose is its ceiling: the End's
+    /// cap is still 10, the level past which `docs/DECISIONS.md` says more Fortune
+    /// buys nothing. A re-balance of `World::enchant_cap` that moved the top would
+    /// silently delete that point, so it is pinned here rather than left implied.
+    #[test]
+    fn fortune_climbs_with_the_world_and_still_tops_out_at_ten() {
+        assert_eq!(
+            EnchantType::Fortune.max_level(ANY_TIER, World::Overworld),
+            3
+        );
+        assert_eq!(EnchantType::Fortune.max_level(ANY_TIER, World::Nether), 6);
+        assert_eq!(EnchantType::Fortune.max_level(ANY_TIER, World::End), 10);
     }
 
     /// `docs/MECHANICS.md`: "Overworld enchants use Lapis (lowest level cap),
