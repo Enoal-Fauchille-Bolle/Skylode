@@ -17,17 +17,22 @@
 //! the active boosts on the game state for that reason, and phase 7 owns that
 //! aggregate.
 //!
-//! ## Why this module holds no *active* boost
+//! ## Why this module holds no *active* boost, and no reserve either
 //!
-//! There is deliberately no `ActiveBoosts` collection here, and no stacking rule.
-//! A boost is **produced** by [`buy_boost`](crate::economy::buy_boost) today and by
-//! phase 6's level-up reward later, and what happens when a second one arrives
-//! while the first still runs — refresh the timer, extend it, multiply the two —
-//! is a question about a *collection* that phase 7 owns. Answering it here would
-//! mean inventing that collection a phase early, and the type below constrains
-//! none of the three answers. This is the same split phases 3 and 4 took with
-//! `can_mine`, `fortune_multiplier` and `resolve_excavator`: ship the primitive,
-//! let the phase that owns the composition compose.
+//! Nothing here **produces** a `Boost`. A boost is *earned* as a **charge** — bought
+//! from [`buy_boost`](crate::economy::buy_boost), or granted every fifth level-up —
+//! and a charge is not a `Boost`: every boost in the game is identical, so one
+//! sitting in reserve carries no information beyond *how many*. The reserve is
+//! therefore a plain count on phase 7's game state, and the type below is what a
+//! charge becomes when the player **fires** it.
+//!
+//! Splitting the two that way is what removes the stacking question rather than
+//! answering it: two charges never overlap unless the player chooses to overlap
+//! them, and what happens if they do — refresh the timer, extend it, multiply the
+//! two — belongs to the phase that owns the collection. This is the same split
+//! phases 3 and 4 took with `can_mine`, `fortune_multiplier` and
+//! `resolve_excavator`: ship the primitive, let the phase that owns the composition
+//! compose.
 //!
 //! [`Pickaxe::mining_power`]: crate::pickaxe::Pickaxe::mining_power
 
@@ -56,21 +61,22 @@ pub struct Boost {
 impl Boost {
     /// A boost of `multiplier`, running for `ticks`.
     ///
-    /// **`pub(crate)`, and that is a gameplay guard, not caution.** A boost is
-    /// *bought* — with Redstone, through [`buy_boost`](crate::economy::buy_boost) —
-    /// or granted by phase 6's level-up reward. A public constructor would let a
-    /// front-end mint the game's strongest speed multiplier for free, which is the
-    /// same reason [`Mine::take`](crate::mine::Mine::take) and
-    /// [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe::upgrade) are not public
-    /// either. It carries no `#[expect(dead_code)]` because it already has a live
-    /// caller in `economy`.
+    /// **`pub(crate)`, and that is a gameplay guard, not caution.** This is the
+    /// *activation* step: the player spends a charge — one bought with Redstone
+    /// through [`buy_boost`](crate::economy::buy_boost), or granted every fifth
+    /// level-up — and gets back a boost that starts counting down. A public
+    /// constructor would let a front-end mint the game's strongest speed multiplier
+    /// for free, without holding a charge to spend, which is the same reason
+    /// [`Mine::take`](crate::mine::Mine::take) and
+    /// [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe::upgrade) are not public either.
     ///
     /// **No `Result`, and no validation of `multiplier`.** A boost below `1.0`
     /// would be a *slow*, and a non-finite one would poison every later
-    /// `break_progress` — but neither can be constructed, because the only two call
-    /// sites read [`BOOST_MULTIPLIER`](crate::tunables::BOOST_MULTIPLIER), whose
-    /// invariants are asserted at *compile time* in `tunables`. Checking here would
-    /// hand every caller an error case that no input can produce.
+    /// `break_progress` — but neither can be constructed, because the only caller
+    /// this is waiting on reads
+    /// [`BOOST_MULTIPLIER`](crate::tunables::BOOST_MULTIPLIER), whose invariants are
+    /// asserted at *compile time* in `tunables`. Checking here would hand every
+    /// caller an error case that no input can produce.
     #[cfg_attr(
         not(test),
         expect(
