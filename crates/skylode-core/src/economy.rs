@@ -876,12 +876,14 @@ pub fn buy_boost(inventory: &mut Inventory) -> Result<(), CoreError> {
 /// Applied to [`buy_pickaxe_efficiency`], buy-max stops at the Efficiency cap
 /// rather than advancing the tier, which is the whole reason Efficiency and the
 /// tier jump are separate purchases.
+///
+/// **The count guard is the left operand on purpose.** `&&` short-circuits, so
+/// writing the test the other way round would fire one purchase past `max_count`
+/// and then discard it — a debit the caller never asked for, since a successful
+/// buy is not undone by ignoring its `Ok`.
 pub fn buy_repeatedly(max_count: u32, mut buy_once: impl FnMut() -> Result<(), CoreError>) -> u32 {
     let mut bought = 0;
-    while bought < max_count {
-        if buy_once().is_err() {
-            break;
-        }
+    while bought < max_count && buy_once().is_ok() {
         bought += 1;
     }
     bought
