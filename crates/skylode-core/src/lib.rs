@@ -26,6 +26,8 @@
 //! - [`pickaxe`]: the player's tool, its tier and mining power.
 //! - [`enchant`]: enchantments that modify a pickaxe's behaviour.
 //! - [`player`]: the player's progression state (level, experience, pickaxe).
+//! - [`reward`]: what reaching a level hands over — a world, or a bundle of ore,
+//!   plus the boost charges that ride beside it.
 //! - [`rng`]: the seeded, replayable source of every draw the rules make.
 //! - [`tunables`]: the open balance constants the design left to implementation.
 //! - [`error`]: what the rules refuse, and why.
@@ -41,6 +43,7 @@ pub mod mine;
 pub mod mine_kind;
 pub mod pickaxe;
 pub mod player;
+pub mod reward;
 pub mod rng;
 pub mod tunables;
 pub mod world;

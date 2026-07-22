@@ -129,12 +129,14 @@ fn enchant_curve(n: u32) -> u32 {
 /// Applies to the two prices that buy a *recipe* rather than a mine — Netherite's
 /// Efficiency `6..=15` and the End's enchants. Both open on a rare-material minority,
 /// because the player meets them holding a mine still tuned toward its common cell.
+/// The End's [level-up bundles](crate::reward) open here too, so that what the player
+/// receives in that dimension keeps the proportion of what they spend in it.
 ///
 /// The **mine** tracks start at zero instead, and the difference is not a tuning
 /// choice: a mine's first rung has to be payable out of what an *un-enriched* mine
 /// produces, and an un-enriched mine has barely any of its rare cell. A recipe has no
 /// such constraint — the player brings the materials to it.
-const RECIPE_RAMP_START_PERMILLE: u32 = 250;
+pub(crate) const RECIPE_RAMP_START_PERMILLE: u32 = 250;
 
 /// Where every ramp ends, in permille: the same 91 % the richness dial reaches at its
 /// own ceiling.
@@ -183,7 +185,11 @@ fn rare_permille(step: u32, span: u32, start: u32) -> u32 {
 /// price from one material to two never changes what it costs. A price that quietly
 /// gained or lost an item every time its shape changed would be a rounding error the
 /// player pays.
-fn split_rare(total: u32, step: u32, span: u32, start: u32) -> (u32, u32) {
+///
+/// `pub(crate)` for [`reward`](crate::reward), whose End bundles ride the same ramp:
+/// sharing the split is what keeps a reward the mirror of a price rather than a second
+/// table drifting beside it.
+pub(crate) fn split_rare(total: u32, step: u32, span: u32, start: u32) -> (u32, u32) {
     let rare = (u64::from(total) * u64::from(rare_permille(step, span, start)) / 1_000) as u32;
     (total - rare, rare)
 }
@@ -449,12 +455,23 @@ fn enchant_material(kind: EnchantType, world: World) -> Option<Material> {
     }
 }
 
+/// The share of an enchant's price owed in its **principal** — the world's enchant
+/// material — in permille.
+///
+/// **Not read by [`enchant_cost`], which takes it as the remainder** so that its three
+/// lines add back to the quoted total exactly. What this constant adds is the number
+/// *itself*, which the price never needed to name and [`reward`](crate::reward) does:
+/// a bundle has no quoted total to reconcile against, so it floors all three shares
+/// independently. Stated here rather than in `reward` so the 50 / 35 / 15 split lives
+/// in one place, and so the assertion that they make a whole can be written at all.
+pub(crate) const FUEL_PRINCIPAL_PERMILLE: u32 = 500;
+
 /// The share of an enchant's price owed in its **abundant** fuel ore, in permille.
-const FUEL_ABUNDANT_PERMILLE: u32 = 350;
+pub(crate) const FUEL_ABUNDANT_PERMILLE: u32 = 350;
 
 /// The share owed in its **scarce** fuel ore, in permille — the smaller of the two, so
 /// the pair reads as "a lot of this, some of that" rather than two equal demands.
-const FUEL_SCARCE_PERMILLE: u32 = 150;
+pub(crate) const FUEL_SCARCE_PERMILLE: u32 = 150;
 
 /// The pair of ores that fuels the `level`-th level of a special enchant: an abundant
 /// one and a scarce one, both from the mines the player is working **now**.
@@ -475,7 +492,12 @@ const FUEL_SCARCE_PERMILLE: u32 = 150;
 /// `None` past the last entry: the End's four levels are priced by a different shape
 /// (see [`enchant_cost`]), since that dimension holds a single mine whose rare cell is
 /// already the enchant material.
-fn enchant_fuel(level: u8) -> Option<(Material, Material)> {
+///
+/// **Two callers, one table.** [`reward`](crate::reward) reads it at the *band* a
+/// mining level falls in, so a level-up pays out the materials an enchant of that rung
+/// charges. Sharing the table rather than mirroring it is what makes a re-balance of
+/// the fuel move price and reward in a single edit — see `docs/DECISIONS.md`.
+pub(crate) fn enchant_fuel(level: u8) -> Option<(Material, Material)> {
     match level {
         1 => Some((Material::Stone, Material::Coal)),
         2 => Some((Material::Iron, Material::Gold)),
@@ -546,7 +568,9 @@ pub fn enchant_cost(kind: EnchantType, current_level: u8, world: World) -> Optio
     let abundant_part = (u64::from(total) * u64::from(FUEL_ABUNDANT_PERMILLE) / 1_000) as u32;
     let scarce_part = (u64::from(total) * u64::from(FUEL_SCARCE_PERMILLE) / 1_000) as u32;
     // The principal takes the remainder, so the three lines add back to the total
-    // exactly — the same reason `split_rare` computes its common part that way.
+    // exactly — the same reason `split_rare` computes its common part that way. It is
+    // `FUEL_PRINCIPAL_PERMILLE` of the total up to that rounding, and the constant
+    // asserts as much; a price reconciles, a reward does not have to.
     let principal = total - abundant_part - scarce_part;
 
     let mut lines = Vec::new();
@@ -871,6 +895,23 @@ mod tests {
         ("upgrade", upgrade_curve),
         ("enchant", enchant_curve),
     ];
+
+    /// The three fuel shares make exactly one whole. This is what lets
+    /// [`enchant_cost`] take its principal as a *remainder* while
+    /// [`reward`](crate::reward) computes the same share as a *number*, without the two
+    /// ever meaning different things — and it is a `const` block, so a re-balance that
+    /// left the three summing to 990 stops the crate compiling rather than quietly
+    /// paying out 99 % of every bundle.
+    #[test]
+    fn the_fuel_shares_make_one_whole() {
+        const {
+            assert!(
+                FUEL_PRINCIPAL_PERMILLE + FUEL_ABUNDANT_PERMILLE + FUEL_SCARCE_PERMILLE == 1_000
+            );
+            assert!(FUEL_PRINCIPAL_PERMILLE > FUEL_ABUNDANT_PERMILLE);
+            assert!(FUEL_ABUNDANT_PERMILLE > FUEL_SCARCE_PERMILLE);
+        }
+    }
 
     /// Each curve opens at exactly its own base: the first step of a track costs the
     /// base term, since `growth^0 = 1`. This is the anchor every later price on that
