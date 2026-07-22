@@ -661,7 +661,17 @@ pub fn can_afford(inventory: &Inventory, cost: &Cost) -> bool {
 /// poorer *and* empty-handed, the partial debit the whole [`error`](crate::error)
 /// module is built to forbid. Nothing is removed until everything is known
 /// affordable, so the second pass cannot fail.
-fn pay(inventory: &mut Inventory, cost: &Cost) -> Result<(), CoreError> {
+///
+/// `pub(crate)` rather than private, for exactly one caller outside this module:
+/// [`GameState::prestige`] buys something that is not an upgrade, so it has no
+/// `buy_*` of its own here — the price it pays is
+/// [`prestige::cost`](crate::prestige::cost) and everything it *applies* is a reset of
+/// fields this module cannot see. Routing it through the same till is what keeps "can
+/// they afford it" a single implementation, and hands the refusal the `needed`/`held`
+/// pair a preview screen wants.
+///
+/// [`GameState::prestige`]: crate::game::GameState::prestige
+pub(crate) fn pay(inventory: &mut Inventory, cost: &Cost) -> Result<(), CoreError> {
     for (item, amount) in cost.lines().iter().flat_map(CostLine::requirements) {
         if !inventory.has(item, amount) {
             return Err(CoreError::InsufficientItems {

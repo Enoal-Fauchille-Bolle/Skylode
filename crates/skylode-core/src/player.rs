@@ -14,6 +14,7 @@ use crate::{
     inventory::Inventory,
     mine_kind::{MineKind, MineLock},
     pickaxe::Pickaxe,
+    prestige,
     tunables::LEVEL_CAP,
     world::World,
 };
@@ -37,6 +38,20 @@ pub struct Player {
     inventory: Inventory,
     /// Number of times the player has prestiged (soft-reset for meta rewards).
     prestige: u32,
+    /// The unpaid fraction of a point of experience, in permille.
+    ///
+    /// What makes the prestige multiplier survive being applied to an integer: a
+    /// swing worth 7 experience at rank I is worth 8.4, and truncating the 0.4 on
+    /// every swing would quietly cost the player a level over a session. The
+    /// remainder rides here to the next swing instead — see
+    /// [`prestige::apply_with_carry`](crate::prestige).
+    ///
+    /// It lives beside [`prestige`](Player) rather than on
+    /// [`GameState`](crate::game::GameState) for the reason
+    /// [`grant_break_experience`](Player::grant_break_experience) is a method at all:
+    /// the rank is here, so neither the rank nor its remainder has to travel to meet
+    /// the grant. Always below 1000, by construction of the carry.
+    xp_carry: u32,
 }
 
 impl Default for Player {
@@ -56,6 +71,7 @@ impl Player {
             pickaxe: Pickaxe::default(),
             prestige: 0,
             inventory: Inventory::new(),
+            xp_carry: 0,
         }
     }
 
@@ -169,10 +185,18 @@ impl Player {
     /// to add up, and nothing in the types would stop the two from claiming the
     /// same level.
     ///
-    /// **A method on [`Player`] rather than a free function**, because phase 8
-    /// puts a permanent per-rank multiplier on experience gain and
-    /// [`prestige`](Player::get_prestige) is already a field here. Anywhere else,
-    /// the rank would have to travel to meet it.
+    /// **A method on [`Player`] rather than a free function**, because the permanent
+    /// per-rank multiplier on experience gain needs
+    /// [`prestige`](Player::get_prestige), already a field here. Anywhere else, the
+    /// rank would have to travel to meet it — and so would the remainder it leaves
+    /// behind ([`xp_carry`](Player)).
+    ///
+    /// **The multiplier is applied to the swing's total, once**, before
+    /// [`add_experience`](Player::add_experience) sees it. Not per block, for the
+    /// reason directly above — a swing is one grant — and not after the level-up
+    /// loop, which would mean scaling levels rather than experience. At rank 0 it
+    /// multiplies by exactly 1 and carries nothing, so a run that never prestiged
+    /// levels exactly as it did before phase 8.
     ///
     /// `fold` with `saturating_add` rather than `sum()`: `sum()` panics on
     /// overflow in a debug build, and this crate's lints refuse a panic where a
@@ -187,7 +211,12 @@ impl Player {
         let total = broken
             .iter()
             .fold(0u32, |total, block| total.saturating_add(block.xp_value()));
-        self.add_experience(total)
+        let earned = prestige::apply_with_carry(
+            total,
+            prestige::multiplier_permille(self.prestige),
+            &mut self.xp_carry,
+        );
+        self.add_experience(earned)
     }
 
     /// Returns the experience required to advance from the current level to the
@@ -314,12 +343,58 @@ impl Player {
     pub(crate) fn inventory_and_pickaxe_mut(&mut self) -> (&mut Inventory, &mut Pickaxe) {
         (&mut self.inventory, &mut self.pickaxe)
     }
+
+    /// Banks one prestige rank and throws the rest of the player away.
+    ///
+    /// The player's half of the deep reset `docs/MECHANICS.md` specifies: pickaxe back
+    /// to Wooden, every enchant to 0, the inventory emptied, the level and its banked
+    /// experience back to the start. [`GameState::prestige`] owns the rest of the run
+    /// — the mines, the boosts, the loot remainder — because those are its fields, not
+    /// this struct's.
+    ///
+    /// **Written as a struct update from [`new`](Player::new), not field by field**,
+    /// and that is the whole point of the shape:
+    ///
+    /// ```ignore
+    /// *self = Self { prestige, ..Self::new() };
+    /// ```
+    ///
+    /// A field added to [`Player`] later is then reset **by default**, and *keeping*
+    /// it across a prestige becomes a deliberate edit to this line. Written the other
+    /// way — assigning each field back to its starting value — the field somebody
+    /// forgets is the one that survives the reset, silently, which is exactly the
+    /// leak `docs/DECISIONS.md` closes for a mine's richness. `..` also makes the
+    /// compiler no help at all otherwise: an omitted field is not an error, it is a
+    /// field left alone.
+    ///
+    /// **The unlocked worlds need no line here**, because they are a query over the
+    /// level ([`has_unlocked`](Player::has_unlocked)) rather than a stored set. The
+    /// level going back to 1 *is* the End closing again.
+    ///
+    /// `saturating_add`, for the reason the rest of this module saturates: the rank is
+    /// unbounded on purpose, and a `u32` that wrapped would hand a player at
+    /// [`u32::MAX`] a rank-0 multiplier as their reward for the longest run in the
+    /// game.
+    ///
+    /// `pub(crate)` for [`add_experience`](Player::add_experience)'s reason — this is
+    /// free, and a front-end able to call it could bank ranks without ever paying
+    /// Amethyst. The gated door is [`GameState::prestige`].
+    ///
+    /// [`GameState::prestige`]: crate::game::GameState::prestige
+    pub(crate) fn prestige_reset(&mut self) {
+        let prestige = self.prestige.saturating_add(1);
+        *self = Self {
+            prestige,
+            ..Self::new()
+        };
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::enchant::EnchantType;
+    use crate::material::{Item, Material};
     use crate::pickaxe::PickaxeTier;
     use crate::tunables::{END_UNLOCK_LEVEL, NETHER_UNLOCK_LEVEL};
     use crate::world::ALL_WORLDS;
@@ -690,5 +765,92 @@ mod tests {
         assert_eq!(player.grant_break_experience(&[Block::Amethyst; 2]), 1);
         assert_eq!(player.level, 2);
         assert_eq!(player.experience, 2 * 72 - 100);
+    }
+
+    /// The regression guard the whole phase rests on: at rank 0 the multiplier is
+    /// exactly 1 and the carry never moves, so a run that never prestiged levels
+    /// exactly as it did before prestige existed. Every XP figure asserted above this
+    /// line is only still true because of it.
+    #[test]
+    fn an_unprestiged_player_earns_the_raw_xp_value() {
+        let mut player = Player::new();
+        player.grant_break_experience(&[Block::IronOre, Block::Stone]);
+        assert_eq!(player.experience, 3 + 1);
+        assert_eq!(player.xp_carry, 0);
+    }
+
+    /// A rank scales the swing's total, not each block: 4 XP at rank I is 4.8, which
+    /// banks 4 and keeps 800 permille for the next swing.
+    #[test]
+    fn a_rank_scales_the_experience_a_swing_is_worth() {
+        let mut player = Player::new();
+        player.prestige = 1;
+        player.grant_break_experience(&[Block::IronOre, Block::Stone]);
+        assert_eq!(player.experience, 4);
+        assert_eq!(player.xp_carry, 800);
+    }
+
+    /// The carry's whole reason, on the experience side: five swings worth 1 XP each
+    /// pay six at rank I. Truncating each swing would pay five and the rank would be
+    /// worth nothing to a player breaking Stone — which is every player who has just
+    /// prestiged.
+    #[test]
+    fn a_carried_remainder_pays_the_sixth_experience_point() {
+        let mut player = Player::new();
+        player.prestige = 1;
+        for _ in 0..5 {
+            player.grant_break_experience(&[Block::Stone]);
+        }
+        assert_eq!(player.experience, 6);
+        assert_eq!(player.xp_carry, 0);
+    }
+
+    /// Prestige banks the rank and nothing else. The reset is written as a struct
+    /// update from [`Player::new`] precisely so this test does not have to be edited
+    /// every time a field is added — a new field is reset by default, and only a
+    /// deliberate exception would need a line here.
+    #[test]
+    fn a_prestige_banks_the_rank_and_throws_the_rest_away() {
+        let mut player = Player::new();
+        player.add_experience(450);
+        player.inventory.add(Item::Raw(Material::Diamond), 64);
+        player.pickaxe.upgrade().ok();
+        player.xp_carry = 700;
+        assert!(player.level > 1, "the reset must have something to undo");
+
+        player.prestige_reset();
+
+        assert_eq!(player.prestige, 1);
+        assert_eq!(player.level, 1);
+        assert_eq!(player.experience, 0);
+        assert_eq!(player.xp_carry, 0);
+        assert_eq!(player.pickaxe.get_tier(), PickaxeTier::Wooden);
+        assert_eq!(player.inventory.count(Item::Raw(Material::Diamond)), 0);
+    }
+
+    /// The level going back to 1 *is* the End closing: the unlocked set is a query
+    /// over the level, so there is no second place for the reset to forget.
+    #[test]
+    fn a_prestige_shuts_every_world_the_level_had_opened() {
+        let mut player = Player::new();
+        player.level = END_UNLOCK_LEVEL;
+        assert!(player.has_unlocked(World::End));
+
+        player.prestige_reset();
+
+        assert!(!player.has_unlocked(World::End));
+        assert!(!player.has_unlocked(World::Nether));
+        assert!(player.has_unlocked(World::Overworld));
+    }
+
+    /// Ranks accumulate across prestiges rather than resetting with everything else —
+    /// it is the one thing the trade buys.
+    #[test]
+    fn ranks_accumulate_across_prestiges() {
+        let mut player = Player::new();
+        for expected in 1..=3 {
+            player.prestige_reset();
+            assert_eq!(player.get_prestige(), expected);
+        }
     }
 }

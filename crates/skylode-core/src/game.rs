@@ -31,6 +31,7 @@ use crate::material::Item;
 use crate::mine::{Dug, Mine};
 use crate::mine_kind::MineKind;
 use crate::player::Player;
+use crate::prestige;
 use crate::reward::{self, LevelReward, Payout};
 use crate::rng::Rng;
 use crate::tunables::{
@@ -38,6 +39,7 @@ use crate::tunables::{
     MICROBLOCKS_PER_MILLIBLOCK, MILLIBLOCKS_PER_BLOCK, MILLIS_PER_SECOND, OFFLINE_CAP,
     TICKS_PER_SECOND,
 };
+use crate::world::World;
 
 /// Everything a saved run consists of.
 ///
@@ -103,6 +105,23 @@ pub struct GameState {
     /// `milliblocks × percent ÷ 100` is not an integer, and `× 10` in a unit a
     /// thousand times finer is.
     auto_value_progress: u64,
+    /// The unpaid fraction of each item the prestige multiplier owes, in permille.
+    ///
+    /// The loot half of the same device [`Player`]'s `xp_carry` is the experience half
+    /// of: a `×1.2` applied to a block that drops one ore truncates to one, forever, so
+    /// the remainder is kept and paid on a later swing (see
+    /// [`prestige::apply_with_carry`]).
+    ///
+    /// **A [`Vec`] and not a [`HashMap`]**, unlike the mines above. The key here is an
+    /// [`Item`] and the population is tiny — a swing produces the mine's common block,
+    /// its value block, and at most one Excavator substitution — so a linear scan over
+    /// three entries beats hashing, and it is the shape
+    /// [`credit_auto_mining`](GameState::credit_auto_mining) already builds and
+    /// searches for the same reason. It is keyed by [`Item`] rather than by
+    /// [`Material`](crate::material::Material) so a Compressed substitution carries its
+    /// own remainder: the two denominations are a hundred to one, and merging them
+    /// would pay a raw remainder out as a Compressed unit.
+    yield_carry: Vec<(Item, u32)>,
     /// The seeded source of every draw the rules make.
     ///
     /// Its *position* is run state, not just its seed: a reloaded run continues its
@@ -135,6 +154,7 @@ impl GameState {
             active_boost: None,
             auto_common_progress: 0,
             auto_value_progress: 0,
+            yield_carry: Vec::new(),
             rng,
             last_seen: now,
         }
@@ -250,7 +270,7 @@ impl GameState {
 
     /// Buys one level of an enchant, capped by the highest world reached.
     ///
-    /// Supplies the [`World`](crate::world::World) itself rather than taking one:
+    /// Supplies the [`World`] itself rather than taking one:
     /// the cap is keyed by the *player's* progress, and a caller free to pass any
     /// world could buy an End-capped Fortune from the Overworld.
     pub fn buy_enchant(&mut self, kind: EnchantType) -> Result<(), CoreError> {
@@ -447,7 +467,7 @@ impl GameState {
     /// The order is the whole of phase 7, and each step is where it is for a reason
     /// an earlier phase wrote down:
     ///
-    /// 1. **Impact.** [`Mine::dig`] against `mining_power × boost`. Nothing breaks —
+    /// 1. **Impact.** [`Mine::dig`] against `mining_power × boost × prestige`. Nothing breaks —
     ///    the usual case, since a block takes many ticks — and the swing is over.
     /// 2. **Spatial procs.** [`Mine::resolve_spatial_procs`] rolls Explosive,
     ///    Jackhammer and Nuke on the impact cell, in a pinned order that is part of
@@ -469,7 +489,9 @@ impl GameState {
     /// readability; they touch disjoint state. Steps 1, 2 and 5 are not
     /// interchangeable at all.
     fn resolve_swing(&mut self, events: &mut Vec<GameEvent>) {
-        let power = self.player.get_pickaxe().mining_power() * self.boost_multiplier();
+        let power = self.player.get_pickaxe().mining_power()
+            * self.boost_multiplier()
+            * prestige::multiplier(self.player.get_prestige());
         let Some(dug) = self.mine.dig(power, &mut self.rng) else {
             return;
         };
@@ -542,6 +564,15 @@ impl GameState {
     /// levers in the game are kept from composing on purpose, so the substituted
     /// Compressed unit is banked as one and the rest of the swing pays normally.
     ///
+    /// **The swing's haul is totalled before the prestige multiplier touches it, and
+    /// the multiplier is applied once per item.** Not once per block, and the
+    /// difference is the whole mechanic rather than a micro-optimisation: at rank II a
+    /// Nuke over two hundred 1-drop cells pays `200 × 1.4 = 280` totalled, and
+    /// `200 × ⌊1 × 1.4⌋ = 200` — nothing at all — block by block. What the total
+    /// cannot fix on its own is a swing that breaks *one* such cell, so the fraction
+    /// left over rides to the next swing in
+    /// [`yield_carry`](GameState); see [`prestige::apply_with_carry`].
+    ///
     /// [`Enchants::resolve_excavator`]: crate::enchant::Enchants
     fn credit_loot(&mut self, dug: Dug, broken: &[Block], events: &mut Vec<GameEvent>) {
         let fortune = self.player.get_pickaxe().fortune_multiplier();
@@ -554,15 +585,27 @@ impl GameState {
         // Skip the impact block in the ordinary payout exactly when the Excavator
         // took it over: `skip(1)` reaches the right element because `resolve_swing`
         // pushes the impact first and the blast cells after it.
-        let paid = broken.iter().skip(usize::from(excavated.is_some()));
-        for block in paid {
+        let mut haul: Vec<(Item, u32)> = Vec::new();
+        for block in broken.iter().skip(usize::from(excavated.is_some())) {
             let (item, amount) = block.drops();
-            self.player.inventory_mut().add(item, amount * fortune);
+            *entry(&mut haul, item) += amount * fortune;
         }
 
         if let Some(item) = excavated {
-            self.player.inventory_mut().add(item, 1);
+            *entry(&mut haul, item) += 1;
             events.push(GameEvent::ExcavatorProc { item });
+        }
+
+        let permille = prestige::multiplier_permille(self.player.get_prestige());
+        for (item, amount) in haul {
+            let paid =
+                prestige::apply_with_carry(amount, permille, entry(&mut self.yield_carry, item));
+            // A swing whose whole yield is still sitting in the carry banks nothing;
+            // `Inventory::add` would take a zero happily, but the skip keeps the
+            // inventory's own history free of entries that changed nothing.
+            if paid > 0 {
+                self.player.inventory_mut().add(item, paid);
+            }
         }
     }
 
@@ -608,12 +651,28 @@ impl GameState {
     /// `a_span_credited_at_once_pays_what_the_same_span_pays_tick_by_tick` holds —
     /// see [`auto_value_progress`](GameState) for the split that a single carry got
     /// wrong.
+    ///
+    /// **The prestige multiplier lands on the *rate*, once**, and this is the one path
+    /// in the game where it needs no carry of its own: the microblock unit is finer
+    /// than the permille denominator, so scaling the rate before the split is exact,
+    /// and the two carries that already exist absorb whatever fraction of a cell it
+    /// produces. Once and not twice — an auto-miner that took the multiplier as
+    /// *speed* and again as *yield* would pay `×1.96` at rank II, making an absence
+    /// the best use of a rank the player just bought with a run.
     fn credit_auto_mining(&mut self, ticks: u64) -> Vec<(Item, u32)> {
+        let permille = u64::from(prestige::multiplier_permille(self.player.get_prestige()));
         let milliblocks = ticks.saturating_mul(AUTO_MINER_MILLIBLOCKS_PER_TICK);
         let value_share = u64::from(self.mine.value_weight_percent());
         // `× MICROBLOCKS_PER_MILLIBLOCK` before `÷ 100` keeps the share exact: the
-        // finer unit is what makes `milliblocks × percent ÷ 100` an integer.
-        let per_percent = milliblocks.saturating_mul(MICROBLOCKS_PER_MILLIBLOCK) / 100;
+        // finer unit is what makes `milliblocks × percent ÷ 100` an integer. The
+        // prestige scaling joins the same numerator and divides last, for the same
+        // reason — an early `÷ PERMILLE` would round the rate down every call, and 100
+        // calls of one tick would stop equalling one call of 100.
+        let per_percent = milliblocks
+            .saturating_mul(MICROBLOCKS_PER_MILLIBLOCK)
+            .saturating_mul(permille)
+            / u64::from(prestige::PERMILLE)
+            / 100;
         self.auto_value_progress += per_percent.saturating_mul(value_share);
         self.auto_common_progress += per_percent.saturating_mul(100 - value_share);
 
@@ -639,10 +698,8 @@ impl GameState {
             // twice — the inventory would not care, but a caller rendering the
             // offline summary would print the same line back to back.
             let amount = u32::try_from(amount).unwrap_or(u32::MAX);
-            match gained.iter_mut().find(|(held, _)| *held == item) {
-                Some((_, total)) => *total = total.saturating_add(amount),
-                None => gained.push((item, amount)),
-            }
+            let total = entry(&mut gained, item);
+            *total = total.saturating_add(amount);
         }
 
         for &(item, amount) in &gained {
@@ -650,6 +707,100 @@ impl GameState {
         }
         gained
     }
+
+    /// Trades the whole run for one prestige rank, or refuses without touching it.
+    ///
+    /// The endgame loop `docs/MECHANICS.md` specifies, and the last mechanic the core
+    /// owed the game. Everything the player has bought goes back to the start —
+    /// pickaxe, enchants, inventory, every mine's size and richness, the mining level
+    /// itself — and what survives is the rank and the permanent multiplier it grants
+    /// on ore yield, mining speed and experience ([`prestige`]).
+    ///
+    /// ## The order, and why nothing here is interchangeable
+    ///
+    /// 1. **The level gate**, refusing with [`CoreError::PrestigeLocked`]. Amethyst
+    ///    only drops in the End, so a player who cannot reach it can never pay — but
+    ///    checking solvency first would answer "you need 512 Amethyst" to someone
+    ///    thirty levels from the ore, which is the wrong sentence
+    ///    (`docs/UI.md` §6.8 says so, and prints the level gap instead).
+    /// 2. **The price**, through [`economy::pay`] — the same two-pass till every
+    ///    purchase in the game uses, so an unaffordable prestige debits nothing. The
+    ///    debit is *superseded* a line later by the wipe, and it is still routed
+    ///    through the till rather than through [`economy::can_afford`]: one
+    ///    implementation of "can they pay", and the refusal arrives already carrying
+    ///    the `needed` and `held` a preview wants.
+    /// 3. **The reset**, which cannot fail and therefore goes last.
+    ///
+    /// **Both refusals happen before any draw**, the rule
+    /// [`select_mine`](GameState::select_mine) holds for the same reason: a refusal
+    /// that changes nothing must not move the position of a run's dice either.
+    ///
+    /// ## What is *not* reset
+    ///
+    /// - **The generator.** Its position is run state, not a constant
+    ///   ([`rng`](GameState)); rewinding it would deal the player an identical second
+    ///   run — same grids, same procs, same Excavator — which is the opposite of what
+    ///   re-walking the progression is for. The fresh Stone mine below is drawn from
+    ///   wherever the run had got to.
+    /// - **[`last_seen`](GameState).** Prestiging is neither a save nor an absence, so
+    ///   the mark the next offline accrual measures from must not move.
+    ///
+    /// Everything else goes, including three things `docs/MECHANICS.md`'s list does
+    /// not name and which would otherwise survive by omission: the boost reserve (ore
+    /// already converted, plus the charges the erased levels granted), the auto-miner's
+    /// carries, and the mines left behind — a run that kept its `visited` map would
+    /// hold a richness-9 End grid its level-1 player is no longer allowed to enter.
+    ///
+    /// **No [`GameEvent`].** Events describe what happened inside a
+    /// [`tick`](GameState::tick); this is a direct call whose [`Result`] is the whole
+    /// answer, and the front-end that made it already knows it did.
+    ///
+    /// [`economy::pay`]: crate::economy
+    pub fn prestige(&mut self) -> Result<(), CoreError> {
+        if !self.player.has_unlocked(World::End) {
+            return Err(CoreError::PrestigeLocked {
+                level: self.player.get_level(),
+                needed: World::End.unlock_level(),
+            });
+        }
+
+        let cost = prestige::cost(self.player.get_prestige());
+        economy::pay(self.player.inventory_mut(), &cost)?;
+
+        self.player.prestige_reset();
+        self.visited.clear();
+        self.mine = Mine::new(MineKind::Stone, &mut self.rng);
+        self.boost_charges = 0;
+        self.active_boost = None;
+        self.auto_common_progress = 0;
+        self.auto_value_progress = 0;
+        self.yield_carry.clear();
+        Ok(())
+    }
+}
+
+/// The running total for `item` in a `(item, amount)` list, inserted at zero if the
+/// list has not seen it yet.
+///
+/// A free function, and a **linear scan over a [`Vec`]** rather than a
+/// [`HashMap`] entry, for the reason [`yield_carry`](GameState) gives: the lists it
+/// walks hold at most three items, so hashing costs more than looking. It exists at
+/// all because three call sites wanted the same six lines — the auto-miner's merge of
+/// two blocks that may be the same one, and both halves of the swing's haul.
+///
+/// The two-step `position` then index is not a detour around the borrow checker so
+/// much as the shape it accepts: returning `&mut` into a `Vec` from inside the `else`
+/// of a `if let Some(…) = iter_mut().find(…)` keeps the search's borrow alive across
+/// the `push`, which is the classic rejection this pattern answers.
+fn entry(list: &mut Vec<(Item, u32)>, item: Item) -> &mut u32 {
+    let index = match list.iter().position(|(held, _)| *held == item) {
+        Some(index) => index,
+        None => {
+            list.push((item, 0));
+            list.len() - 1
+        }
+    };
+    &mut list[index].1
 }
 
 /// What an absence produced, for the "welcome back" the player is owed.
@@ -759,6 +910,7 @@ pub enum GameEvent {
 mod tests {
     use super::*;
     use crate::block::Block;
+    use crate::economy::CostLine;
     use crate::enchant::Enchants;
     use crate::material::Material;
     use crate::pickaxe::{Pickaxe, PickaxeTier};
@@ -1864,5 +2016,247 @@ mod tests {
 
         assert_eq!(run(2024), run(2024), "the same seed diverged");
         assert_ne!(run(2024), run(1), "two seeds produced the same run");
+    }
+
+    // --- Prestige ---
+
+    /// Puts a run one call away from a prestige: past the End's unlock level, holding
+    /// exactly the Amethyst the next rank costs.
+    ///
+    /// It levels the player by *breaking blocks* rather than by writing the field,
+    /// because it cannot do otherwise — `Player`'s fields are private to its module —
+    /// and that is the better test anyway: the gate this exercises is the one a real
+    /// run walks through.
+    fn ready_to_prestige(state: &mut GameState) {
+        state.player.grant_break_experience(&[Block::Amethyst; 700]);
+        assert!(
+            state.player.has_unlocked(World::End),
+            "the fixture must clear the level gate for the test to be about the price"
+        );
+
+        let cost = prestige::cost(state.player.get_prestige());
+        for (item, amount) in cost.lines().iter().flat_map(CostLine::requirements) {
+            state.player.inventory_mut().add(item, amount);
+        }
+    }
+
+    /// The level half of the condition, and the half `docs/UI.md` §6.8 says the
+    /// preview leads with: Amethyst only drops in the End, so a player short of it is
+    /// told how far off the *level* is, not how much ore they lack.
+    #[test]
+    fn a_prestige_before_the_end_is_refused_and_changes_nothing() {
+        let mut state = state();
+        let draws = next_draws(&state);
+
+        assert_eq!(
+            state.prestige(),
+            Err(CoreError::PrestigeLocked {
+                level: 1,
+                needed: World::End.unlock_level(),
+            })
+        );
+
+        assert_eq!(state.player().get_prestige(), 0);
+        assert_eq!(state.player().get_level(), 1);
+        assert_eq!(next_draws(&state), draws, "a refusal moved the dice");
+    }
+
+    /// The price half, refused by the same two-pass till every purchase uses — so an
+    /// unaffordable prestige leaves the Amethyst where it was rather than taking what
+    /// it can and failing.
+    #[test]
+    fn a_prestige_without_the_amethyst_is_refused_and_takes_nothing() {
+        let mut state = state();
+        ready_to_prestige(&mut state);
+        // One raw Amethyst short of the price.
+        assert!(
+            state
+                .player
+                .inventory_mut()
+                .remove(Item::Raw(Material::Amethyst), 1)
+                .is_ok()
+        );
+        let held = state.player().get_inventory().raw_value(Material::Amethyst);
+        let draws = next_draws(&state);
+
+        assert!(matches!(
+            state.prestige(),
+            Err(CoreError::InsufficientItems { .. })
+        ));
+
+        assert_eq!(state.player().get_prestige(), 0);
+        assert_eq!(
+            state.player().get_inventory().raw_value(Material::Amethyst),
+            held,
+            "a refused prestige debited part of the price"
+        );
+        assert_eq!(next_draws(&state), draws, "a refusal moved the dice");
+    }
+
+    /// The trade, whole. Everything the run bought goes; the rank stays.
+    #[test]
+    fn a_prestige_banks_the_rank_and_resets_the_run() {
+        let mut state = state();
+        ready_to_prestige(&mut state);
+
+        // A run with something to lose on every axis the reset names.
+        equip(&mut state, PickaxeTier::Netherite, instamining());
+        assert!(state.select_mine(MineKind::Coal).is_ok());
+        assert!(state.select_mine(MineKind::Stone).is_ok());
+        state.boost_charges = 3;
+        state.auto_common_progress = 12_345;
+
+        assert_eq!(state.prestige(), Ok(()));
+
+        assert_eq!(state.player().get_prestige(), 1);
+        assert_eq!(state.player().get_level(), 1);
+        assert_eq!(state.player().get_pickaxe().get_tier(), PickaxeTier::Wooden);
+        assert_eq!(
+            state.player().get_inventory().raw_value(Material::Amethyst),
+            0
+        );
+        assert_eq!(state.boost_charges(), 0);
+        assert!(state.active_boost().is_none());
+        assert_eq!(state.auto_common_progress, 0);
+        assert_eq!(state.auto_value_progress, 0);
+        assert!(state.yield_carry.is_empty());
+        // The mines left behind go with the rest: a level-1 player must not be
+        // holding a grid their level no longer opens.
+        assert!(state.mine(MineKind::Coal).is_none());
+        assert_eq!(state.current_mine().kind(), MineKind::Stone);
+        assert_eq!(
+            state.current_mine().remaining_count(),
+            state.current_mine().capacity()
+        );
+    }
+
+    /// **The generator is not rewound**, and this is the guarantee that separates a
+    /// prestige from starting the game over: a rank that reset the dice would deal the
+    /// player the identical run back, same grids and same procs, which is the opposite
+    /// of what re-walking the progression is for.
+    #[test]
+    fn a_prestige_does_not_rewind_the_dice() {
+        let mut state = state();
+        ready_to_prestige(&mut state);
+        assert_eq!(state.prestige(), Ok(()));
+
+        let fresh = GameState::new(42, SystemTime::UNIX_EPOCH);
+        assert_ne!(
+            state.current_mine().get_grid(),
+            fresh.current_mine().get_grid(),
+            "the prestige dealt the opening grid a second time"
+        );
+    }
+
+    /// Prestiging is neither a save nor an absence, so the mark the next offline
+    /// accrual measures from must not move — a prestige that touched it would pay the
+    /// player for the seconds it took them to press the key.
+    #[test]
+    fn a_prestige_does_not_move_the_offline_mark() {
+        let mut state = state();
+        let mark = state.last_seen();
+        ready_to_prestige(&mut state);
+        assert_eq!(state.prestige(), Ok(()));
+
+        assert_eq!(state.last_seen(), mark);
+    }
+
+    /// The loot multiplier, end to end and at the size it actually bites: a Stone cell
+    /// drops **one**, so at rank I five swings must pay six. Truncating each swing
+    /// would pay five, and the rank the player just spent a run on would be worth
+    /// nothing for the whole climb back.
+    #[test]
+    fn a_rank_pays_the_sixth_ore_five_swings_in() {
+        let mut state = state();
+        ready_to_prestige(&mut state);
+        assert_eq!(state.prestige(), Ok(()));
+        equip(&mut state, PickaxeTier::Netherite, instamining());
+
+        for _ in 0..5 {
+            state.tick(MINING);
+        }
+
+        // Five swings, five cells, one ore each — and the auto-miner is far too slow
+        // to have added a sixth over five ticks.
+        assert_eq!(state.player().get_inventory().raw_value(Material::Stone), 6);
+    }
+
+    /// The rank reaches the auto-miner through its **rate**, exactly once. Twice — as
+    /// speed and again as yield — would compound to `×1.44` at rank I and make an
+    /// absence the best use of a rank the player bought with a run.
+    ///
+    /// **Measured on the progress carries rather than on the inventory**, and that is
+    /// the point rather than a convenience. A span long enough to credit whole cells
+    /// splits into two streams that each floor and keep their own remainder, so the
+    /// ore banked lands *near* the exact product and not on it — the carries are where
+    /// the missing fraction went. A span too short to credit anything leaves the whole
+    /// scaled rate sitting in those carries, where it can be compared exactly.
+    #[test]
+    fn a_rank_multiplies_the_auto_miners_rate_once() {
+        let mut unranked = state();
+        unranked.credit_auto_mining(1);
+
+        let mut ranked = state();
+        ready_to_prestige(&mut ranked);
+        assert_eq!(ranked.prestige(), Ok(()));
+        ranked.credit_auto_mining(1);
+
+        let permille = u64::from(prestige::multiplier_permille(1));
+        let denominator = u64::from(prestige::PERMILLE);
+        for (plain, boosted) in [
+            (unranked.auto_common_progress, ranked.auto_common_progress),
+            (unranked.auto_value_progress, ranked.auto_value_progress),
+        ] {
+            assert!(plain > 0, "the tick has to have produced something");
+            assert_eq!(
+                boosted * denominator,
+                plain * permille,
+                "rank I moved the rate to {boosted} where it was {plain}"
+            );
+        }
+    }
+
+    /// The offline identity, re-run **at a rank**: the closed form is only legitimate
+    /// while crediting a span in one call equals crediting it tick by tick, and a
+    /// prestige multiplier applied to a truncated rate would have broken exactly that.
+    /// It divides last for this reason.
+    #[test]
+    fn a_ranked_span_credited_at_once_still_pays_what_it_pays_tick_by_tick() {
+        const SPAN: u64 = 4_321;
+
+        let mut piecemeal = state();
+        ready_to_prestige(&mut piecemeal);
+        assert_eq!(piecemeal.prestige(), Ok(()));
+        let mut lump = state();
+        ready_to_prestige(&mut lump);
+        assert_eq!(lump.prestige(), Ok(()));
+
+        for _ in 0..SPAN {
+            piecemeal.tick(IDLE);
+        }
+        lump.credit_auto_mining(SPAN);
+
+        assert_eq!(
+            lump.player().get_inventory().raw_value(Material::Stone),
+            piecemeal
+                .player()
+                .get_inventory()
+                .raw_value(Material::Stone)
+        );
+        assert_eq!(lump.auto_common_progress, piecemeal.auto_common_progress);
+        assert_eq!(lump.auto_value_progress, piecemeal.auto_value_progress);
+    }
+
+    /// Ranks stack, and the price climbs with them — the loop `docs/ROADMAP.md` leaves
+    /// deliberately endless.
+    #[test]
+    fn a_second_prestige_costs_more_than_the_first() {
+        let mut state = state();
+        for expected in 1..=2 {
+            ready_to_prestige(&mut state);
+            assert_eq!(state.prestige(), Ok(()));
+            assert_eq!(state.player().get_prestige(), expected);
+        }
+        assert!(prestige::cost(1).lines()[0].compressed > prestige::cost(0).lines()[0].compressed);
     }
 }

@@ -137,6 +137,29 @@ pub enum CoreError {
     /// a boost already runs is **allowed**, and stacks (see
     /// [`Boost::extend`](crate::boost::Boost)).
     NoBoostCharge,
+    /// A prestige was asked for by a player who has not reached the End.
+    ///
+    /// The condition `docs/MECHANICS.md` sets is "reach the End **and** accumulate
+    /// enough Amethyst", and only the first half is this variant's: the second is
+    /// [`InsufficientItems`](CoreError::InsufficientItems), raised by the same till
+    /// every purchase in the game pays through.
+    ///
+    /// **The level, not a `MineLock`.** The End's *mines* are gated on two axes and
+    /// need the whole lock to explain themselves; prestige is gated on the level
+    /// alone, because Amethyst is what the pickaxe axis is already spent on. Reusing
+    /// [`MineLocked`](CoreError::MineLocked) would name a mine the player never asked
+    /// to enter.
+    ///
+    /// Carries both numbers for the reason every other variant here does: `needed -
+    /// level` is the sentence `docs/UI.md` §6.8 ends the preview on — "you are Lv 23
+    /// of the 30 it takes to get there" — and a refusal that only says *no* leaves it
+    /// with nothing to print.
+    PrestigeLocked {
+        /// The player's current mining level.
+        level: u32,
+        /// The level the End — and so a prestige — opens at.
+        needed: u32,
+    },
 }
 
 impl fmt::Display for CoreError {
@@ -191,6 +214,9 @@ impl fmt::Display for CoreError {
                 (None, None) => write!(f, "the {} mine is locked", kind.name()),
             },
             Self::NoBoostCharge => write!(f, "no boost charge to fire"),
+            Self::PrestigeLocked { level, needed } => {
+                write!(f, "prestige needs level {needed}, you are level {level}")
+            }
         }
     }
 }
@@ -267,5 +293,18 @@ mod tests {
             err.to_string(),
             "richness 7 is above the bought ceiling of 3"
         );
+    }
+
+    /// Both numbers again, and for the sharpest reason of the lot: `docs/UI.md` §6.8
+    /// draws the prestige preview **unaffordable**, since Amethyst only drops in the
+    /// End. The honest last line there is not "you need 512 more" but how far off the
+    /// level is, and this is where that gap comes from.
+    #[test]
+    fn a_prestige_before_the_end_names_the_level_it_is_short_of() {
+        let err = CoreError::PrestigeLocked {
+            level: 23,
+            needed: 30,
+        };
+        assert_eq!(err.to_string(), "prestige needs level 30, you are level 23");
     }
 }
