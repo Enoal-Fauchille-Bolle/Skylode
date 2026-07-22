@@ -175,10 +175,11 @@ fn band_world(level: u32) -> World {
 /// derived rather than transcribed.
 ///
 /// Integer division can only ever reach `BANDS_PER_WORLD - 1`, since the last level of
-/// a band of `n` is `n - 1`, so the rung never runs off the world's share. The two
-/// early returns are not dead weight but the same answer to two different absences: a
-/// world with no successor, and — should a re-balance ever put two unlock levels
-/// adjacent — a band with no levels in it, which is a division by zero.
+/// a band of `n` is `n - 1`, so the rung never runs off the world's share. The early
+/// return here and the one in [`band_within`] are not dead weight but the same answer
+/// to two different absences: a world with no successor, and — should a re-balance
+/// ever put two unlock levels adjacent — a band with no levels in it, which is a
+/// division by zero.
 ///
 /// **Total, and truthful about the End.** That world owns no rung of the table: its
 /// bundles ride the rare ramp instead, and [`ore_bundle`] returns before ever asking.
@@ -191,12 +192,27 @@ fn fuel_band(world: World, level: u32) -> u8 {
     let Some(next) = next_world_unlock(world) else {
         return first_band;
     };
-    let span = next.saturating_sub(world.unlock_level() + 1);
+    band_within(first_band, world.unlock_level(), next, level)
+}
+
+/// Where `level` falls in a band of levels running from `unlock` (exclusive) to
+/// `next` (exclusive), spread over [`BANDS_PER_WORLD`] rungs starting at
+/// `first_band`.
+///
+/// **Takes four numbers rather than a [`World`], and that is the point.** The guard
+/// below answers the case of a band with no levels in it — two unlock levels sitting
+/// adjacent — which the current table does not produce and which a [`World`]
+/// argument therefore makes unconstructible. Split out, the arithmetic can be asked
+/// about the layout a future re-balance might create, so the guard is a tested claim
+/// rather than an untested promise. The alternative, dropping it, turns that
+/// re-balance into a division by zero.
+fn band_within(first_band: u8, unlock: u32, next: u32, level: u32) -> u8 {
+    let span = next.saturating_sub(unlock + 1);
     if span == 0 {
         return first_band;
     }
 
-    first_band + ((level - world.unlock_level() - 1) * BANDS_PER_WORLD / span) as u8
+    first_band + ((level - unlock - 1) * BANDS_PER_WORLD / span) as u8
 }
 
 /// The level that opens the world *after* `world`, or [`None`] for the last one — which
@@ -469,6 +485,22 @@ mod tests {
         let end_band = fuel_band(World::End, LEVEL_CAP);
         assert_eq!(end_band, 7);
         assert_eq!(enchant_fuel(end_band), None);
+    }
+
+    /// The layout the current unlock table cannot produce: a world opening at 5 whose
+    /// successor opens at 6, leaving it not one level of its own. The band walk has no
+    /// levels to spread and must answer the world's first rung — the division it would
+    /// otherwise perform is by zero.
+    ///
+    /// Asserted on [`band_within`] rather than through a [`World`], because the two
+    /// unlock levels are `const`s a test cannot move. This is the whole reason the
+    /// arithmetic takes numbers: a re-balance that closed a gap would land here first.
+    #[test]
+    fn a_world_with_no_levels_of_its_own_answers_its_first_rung() {
+        assert_eq!(band_within(4, 5, 6, 6), 4);
+
+        // The gap of one it takes to make the walk spread again.
+        assert_eq!(band_within(4, 5, 7, 6), 4);
     }
 
     /// The End is two lines on the rare ramp: a quarter Amethyst at its first level,
