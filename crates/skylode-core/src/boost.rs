@@ -76,14 +76,9 @@ impl Boost {
     /// this is waiting on reads
     /// [`BOOST_MULTIPLIER`](crate::tunables::BOOST_MULTIPLIER), whose invariants are
     /// asserted at *compile time* in `tunables`. Checking here would hand every
-    /// caller an error case that no input can produce.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "awaiting the phase-7 tick, which activates a bought charge"
-        )
-    )]
+    /// caller an error case that no input can produce. That caller now exists:
+    /// [`GameState::fire_boost`](crate::game::GameState::fire_boost), the one door
+    /// that charges a charge for the privilege.
     pub(crate) fn new(multiplier: f32, ticks: u32) -> Self {
         Self {
             multiplier,
@@ -136,7 +131,6 @@ impl Boost {
     /// becoming a permanent one. It is the same class of bug the spatial enchants'
     /// `u8` coordinates had to clip for, and the same answer: make the boundary
     /// arithmetic total instead of trusting every caller to check first.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
     pub(crate) fn tick(&mut self) {
         self.remaining_ticks = self.remaining_ticks.saturating_sub(1);
     }
@@ -150,7 +144,7 @@ impl Boost {
     /// which is a purchase that loses the buyer something.
     ///
     /// **Extending is not the same as refusing, and the difference is whose call it
-    /// is.** A refusal in the rules would make "fire while one runs" unrepresentable
+    /// is.** A refusal in the core would make "fire while one runs" unrepresentable
     /// everywhere, front-end included; extending leaves the *rule* permissive and
     /// lets the interface put a confirmation in front of it — the same split
     /// `organization/UI-EN.md` §5.9 draws for the proc flash, where the core hands
@@ -159,7 +153,6 @@ impl Boost {
     /// `saturating_add` for [`tick`](Boost::tick)'s reason run the other way: a
     /// `u32` overflow would wrap a very long stack back to a very short boost, so a
     /// player who banked charges all run would fire them and get nothing.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
     pub(crate) fn extend(&mut self, ticks: u32) {
         self.remaining_ticks = self.remaining_ticks.saturating_add(ticks);
     }

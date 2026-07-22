@@ -19,6 +19,8 @@
 //!   them.
 //! - [`boost`]: the temporary Redstone speed boost — the other half of the haste
 //!   product the pickaxe does not carry.
+//! - [`game`]: the run in progress — the aggregate that owns the player, the
+//!   mines and the generator, and the only place the rules are composed.
 //! - [`mine`]: a generated grid of blocks the player digs through, sized by
 //!   level.
 //! - [`mine_kind`]: the twelve canonical mines and their identity (block pool,
@@ -37,6 +39,7 @@ pub mod boost;
 pub mod economy;
 pub mod enchant;
 pub mod error;
+pub mod game;
 pub mod inventory;
 pub mod material;
 pub mod mine;

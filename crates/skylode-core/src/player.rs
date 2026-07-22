@@ -20,9 +20,9 @@ use crate::{
 
 /// The player's persistent progression state.
 ///
-/// [`Debug`] because the phase-7 game state derives it, and a run that cannot be
-/// printed is a run that cannot be dropped into a failing assertion. Every field is
-/// already `Debug`.
+/// [`Debug`] because [`GameState`](crate::game::GameState) derives it, and a run
+/// that cannot be printed is a run that cannot be dropped into a failing
+/// assertion. Every field is already `Debug`.
 #[derive(Debug)]
 pub struct Player {
     /// The pickaxe the player currently mines with.
@@ -183,9 +183,6 @@ impl Player {
     /// `pub(crate)` for [`add_experience`](Player::add_experience)'s reason: the
     /// blocks are supplied by the caller, so a front-end holding this could invent
     /// a swing that broke two hundred End cells.
-    // Dead outside the tests until the phase-7 tick calls it, exactly as
-    // `Mine::dig` — the break this hangs off — is.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
     pub(crate) fn grant_break_experience(&mut self, broken: &[Block]) -> u32 {
         let total = broken
             .iter()
@@ -297,7 +294,6 @@ impl Player {
     /// asking — the argument that closed [`Mine::take`](crate::mine::Mine) and
     /// [`Boost::new`](crate::boost::Boost). Spending is already public through
     /// [`economy`](crate::economy), which is where a debit belongs.
-    #[expect(dead_code, reason = "awaiting the phase-7 tick")]
     pub(crate) fn inventory_mut(&mut self) -> &mut Inventory {
         &mut self.inventory
     }
@@ -315,7 +311,6 @@ impl Player {
     ///
     /// The same reason [`draw_cell`](crate::mine) is a free function rather than a
     /// method: a borrow's granularity is the receiver, not the fields it reaches.
-    #[expect(dead_code, reason = "awaiting the phase-7 tick")]
     pub(crate) fn inventory_and_pickaxe_mut(&mut self) -> (&mut Inventory, &mut Pickaxe) {
         (&mut self.inventory, &mut self.pickaxe)
     }

@@ -600,9 +600,6 @@ impl Mine {
     ///
     /// [`Enchants::upgrade`]: crate::enchant::Enchants
     /// [`Enchants::resolve_excavator`]: crate::enchant::Enchants
-    // Dead outside the tests until the phase-7 tick calls it, for `dig`'s reason:
-    // nothing in core bounds how often a front-end could ask for a swing.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
     pub(crate) fn resolve_spatial_procs(
         &mut self,
         impact: (u8, u8),
@@ -671,9 +668,6 @@ impl Mine {
     /// called, so a front-end holding it in a render loop would mine as fast as it
     /// could redraw. The cadence is the phase-7 tick's to own, and until that sole
     /// legitimate caller exists the door stays shut.
-    // Dead outside the tests until the phase-7 tick calls it; see `upgrade`'s note
-    // in `pickaxe` for why this is an `expect` and not an `allow`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
     pub(crate) fn dig(&mut self, mining_power: f32, rng: &mut Rng) -> Option<Dug> {
         // A power that is not a positive, finite number buys nothing — and must
         // not be added: a `NaN` would poison `break_progress` for the rest of the
@@ -715,16 +709,14 @@ impl Mine {
     /// to argue for — "two calls to chain is one call to forget" — and the answer to
     /// the forgetting is no longer visibility but the **return value**: it is
     /// `#[must_use]`, so a caller who drops the answer is told, and the one caller
-    /// that exists needs it anyway — a batch reset is an announcement the player is
-    /// owed, so the swing has to know whether one happened.
+    /// that exists needs it anyway: [`MineRefilled`](crate::game::GameEvent) is an
+    /// announcement the player is owed, so the swing has to know whether one
+    /// happened.
     ///
     /// `pub(crate)` for [`reset`](Mine::reset)'s reason, weakened but not gone: this
     /// one is conditional, so a front-end calling it on a standing grid gets
     /// nothing. On an *empty* one it is still a free full mine, and emptiness is a
     /// state a front-end can wait for.
-    // Dead outside the tests until the tick's swing calls it, exactly as `dig` is:
-    // the two are the two ends of the same swing and arrive at a caller together.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 swing"))]
     #[must_use]
     pub(crate) fn refill_if_empty(&mut self, rng: &mut Rng) -> bool {
         if !self.is_empty() {

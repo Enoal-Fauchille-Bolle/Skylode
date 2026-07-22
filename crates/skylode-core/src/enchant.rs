@@ -551,9 +551,6 @@ impl Enchants {
     ///
     /// [`Compressed`]: crate::material::Item::Compressed
     /// [`Block`]: crate::block::Block
-    // Dead outside the tests until the phase-7 tick calls it: nothing in core
-    // composes a swing yet, which is the same reason `Mine::dig` is gated.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
     pub(crate) fn resolve_excavator(&self, material: Material, rng: &mut Rng) -> Option<Item> {
         let level = self.get_level(EnchantType::Excavator);
         if level == 0 {

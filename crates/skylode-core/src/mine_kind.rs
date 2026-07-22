@@ -48,8 +48,8 @@ use crate::world::World;
 /// [`value_block`](MineKind::value_block) pair. Variants are grouped by world, in
 /// progression order, matching the layout of [`Block`] and [`World`].
 ///
-/// [`Hash`] because the phase-7 game state keys its mines by kind: the twelve are a
-/// fixed, dataless set,
+/// [`Hash`] because a run keys its mines by kind
+/// ([`GameState`](crate::game::GameState)): the twelve are a fixed, dataless set,
 /// so the derived hash is the discriminant and agrees with the derived [`Eq`] by
 /// construction — the one obligation a manual `Hash` would owe.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
