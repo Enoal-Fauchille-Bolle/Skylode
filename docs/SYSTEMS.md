@@ -29,12 +29,18 @@ game-state struct. The fields, derived from the mechanics:
 - `last_seen`: wall-clock time of the last write, for offline accrual.
 - `pickaxe`: tier, Efficiency, Fortune, and each enchant's level.
 - `inventory`: a map from ore (raw and Compressed) to count.
-- `level`: mining XP and current level.
-- `worlds`: which worlds are unlocked.
+- `level`: mining XP and current level. The **unlocked worlds are not a field**:
+  they are derived from the level, a monotone function of state already stored, so
+  a second copy would only be an invariant to maintain by hand — and prestige,
+  which resets the level, re-locks them for free.
 - `mines`: per mine, its current size and its remaining-blocks grid state.
 - `selected_mine`: the world and mine currently targeted.
 - `prestige`: prestige rank and the derived permanent multiplier.
-- `boosts`: active temporary boosts and their remaining timers.
+- `boosts`: the **reserve of unspent boost charges** (a count — every boost in the
+  game is identical, so nothing else distinguishes them), plus any running boost
+  and its remaining timer. The reserve is a field of its own because level-up
+  grants charges the player has not fired: dropping it would make a reload eat
+  every charge earned and not yet spent.
 - `config`: the player's *preferences* — colour palette (256 or the 16-colour
   fallback), ASCII-only glyphs, mining input mode, number format. **Not** game
   state, but it lives here anyway: see below.
