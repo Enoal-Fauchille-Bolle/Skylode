@@ -206,8 +206,8 @@ The core is split by concern, each unit testable in isolation:
 
 - `worlds`, `materials`: the static data (which ores, their world, hardness, and
   minimum pickaxe tier), plus the **per-dimension enchant ceiling** the five special
-  enchants share (`World::enchant_cap`) — one number per world, and a rule of the
-  world rather than of any enchant.
+  enchants and Fortune share (`World::enchant_cap`) — one number per world, and a
+  rule of the world rather than of any enchant.
 - `pickaxes`: tiers, Efficiency, Fortune, enchant levels, and `mining_power`. Owns
   **Efficiency's** ceiling (`PickaxeTier::efficiency_cap`), the one keyed by the tier.
 - `mines`: the grid model, mixed content, break progress, batch reset, and size.

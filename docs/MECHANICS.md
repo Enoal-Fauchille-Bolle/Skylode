@@ -182,8 +182,10 @@ Fortune multiplies the drop count per broken block by **`1 + level`**: an
 un-fortuned pickaxe multiplies by 1 and takes exactly what the block contained, and
 Fortune 10 is worth eleven times the block, not ten. It is capped at **10**: past
 that point ore is abundant enough that more Fortune adds nothing, so the player
-moves to other levers. Fortune multiplies the **loot** and only the loot — see XP,
-below.
+moves to other levers. That ceiling is **reached in three steps, not one** —
+Fortune shares [`World::enchant_cap`](#enchants) with the five specials, so it is
+capped at 3 in the Overworld, 6 in the Nether and 10 in the End. Fortune
+multiplies the **loot** and only the loot — see XP, below.
 
 The multiplier is **exact and drawn from nothing**. Minecraft rolls Fortune at
 random, per block; in an idle game a draw that fires on every break is averaged flat
@@ -530,11 +532,12 @@ enchant material. Levels 7 to 10 therefore quote **two** lines, End Stone and
 Amethyst, the Amethyst share climbing as the level does — which is what finally
 gives End Stone a use beyond its own mine.
 
-**Fortune costs Emerald and nothing else.** It is the one enchant keyed to neither
-the world nor the tier, so it has no "current rung's ore" to consume.
+**Fortune costs Emerald and nothing else.** Its *price* is keyed to neither the
+world nor the tier, so it has no "current rung's ore" to consume — but its *cap*
+is the world's, like the specials'.
 
-The cap is **one number per world, shared by all five** — not a cap per
-`(enchant, world)` pair. It is the *gate*: how much the player may invest. What
+The cap is **one number per world, shared by all five specials and by Fortune** —
+not a cap per `(enchant, world)` pair. It is the *gate*: how much the player may invest. What
 the investment buys is the enchant's own effect scaling, below. Keeping the two
 apart is what lets every world hand out the same budget while the five enchants
 stay wildly different; an effect that grows too fast by level 10 is a fault in its
@@ -542,11 +545,14 @@ own curve, and capping that one enchant lower would fix a curve with the wrong
 tool and leave the player an asymmetry to explain. In the code the cap is
 therefore `World::enchant_cap`, a rule of the world, not of any enchant.
 
-Efficiency and Fortune sit outside this: Efficiency is capped by the **pickaxe
-tier** (5, or 15 at Netherite) and Fortune at a flat **10**. The three groups —
-keyed by tier, by world, by nothing — are what keep the two progression axes
-independent. If a world also raised Efficiency's ceiling, one investment would
-advance both axes and the two-axis gate would collapse into one.
+Efficiency alone sits outside this: it is capped by the **pickaxe tier** (5, or 15
+at Netherite). The two groups — keyed by tier, keyed by world — are what keep the
+two progression axes independent. If a world also raised Efficiency's ceiling, one
+investment would advance both axes and the two-axis gate would collapse into one,
+and Netherite's cap of 15 would be unreachable outside the End, deleting the final
+tier's whole reward. Fortune is keyed by neither axis, so none of that argument
+ever applied to it — it is world-capped with the specials, and the code's
+`EnchantType::max_level` is a two-way dispatch to match.
 
 Every **triggered** special enchant — Explosive, Jackhammer, Nuke, Excavator —
 fires on a **random proc**, not on every break: a swing that lands a block rolls
