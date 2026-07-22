@@ -72,6 +72,12 @@ third line would be a second line of Amethyst. The two split on the same rare ra
 the End's prices climb — 25 % Amethyst at level 31 rising to 91 % at level 50 — so
 the bundle keeps paying in the proportion the player is spending.
 
+**The bundle is credited entirely in raw items**, however large it grows — `+455
+Amethyst`, not `4 Compressed + 55`. Minting a [Compressed](#compression) unit is the
+player's own move, free and reversible both ways, and a reward that arrived pre-split
+would make it for them; the strict two-denomination rule is about *paying*, never about
+receiving. What the Levels screen prints is therefore exactly what lands.
+
 #### The garnishes
 
 - **A boost charge every five levels** (5, 10, … 50 — ten in a run), **including at
