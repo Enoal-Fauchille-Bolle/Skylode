@@ -152,8 +152,10 @@ both axes and the two-axis gating would collapse into one (see
 
 ## Phase 7 - The runtime core
 
-The keystone. Introduce `GameState`, the missing aggregate that owns player, mines
-per world, selected mine, active boosts, RNG state, prestige rank, and `last_seen`.
+The keystone. Introduce `GameState`, the missing aggregate that owns the player, the
+mines, the mine the player is in, the boost reserve and any running boost, the RNG
+state, and `last_seen`. **Not the prestige rank**: it lives on `Player`, beside the
+level phase 8 resets it with — the same reason the unlocked worlds are not a field.
 Add `tick(input)`, the fixed 20 tps step applying held-Space mining, the auto-miner,
 boost timers, XP, and enchant procs — all drawn from the seeded RNG
 (see [SYSTEMS.md](SYSTEMS.md#tick-loop)). The spatial procs themselves already exist
@@ -162,7 +164,9 @@ boost timers, XP, and enchant procs — all drawn from the seeded RNG
 empties the grid and to the end of the step — a blast may empty the mine too, and a
 refill in the middle would drop a full grid under the enchants that have not rolled
 yet. Add a basic flat-rate auto-miner (tiers and purchases are post-MVP); it never
-procs, being credited in closed form. Credit offline accrual in **closed form** — `rate × elapsed`
+procs, being credited in closed form, and it **grants no experience** — levels open
+worlds, so an absence must not (see [MECHANICS.md](MECHANICS.md#auto-miner)). Credit
+offline accrual in **closed form** — `rate × elapsed`
 capped at the offline cap, *not* a tick replay, since a flat rate makes a replay a
 multiplication done the long way — and clamp a backward clock jump to 0. Core reads no
 wall clock: the caller injects `now`, or core stops being deterministic (see

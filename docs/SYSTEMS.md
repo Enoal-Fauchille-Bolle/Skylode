@@ -142,6 +142,21 @@ procs, all from the seeded PRNG so a run is reproducible. Rendering is decoupled
 the TUI redraws on change at roughly 30 fps, reading the core state without
 driving it.
 
+The swing inside one tick is ordered **impact → procs → XP → loot → refill**, and
+the last step is the one that is easy to get wrong: the batch reset cannot fire on
+the break that empties the grid, because a blast can empty it too and the enchants
+that have not rolled yet would be handed a fresh full grid to blast on the balance
+sheet of one swing.
+
+`tick` **returns what happened** (`Vec<GameEvent>`) rather than only mutating. A
+front-end that had to diff the state between frames to notice an Excavator proc
+would be guessing: it misses two procs landing in the same tick, and it cannot tell
+a `+1 Compressed Iron` earned from one the player minted by hand. Six mechanics owe
+the player an announcement, one buffer feeds both the toast and the Stats history,
+and only the inside of the tick can fill it. Events carry data and never
+presentation — no colours, no durations, no instants — so the toast's window and the
+proc flash's decay stay on the front-end's side of the determinism boundary.
+
 Offline time is **not** replayed tick by tick. The MVP auto-miner is a flat passive
 rate (see [MECHANICS.md](MECHANICS.md#auto-miner)), so what it produces over an
 absence is a multiplication, not a simulation — and stepping 432 000 ticks to apply
@@ -152,7 +167,10 @@ launch, from the capped elapsed time (see
 
 ### Keyboard input
 
-`tick(input)` takes a `space_held: bool`. Producing that bool is the TUI's job, and
+`tick(input)` takes an `Input` carrying `space_held: bool` — a struct rather than a
+bare bool because the tick's inputs are a set that grows, and each one added to a
+positional signature is a call site that keeps compiling with its arguments swapped.
+Producing that bool is the TUI's job, and
 it is harder than it looks, because **a terminal sends nothing when a key is
 released**. The legacy encoding is "one key = its character", inherited from
 teletypes where a key *was* a character and a character has no duration. The

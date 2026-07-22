@@ -752,7 +752,27 @@ read.
 
 For the MVP there is a single basic auto-miner: a flat passive mining rate, not a
 system (no purchases, no tiers). The full auto-miner system (tiers, like idle-game
-"managers") is post-MVP.
+"managers") is post-MVP. It runs **at all times**, not only while the player is
+idle: idle accrual *comes from* the auto-miner, which says where passive income
+originates, not that the helper downs tools the moment the player picks theirs up.
+One that did would tax playing actively.
+
+**It pays ore, and never XP.** Levels open worlds and ore opens pickaxes, and
+neither axis alone carries progression — so an auto-miner that granted experience
+would open the Nether and the End to a player who was away for a week and never
+mined. That collapses the two-axis gate into a clock. It is the same rule that keeps
+[Fortune](#fortune) off the experience, applied to elapsed time instead of to an
+upgrade, and it sits beside the one already settled for the
+[triggered enchants](#enchants), which fire on active mining only because the
+closed-form auto-miner cannot draw. Playing pays ore, XP and procs; being away pays
+ore.
+
+**It never walks the grid**, online or offline. It reads the *expected* composition
+from the mine's [richness dial](#mine-richness) and multiplies, so an idle mine does
+not visibly empty. That is the price of having one model instead of two, and what it
+buys is that a player who watches for an hour and one who is away for an hour are
+paid identically — which a grid-walking online path and a closed-form offline one
+could not promise.
 
 ### Offline accrual
 
