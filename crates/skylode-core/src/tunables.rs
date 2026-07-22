@@ -198,6 +198,60 @@ pub const LEVEL_REWARD_EMERALD_EVERY: u32 = 3;
 /// the player unable to tell a third level from any other.
 pub const LEVEL_REWARD_EMERALD_PERMILLE: u32 = 250;
 
+// --- The tick (phase 7) ---
+
+/// How many ticks make one second: the simulation's fixed timestep.
+///
+/// **Settled, not open**, unlike everything else this module holds — it is
+/// Minecraft's rate, and it is why the hardness table ports 1:1 and the break times
+/// with it. Changing it would not rebalance the game, it would invalidate every
+/// number inherited from the wiki. It sits here rather than in `game` because the
+/// offline accrual and the boost's duration both convert against it, and a shared
+/// unit with two readers in different modules belongs with the constants.
+pub const TICKS_PER_SECOND: u64 = 20;
+
+/// Milliseconds in a second, for converting an absence into ticks without
+/// truncating it to the second first.
+pub const MILLIS_PER_SECOND: u64 = 1_000;
+
+// --- The auto-miner (phase 7) ---
+
+/// How many blocks the basic auto-miner breaks per tick, in **thousandths**.
+///
+/// Quoted per tick and in integers on purpose. The auto-miner is credited by the
+/// same closed form online and offline, and offline that means multiplying by up to
+/// [`OFFLINE_CAP`]'s twelve million ticks — a scale at which an `f32` rate stops
+/// being able to represent the sum of the increments it is made of. Integer
+/// milliblocks with a carried remainder make a seven-day absence and a twenty-tick
+/// stretch compose *exactly*, so `100 × credit(1)` and `credit(100)` agree.
+///
+/// 11 is 0.55 blocks a second, the rate `organization/UI-EN.md` §5.7.4's offline
+/// summary is drawn with. Provisional: the MVP auto-miner has no tiers and no
+/// purchases, so this single number is the whole system, and phase 10 sets it
+/// against the manual rate it is meant to sit under.
+pub const AUTO_MINER_MILLIBLOCKS_PER_TICK: u64 = 11;
+
+/// How many milliblocks make one block: the denominator of
+/// [`AUTO_MINER_MILLIBLOCKS_PER_TICK`].
+///
+/// **Not a balance dial**, unlike everything else in this module — turning it would
+/// silently rescale the rate rather than change anything about the game. It lives
+/// here because it is the unit its neighbour is quoted in, and a rate whose
+/// denominator sits in another file is a rate waiting to be misread.
+pub const MILLIBLOCKS_PER_BLOCK: u64 = 1_000;
+
+/// How many microblocks make one milliblock.
+///
+/// The auto-miner splits its output by the richness share *before* rounding to whole
+/// cells, and `milliblocks × percent ÷ 100` is not an integer — so the accumulator
+/// works a thousand times finer, where it is. Not a dial either; see
+/// [`MILLIBLOCKS_PER_BLOCK`].
+pub const MICROBLOCKS_PER_MILLIBLOCK: u64 = 1_000;
+
+/// How many microblocks make one block — the unit the auto-miner's two carries are
+/// held in.
+pub const MICROBLOCKS_PER_BLOCK: u64 = MILLIBLOCKS_PER_BLOCK * MICROBLOCKS_PER_MILLIBLOCK;
+
 // --- Offline accrual (phase 7) ---
 
 /// The most offline time the auto-miner is ever credited for at once.
@@ -422,6 +476,18 @@ mod tests {
     #[test]
     fn the_offline_cap_is_positive() {
         const { assert!(!OFFLINE_CAP.is_zero()) }
+    }
+
+    /// The auto-miner must actually mine, and it must stay **under** one block per
+    /// tick. Above that it would out-produce an instamining player holding Space,
+    /// which is the one thing an idle helper must never do — the active rate is what
+    /// every upgrade in the game is bought to raise.
+    #[test]
+    fn the_auto_miner_produces_something_and_less_than_a_swing() {
+        const {
+            assert!(AUTO_MINER_MILLIBLOCKS_PER_TICK > 0);
+            assert!(AUTO_MINER_MILLIBLOCKS_PER_TICK < MILLIBLOCKS_PER_BLOCK);
+        }
     }
 
     /// A Haste level the player bought must be worth something. At `0.0` the

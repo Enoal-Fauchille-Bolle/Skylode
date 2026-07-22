@@ -47,7 +47,12 @@ use crate::world::World;
 /// mine's identity from its [`common_block`](MineKind::common_block) and
 /// [`value_block`](MineKind::value_block) pair. Variants are grouped by world, in
 /// progression order, matching the layout of [`Block`] and [`World`].
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+///
+/// [`Hash`] because the phase-7 game state keys its mines by kind: the twelve are a
+/// fixed, dataless set,
+/// so the derived hash is the discriminant and agrees with the derived [`Eq`] by
+/// construction — the one obligation a manual `Hash` would owe.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MineKind {
     // --- Overworld ---
     /// The starter mine: `Stone` with `Cobblestone`, both yielding Stone.

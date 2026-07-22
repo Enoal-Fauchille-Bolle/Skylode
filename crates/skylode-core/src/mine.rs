@@ -5,7 +5,7 @@
 //! the top of the `MINE_SIZES` table.
 
 use crate::block::Block;
-use crate::enchant::{Enchants, SPATIAL_PROC_ORDER};
+use crate::enchant::{EnchantType, Enchants, SPATIAL_PROC_ORDER};
 use crate::error::CoreError;
 use crate::mine_kind::MineKind;
 use crate::rng::Rng;
@@ -196,6 +196,43 @@ pub struct Mine {
     target: Option<(u8, u8)>,
 }
 
+/// What one [`dig`](Mine::dig) brought down: the block, and the cell it stood in.
+///
+/// The cell is not a convenience for the renderer — it is the `impact` the spatial
+/// enchants centre their shapes on, and [`dig`](Mine::dig) is the only place it can
+/// be observed. See there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Dug {
+    /// The block that fell.
+    pub(crate) block: Block,
+    /// Where it stood, in grid coordinates.
+    pub(crate) cell: (u8, u8),
+}
+
+/// One spatial enchant firing on one swing: which enchant, where it landed, and
+/// what it brought down.
+///
+/// **Two lists, and they are not the same list.** `cells` is the *shape* — every
+/// grid coordinate the blast covered, holes included — while `broken` is what
+/// actually stood there and has to be paid for. They diverge exactly when a shape
+/// overlaps ground the swing has already cleared, which on a half-dug grid is most
+/// of the time, and each has one reader that cannot use the other: the front-end
+/// flashes the shape (a blast the player watches must look like a blast, not like
+/// the four cells that happened to be left), and the tick banks the blocks.
+///
+/// `cells` is already clipped to the grid by
+/// [`blast_cells`](crate::enchant::EnchantType), so a coordinate here always names
+/// a real cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpatialProc {
+    /// Which of the three spatial enchants fired.
+    pub(crate) kind: EnchantType,
+    /// The shape it covered, in grid coordinates.
+    pub(crate) cells: Vec<(u8, u8)>,
+    /// The blocks that were standing in that shape, and so fell.
+    pub(crate) broken: Vec<Block>,
+}
+
 impl Mine {
     /// Creates a fresh, full mine of the given [`MineKind`] at its smallest size.
     ///
@@ -267,6 +304,26 @@ impl Mine {
     /// Returns the richness *dial*: the value cell's weight in the composition.
     pub fn get_richness_setting(&self) -> u32 {
         self.richness_setting
+    }
+
+    /// The share of cells the dial currently draws as the
+    /// [value block](MineKind::value_block), in **percent**.
+    ///
+    /// The dial's *meaning*, where [`get_richness_setting`](Mine::get_richness_setting)
+    /// is only its position. A setting of 3 tells the player nothing on its own —
+    /// what they want to know before spending on the track is how much of the grid
+    /// turns valuable, and that is [`value_weight`], which is private because it is
+    /// the generator's business.
+    ///
+    /// Two readers, both of which would otherwise have to reinvent the curve:
+    /// `organization/UI-EN.md` §5.2 prints this beside the mine, and the auto-miner
+    /// weights its closed-form payout by it — the one place in the game where the
+    /// *expected* composition stands in for a grid nobody walks.
+    ///
+    /// Percent rather than permille because the weights are already out of 100 in
+    /// [`draw_cell`], so this is the number itself and not a conversion.
+    pub fn value_weight_percent(&self) -> u32 {
+        value_weight(self.richness_setting)
     }
 
     /// Moves the richness dial, redrawing the composition of the **standing**
@@ -478,13 +535,12 @@ impl Mine {
     /// cleared cannot pay twice. Nor can a duplicated coordinate: the first `take`
     /// leaves a `None` behind, and the second finds it.
     ///
-    /// **Does not reset the mine, even when the blast empties it.** [`dig`](Mine::dig)
-    /// refills on the break that takes the last cell, because there the break and
-    /// the emptiness are the same event. A blast is not: the impact cell has already
-    /// fallen, other enchants may still be about to fire on the same swing, and a
-    /// refill here would drop a full grid under the ones that have not rolled yet.
-    /// Ordering impact → procs → refill belongs to the phase-7 tick, which sees the
-    /// whole swing; this method deliberately leaves the mine empty for it to find.
+    /// **Does not reset the mine, even when the blast empties it** — and neither
+    /// does [`dig`](Mine::dig), for the same reason: other enchants may still be
+    /// about to fire on the same swing, and a refill here would drop a full grid
+    /// under the ones that have not rolled yet. The whole swing orders itself
+    /// impact → procs → [refill](Mine::refill_if_empty), and every step but the last
+    /// leaves the mine as empty as it found it.
     ///
     /// `pub(crate)`, and for [`take`](Mine::take)'s reason: it is **free**. It
     /// consults no [`break_progress`](Mine::break_ratio) and no mining power, so a
@@ -522,11 +578,19 @@ impl Mine {
     /// swing resolves in at most three blasts — and what stops a lucky Explosive
     /// from cascading through the grid on the balance sheet of one swing.
     ///
+    /// **Returns one [`SpatialProc`] per enchant that fired, not one flat list of
+    /// blocks.** A flat list answers "what did the swing pay?" and nothing else,
+    /// and the front-end needs more than that: `organization/UI-EN.md` §5.9 draws a
+    /// per-enchant flash over *the cells that blast covered*, so an event carrying
+    /// only a count would leave it re-deriving the shape from the enchant level and
+    /// the grid — a second copy of [`blast_cells`](crate::enchant::EnchantType)
+    /// living in the wrong crate. Keeping the procs apart costs nothing here and is
+    /// unrecoverable once merged.
+    ///
     /// **Does not refill the mine**, for the reason [`blast`](Mine::blast) does not:
-    /// the enchants may empty the grid between them, and the refill belongs to the
-    /// phase-7 tick, which sees the whole swing and can order it impact → procs →
-    /// refill. Callers here are handed an empty mine and are expected to deal with
-    /// it.
+    /// the enchants may empty the grid between them, and the refill is the swing's
+    /// last step ([`refill_if_empty`](Mine::refill_if_empty)). Callers here are
+    /// handed an empty mine and are expected to deal with it.
     ///
     /// Takes no [`World`](crate::world::World): the cap is applied when a level is
     /// *bought* ([`Enchants::upgrade`]), so an installed level is already legal, and
@@ -544,9 +608,9 @@ impl Mine {
         impact: (u8, u8),
         enchants: &Enchants,
         rng: &mut Rng,
-    ) -> Vec<Block> {
+    ) -> Vec<SpatialProc> {
         let size = self.get_size();
-        let mut broken = Vec::new();
+        let mut procs = Vec::new();
 
         for kind in SPATIAL_PROC_ORDER {
             let level = enchants.get_level(kind);
@@ -554,11 +618,17 @@ impl Mine {
                 continue;
             }
             if rng.chance_permille(kind.proc_permille(level)) {
-                broken.extend(self.blast(&kind.blast_cells(level, impact, size)));
+                let cells = kind.blast_cells(level, impact, size);
+                let broken = self.blast(&cells);
+                procs.push(SpatialProc {
+                    kind,
+                    cells,
+                    broken,
+                });
             }
         }
 
-        broken
+        procs
     }
 
     /// Applies one tick of mining at `mining_power`, returning the block that
@@ -576,19 +646,25 @@ impl Mine {
     /// tick however far past the threshold the player climbs. That saturation is
     /// what the endgame's other levers exist to answer.
     ///
-    /// Returns the [`Block`], not a drop, because
+    /// Returns a [`Dug`] — the block **and the cell it stood in** — not a drop.
     /// [Fortune](crate::pickaxe::Pickaxe::fortune_multiplier), Excavator and XP are
     /// the caller's to apply: the mine's business is which block stood there, and
     /// [`Block::drops`] is the block's own table, not the outcome of a swing.
     ///
-    /// **The last block to fall takes the batch reset with it**, in the same tick:
-    /// the mine refills whole, the way a SkyMines cube regenerates. Doing it here
-    /// rather than leaving the caller a `reset_if_empty` to remember is what makes
-    /// "a mine is never left empty" an invariant instead of a convention — two
-    /// calls to chain is one call to forget, and the forgotten one strands the run
-    /// on a grid with nothing left to draw a target from. The block that earned the
-    /// reset is still what comes back: the refill happens after the take, so the
-    /// player is paid for the swing that emptied the mine.
+    /// **The cell rides along because there is no other way to learn it.** The
+    /// spatial enchants take an `impact` to centre their shapes on, and a caller
+    /// cannot read [`get_target`](Mine::get_target) after the break — the aim is
+    /// cleared, so the next tick draws a fresh cell — nor before it, since at
+    /// [instamine](Mine::dig) speeds every tick both draws its target and breaks it,
+    /// leaving no moment where the field holds the answer. Returning it is what
+    /// makes the swing composable at all.
+    ///
+    /// **The last block to fall leaves the mine empty, and this method leaves it
+    /// that way.** The batch reset is
+    /// [`refill_if_empty`](Mine::refill_if_empty)'s, called at the end of the swing
+    /// — see there for why the refill cannot happen on the break that earns it. The
+    /// block still comes back either way: the take runs first, so the player is
+    /// paid for the swing that emptied the mine whoever refills it.
     ///
     /// `pub(crate)`, and this one is not about being free — it *does* charge, in
     /// progress. It is about **rate**: nothing in core bounds how often this is
@@ -598,7 +674,7 @@ impl Mine {
     // Dead outside the tests until the phase-7 tick calls it; see `upgrade`'s note
     // in `pickaxe` for why this is an `expect` and not an `allow`.
     #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
-    pub(crate) fn dig(&mut self, mining_power: f32, rng: &mut Rng) -> Option<Block> {
+    pub(crate) fn dig(&mut self, mining_power: f32, rng: &mut Rng) -> Option<Dug> {
         // A power that is not a positive, finite number buys nothing — and must
         // not be added: a `NaN` would poison `break_progress` for the rest of the
         // run, past every reset, since nothing compares to it. `NaN <= 0.0` is
@@ -617,10 +693,45 @@ impl Mine {
         let broken = self.take(x, y);
         self.break_progress = 0.0;
         self.target = None;
-        if self.is_empty() {
-            self.reset(rng);
+        broken.map(|block| Dug {
+            block,
+            cell: (x, y),
+        })
+    }
+
+    /// Refills the grid if the last cell is gone, reporting whether it did.
+    ///
+    /// The **batch reset**, hoisted out of [`dig`](Mine::dig) so that a whole swing
+    /// resolves before the mine comes back. It has to be here rather than there,
+    /// because a swing empties a mine in more ways than a break: an Explosive,
+    /// a Jackhammer or a Nuke can take the last cells, and
+    /// [`resolve_spatial_procs`](Mine::resolve_spatial_procs) may still have
+    /// enchants left to roll after the one that did. A refill fired mid-swing would
+    /// drop a *full* grid under those, and they would blast cells the player never
+    /// mined down to — paying out a grid and a half for one swing.
+    ///
+    /// So the order the swing owner imposes is **impact → procs → refill**, and
+    /// this is its last step. That order costs the arrangement `dig`'s rustdoc used
+    /// to argue for — "two calls to chain is one call to forget" — and the answer to
+    /// the forgetting is no longer visibility but the **return value**: it is
+    /// `#[must_use]`, so a caller who drops the answer is told, and the one caller
+    /// that exists needs it anyway — a batch reset is an announcement the player is
+    /// owed, so the swing has to know whether one happened.
+    ///
+    /// `pub(crate)` for [`reset`](Mine::reset)'s reason, weakened but not gone: this
+    /// one is conditional, so a front-end calling it on a standing grid gets
+    /// nothing. On an *empty* one it is still a free full mine, and emptiness is a
+    /// state a front-end can wait for.
+    // Dead outside the tests until the tick's swing calls it, exactly as `dig` is:
+    // the two are the two ends of the same swing and arrive at a caller together.
+    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 swing"))]
+    #[must_use]
+    pub(crate) fn refill_if_empty(&mut self, rng: &mut Rng) -> bool {
+        if !self.is_empty() {
+            return false;
         }
-        broken
+        self.reset(rng);
+        true
     }
 
     /// Returns the cell [`dig`](Mine::dig) is working on, drawing a new one when
@@ -1604,6 +1715,60 @@ mod tests {
         }
     }
 
+    /// A break reports **where** it happened, and the answer is the cell that was
+    /// aimed at — not the fresh target, and not a hole. This is the whole reason
+    /// `dig` hands back a [`Dug`] rather than a [`Block`]: the spatial enchants
+    /// centre on this coordinate, and nothing else in the API still holds it once
+    /// the swing is over.
+    #[test]
+    fn a_break_reports_the_cell_it_happened_in() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Obsidian, 1, 0, &mut rng);
+        let power = bare(PickaxeTier::Diamond);
+
+        // Chip until it gives, so the aim is established well before the break.
+        let mut aimed = None;
+        let dug = loop {
+            match mine.dig(power, &mut rng) {
+                Some(dug) => break dug,
+                None => aimed = mine.get_target(),
+            }
+        };
+
+        assert_eq!(
+            Some(dug.cell),
+            aimed,
+            "the break named a cell it was not on"
+        );
+        assert_eq!(
+            mine.get(dug.cell.0, dug.cell.1),
+            None,
+            "the reported cell is a hole now, which is what makes it the right one"
+        );
+    }
+
+    /// An instamining swing draws its target and breaks it in the same tick, so the
+    /// aim is never observable from outside — and the cell still has to come back,
+    /// or the endgame's spatial enchants would have nothing to centre on precisely
+    /// where they matter most.
+    #[test]
+    fn an_instamined_break_still_reports_its_cell() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Stone, 1, 0, &mut rng);
+
+        assert_eq!(mine.get_target(), None, "nothing is aimed at yet");
+        let Some(dug) = mine.dig(10_000.0, &mut rng) else {
+            unreachable!("a full grid and an absurd power must break something")
+        };
+
+        assert_eq!(mine.get(dug.cell.0, dug.cell.1), None);
+        let (width, height) = mine.get_size();
+        assert!(
+            dug.cell.0 < width && dug.cell.1 < height,
+            "cell off the grid"
+        );
+    }
+
     /// On break the aim is released, so the next tick draws afresh — "on break, the
     /// next random cell is picked". Leaving it on the hole would spend a tick
     /// re-discovering that nothing is there.
@@ -1756,13 +1921,12 @@ mod tests {
     /// "The mine depletes to 0, then fully and instantly refills" — the SkyMines
     /// cube regeneration, and the one thing that earns the broken blocks back.
     ///
-    /// **The same tick**, not the next one. A mine left standing empty is one
-    /// `dig` can draw no target from, so the emptiness would not be a pause before
-    /// the reward but a hole the run falls into. Doing it inside `dig` is also what
-    /// makes it an invariant rather than a convention: there is no second call for
-    /// a caller to forget.
+    /// `dig` empties the mine and **leaves it empty**: the refill is the swing's,
+    /// not the break's. Digging the last cell and finding a full grid again would
+    /// mean the spatial procs that have not rolled yet get a fresh two hundred
+    /// cells to blast, on the balance sheet of one swing.
     #[test]
-    fn an_emptied_mine_refills_in_the_same_tick_as_its_last_block() {
+    fn a_dig_that_empties_the_mine_leaves_it_for_the_swing_to_refill() {
         let mut rng = rng();
         let mut mine = built(MineKind::Stone, 0, 0, &mut rng);
         let capacity = mine.capacity();
@@ -1776,12 +1940,30 @@ mod tests {
             mine.dig(10_000.0, &mut rng).is_some(),
             "the last block must still drop"
         );
-        assert_eq!(
-            mine.remaining_count(),
-            capacity,
-            "the mine that gave up its last block was not refilled"
+        assert!(mine.is_empty(), "dig refilled a mine it was owed to leave");
+    }
+
+    /// The other half: the refill *does* happen, on the call that closes the swing,
+    /// and a grid with anything still standing is left alone. Both answers matter —
+    /// the first is what keeps `dig` able to draw a target next tick, the second is
+    /// what stops a swing on a half-dug mine from resetting it.
+    #[test]
+    fn a_refill_fires_on_an_empty_grid_and_on_no_other() {
+        let mut rng = rng();
+        let mut mine = built(MineKind::Stone, 0, 0, &mut rng);
+
+        assert!(
+            !mine.refill_if_empty(&mut rng),
+            "a full grid must not be redrawn"
         );
-        assert!(!mine.is_empty(), "a dig left the mine standing empty");
+
+        for _ in 0..mine.capacity() {
+            assert!(mine.dig(10_000.0, &mut rng).is_some());
+        }
+        assert!(mine.is_empty());
+
+        assert!(mine.refill_if_empty(&mut rng), "the refill did not fire");
+        assert_eq!(mine.remaining_count(), mine.capacity());
     }
 
     /// The refill resets the *grid*, not the mine. What the player bought — the
@@ -1797,6 +1979,7 @@ mod tests {
         for _ in 0..mine.capacity() {
             assert!(mine.dig(10_000.0, &mut rng).is_some());
         }
+        assert!(mine.refill_if_empty(&mut rng));
 
         assert_eq!(mine.get_size_level(), level, "the refill resized the mine");
         assert_eq!(mine.get_size(), size);
@@ -1804,11 +1987,11 @@ mod tests {
         assert_eq!(mine.get_richness_level(), 2, "the refill spent the ceiling");
     }
 
-    /// The block handed back on the emptying tick is the one that just fell, not a
-    /// cell of the grid that replaced it. `take` runs before `reset`, and that
-    /// ordering is the whole of it: reversed, the player would be paid for a block
-    /// drawn out of a mine they had not mined — and the one they *had* mined would
-    /// vanish unpaid.
+    /// The block handed back on the emptying tick is the one that just fell, and it
+    /// is still the one after the swing refills. `take` runs before any redraw, and
+    /// that ordering is the whole of it: reversed, the player would be paid for a
+    /// block drawn out of a mine they had not mined — and the one they *had* mined
+    /// would vanish unpaid.
     #[test]
     fn the_last_block_still_drops_before_the_refill() {
         let mut rng = rng();
@@ -1825,10 +2008,11 @@ mod tests {
         };
 
         assert_eq!(
-            mine.dig(10_000.0, &mut rng),
+            mine.dig(10_000.0, &mut rng).map(|dug| dug.block),
             Some(last),
-            "the emptying tick paid out a block from the fresh grid"
+            "the emptying tick paid out a block the player had not mined"
         );
+        assert!(mine.refill_if_empty(&mut rng));
         assert_eq!(mine.remaining_count(), mine.capacity());
     }
 
@@ -1984,9 +2168,14 @@ mod tests {
             let enchants = maxed_enchants();
             let mut broken = 0;
             for swing in 0..20u8 {
+                // Counted in *blocks*, not in procs: a replay that fired the same
+                // enchants over different ground would still be a divergence, and
+                // the proc count alone would not see it.
                 broken += mine
                     .resolve_spatial_procs((swing % 20, swing % 10), &enchants, &mut rng)
-                    .len();
+                    .iter()
+                    .map(|p| p.broken.len())
+                    .sum::<usize>();
             }
             (broken, mine.remaining_count())
         }
@@ -2039,18 +2228,30 @@ mod tests {
         let mut mine = built(MineKind::Iron, MAX_SIZE_LEVEL, 0, &mut rng);
         let enchants = maxed_enchants();
 
-        let counts: Vec<usize> = (0..12u8)
-            .map(|swing| {
-                mine.resolve_spatial_procs((swing % 20, swing % 10), &enchants, &mut rng)
-                    .len()
-            })
+        let swings: Vec<Vec<SpatialProc>> = (0..12u8)
+            .map(|swing| mine.resolve_spatial_procs((swing % 20, swing % 10), &enchants, &mut rng))
             .collect();
 
+        let broken: Vec<usize> = swings
+            .iter()
+            .map(|procs| procs.iter().map(|p| p.broken.len()).sum())
+            .collect();
         // Readable as the enchants themselves: a bare 20 is a Jackhammer clearing
         // one full-width row, 55 is an Explosive and a Jackhammer landing on the
         // same swing, and the smaller counts are shapes falling on ground already
-        // dug. The zeros are the swings where nothing rolled.
-        assert_eq!(counts, vec![20, 0, 0, 20, 0, 0, 55, 0, 13, 13, 0, 0]);
+        // dug. The zeros are the swings where nothing rolled. Unchanged since the
+        // procs were reported one by one, which is the signal the *sequence* did not
+        // move — only its shape on the way out.
+        assert_eq!(broken, vec![20, 0, 0, 20, 0, 0, 55, 0, 13, 13, 0, 0]);
+
+        // And the count of *procs*, which the flat list could not express. Swing 10
+        // is the pair that argues for the split: an enchant fired and broke nothing,
+        // because its shape fell entirely on ground earlier swings had cleared. The
+        // player is owed the flash either way — something did happen — and under the
+        // old return that swing was indistinguishable from one where nothing rolled.
+        let fired: Vec<usize> = swings.iter().map(Vec::len).collect();
+        assert_eq!(fired, vec![1, 0, 0, 1, 0, 0, 2, 0, 1, 1, 1, 0]);
+        assert_eq!(broken[10], 0, "the shape fell on ground already dug");
     }
 
     /// An Explosive fired at a corner is clipped by `blast_cells`, so the blast

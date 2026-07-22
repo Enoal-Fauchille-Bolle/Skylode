@@ -140,6 +140,29 @@ impl Boost {
     pub(crate) fn tick(&mut self) {
         self.remaining_ticks = self.remaining_ticks.saturating_sub(1);
     }
+
+    /// Adds `ticks` to the countdown: firing a charge onto a boost already running.
+    ///
+    /// **Charges stack by extending, and never by replacing.** Every boost in the
+    /// game is identical, so there is no stronger one to swap in — the only thing a
+    /// second charge can buy is more time. Refreshing the timer instead would let a
+    /// player fire a charge with 25 of 30 seconds left and receive 5 seconds for it,
+    /// which is a purchase that loses the buyer something.
+    ///
+    /// **Extending is not the same as refusing, and the difference is whose call it
+    /// is.** A refusal in the rules would make "fire while one runs" unrepresentable
+    /// everywhere, front-end included; extending leaves the *rule* permissive and
+    /// lets the interface put a confirmation in front of it — the same split
+    /// `organization/UI-EN.md` §5.9 draws for the proc flash, where the core hands
+    /// over the data and the wall-clock experience lives outside.
+    ///
+    /// `saturating_add` for [`tick`](Boost::tick)'s reason run the other way: a
+    /// `u32` overflow would wrap a very long stack back to a very short boost, so a
+    /// player who banked charges all run would fire them and get nothing.
+    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
+    pub(crate) fn extend(&mut self, ticks: u32) {
+        self.remaining_ticks = self.remaining_ticks.saturating_add(ticks);
+    }
 }
 
 #[cfg(test)]
@@ -192,5 +215,35 @@ mod tests {
         boost.tick();
         assert_eq!(boost.remaining_ticks(), 0);
         assert_eq!(boost.multiplier(), 1.0);
+    }
+
+    /// A second charge **adds** its time rather than restarting the clock. Under a
+    /// refresh, firing one with most of a boost still running would hand the player
+    /// less than the charge is worth — a purchase that takes something away.
+    #[test]
+    fn a_second_charge_adds_its_time_instead_of_restarting_the_clock() {
+        let mut boost = Boost::new(BOOST_MULTIPLIER, BOOST_DURATION_TICKS);
+        boost.tick();
+
+        boost.extend(BOOST_DURATION_TICKS);
+
+        assert_eq!(boost.remaining_ticks(), 2 * BOOST_DURATION_TICKS - 1);
+        assert_eq!(
+            boost.multiplier(),
+            BOOST_MULTIPLIER,
+            "stacking must buy time, never a stronger multiplier"
+        );
+    }
+
+    /// Extending past `u32::MAX` must stay at `u32::MAX`. Wrapping would turn a
+    /// hoard of charges into a boost shorter than one of them — the release-only
+    /// mirror of the underflow `tick` guards against.
+    #[test]
+    fn extending_past_the_counters_ceiling_stays_at_the_ceiling() {
+        let mut boost = Boost::new(BOOST_MULTIPLIER, u32::MAX - 1);
+
+        boost.extend(BOOST_DURATION_TICKS);
+
+        assert_eq!(boost.remaining_ticks(), u32::MAX);
     }
 }

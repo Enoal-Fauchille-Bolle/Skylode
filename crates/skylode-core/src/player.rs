@@ -19,6 +19,11 @@ use crate::{
 };
 
 /// The player's persistent progression state.
+///
+/// [`Debug`] because the phase-7 game state derives it, and a run that cannot be
+/// printed is a run that cannot be dropped into a failing assertion. Every field is
+/// already `Debug`.
+#[derive(Debug)]
 pub struct Player {
     /// The pickaxe the player currently mines with.
     pickaxe: Pickaxe,
@@ -283,6 +288,36 @@ impl Player {
     /// Returns the player's current prestige count.
     pub fn get_prestige(&self) -> u32 {
         self.prestige
+    }
+
+    /// The inventory, mutably: where a swing's loot and a level-up's bundle land.
+    ///
+    /// `pub(crate)`, unlike its `&self` twin. [`Inventory::add`] is free and
+    /// unbounded, so a public door here would be every material in the game for the
+    /// asking — the argument that closed [`Mine::take`](crate::mine::Mine) and
+    /// [`Boost::new`](crate::boost::Boost). Spending is already public through
+    /// [`economy`](crate::economy), which is where a debit belongs.
+    #[expect(dead_code, reason = "awaiting the phase-7 tick")]
+    pub(crate) fn inventory_mut(&mut self) -> &mut Inventory {
+        &mut self.inventory
+    }
+
+    /// The inventory and the pickaxe, mutably, **in one call**.
+    ///
+    /// Not a convenience: it is the only shape that compiles. Every purchase in
+    /// [`economy`](crate::economy) takes `(&mut Inventory, &mut Pickaxe)`, and two
+    /// separate `&mut self` accessors would be two overlapping borrows of the same
+    /// [`Player`] — the borrow checker rejects the second while the first is live,
+    /// however disjoint the fields behind them happen to be. Returning both from one
+    /// call is how a *method* hands out the field-precise borrows the caller could
+    /// only otherwise take by touching the fields directly, which nothing outside
+    /// this module can do.
+    ///
+    /// The same reason [`draw_cell`](crate::mine) is a free function rather than a
+    /// method: a borrow's granularity is the receiver, not the fields it reaches.
+    #[expect(dead_code, reason = "awaiting the phase-7 tick")]
+    pub(crate) fn inventory_and_pickaxe_mut(&mut self) -> (&mut Inventory, &mut Pickaxe) {
+        (&mut self.inventory, &mut self.pickaxe)
     }
 }
 

@@ -16,6 +16,7 @@
 
 use crate::enchant::EnchantType;
 use crate::material::Item;
+use crate::mine_kind::{MineKind, MineLock};
 use std::fmt;
 
 /// Something the rules would not allow.
@@ -111,6 +112,31 @@ pub enum CoreError {
         /// The highest setting the mine's bought richness level allows.
         ceiling: u32,
     },
+    /// The player asked to enter a mine one of the two axes still closes.
+    ///
+    /// The refusal this module's header has promised since phase 1 and phase 6
+    /// deliberately left unbuilt: the gate is *the mine's*, not the block's, so it
+    /// could not exist before something owned "which mine the player is in".
+    ///
+    /// Carries the [`MineLock`] whole rather than the missing level and tier as two
+    /// fields, because the lock is already the answer — it is the query
+    /// [`Player::mine_lock`](crate::player::Player::mine_lock) returns, and
+    /// re-flattening it here would give the front-end two shapes to render one rule
+    /// from. It is [`Copy`], so [`CoreError`] keeps its own `Copy`.
+    MineLocked {
+        /// The mine that was refused.
+        kind: MineKind,
+        /// What it is still waiting on, on either axis or both.
+        lock: MineLock,
+    },
+    /// A boost was fired from an empty reserve.
+    ///
+    /// Carries no numbers, unlike every other variant here, and the reason is that
+    /// there are none to carry: the reserve is a count and it is zero. The variant
+    /// that would need a field is the one this deliberately is *not* — firing while
+    /// a boost already runs is **allowed**, and stacks (see
+    /// [`Boost::extend`](crate::boost::Boost)).
+    NoBoostCharge,
 }
 
 impl fmt::Display for CoreError {
@@ -144,6 +170,27 @@ impl fmt::Display for CoreError {
                     "richness {requested} is above the bought ceiling of {ceiling}"
                 )
             }
+            // Both axes are named when both are owed, because either one alone
+            // would send the player off to buy something that still leaves the door
+            // shut. The tier prints through `Debug`: every `PickaxeTier` variant is
+            // already the word a player would use for it.
+            Self::MineLocked { kind, lock } => match (lock.missing_level(), lock.missing_tier()) {
+                (Some(level), Some(tier)) => write!(
+                    f,
+                    "the {} mine needs level {level} and a {tier:?} pickaxe",
+                    kind.name()
+                ),
+                (Some(level), None) => {
+                    write!(f, "the {} mine needs level {level}", kind.name())
+                }
+                (None, Some(tier)) => {
+                    write!(f, "the {} mine needs a {tier:?} pickaxe", kind.name())
+                }
+                // Unreachable: `select_mine` only builds this from a lock that is
+                // not open. Answered rather than trapped, per the module's doctrine.
+                (None, None) => write!(f, "the {} mine is locked", kind.name()),
+            },
+            Self::NoBoostCharge => write!(f, "no boost charge to fire"),
         }
     }
 }
