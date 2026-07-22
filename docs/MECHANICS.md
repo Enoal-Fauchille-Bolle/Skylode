@@ -220,6 +220,16 @@ investment would advance both axes at once, and *"neither axis alone carries
 progression"* would quietly stop being true. Fortune is a yield lever, and stays
 one.
 
+**Every block a swing brings down pays, including the cells a blast takes.** That is
+not the door Fortune was just refused through, and the difference is what falls:
+Fortune multiplies the yield of *one* block, while Explosive, Jackhammer and Nuke
+make *more blocks fall*. That is the same kind of gain as breaking faster with
+Efficiency, which nobody expects to leave the level bar alone — an enchant that
+cleared a grid and paid XP for one cell of it would be an ore purchase that *slows*
+the level axis down. It also keeps the `base × (1 + 2w)` identity below true of a
+grid however the procs happened to land, which is what phase 10 balances the twelve
+bases against.
+
 **XP is its own table, not the drop count.** It once was the drop count — one per
 ore cell, nine per dense one — which had a consequence nobody chose: the three
 endgame mines are exactly the three with no dense form, so their cells granted one
