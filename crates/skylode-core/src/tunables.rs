@@ -145,6 +145,59 @@ pub const END_UNLOCK_LEVEL: u32 = 30;
 /// [`END_UNLOCK_LEVEL`] so the last world is actually reachable.
 pub const LEVEL_CAP: u32 = 50;
 
+// --- Level-up rewards (phase 6) ---
+
+/// Raw items a level-up's ore bundle is worth **per level**: the whole budget is
+/// `LEVEL_REWARD_BASE * level`.
+///
+/// **Linear, and emphatically not on the [cost curve](crate::economy).** That curve is
+/// indexed by a *track's step* — 0 to 15 at the very most — and reading it at a mining
+/// level instead would run its exponent to 50: the enchant slope at step 50 is six
+/// million raw, where the dearest single purchase in the game costs 16 527. The reward
+/// would stop being an opening hand and become the economy.
+///
+/// At this value the bundles total ~3 % of everything a run must buy, and the two
+/// erasures compose: against prices the reward falls from 20 % of the first purchase to
+/// 3 % of the last, and against production from a full grid to 8 % of one. That fade is
+/// the intent. Should the reward ever need to be a standing income instead, the fix is
+/// a geometric curve of about 1.11 — not a bigger number here, which only lifts the
+/// early game.
+pub const LEVEL_REWARD_BASE: u32 = 10;
+
+/// How often a level-up hands over a boost charge: every fifth level, ten times in a
+/// run, **including** the two world levels.
+///
+/// A charge is not a running boost — it is held until the player fires it — so it
+/// announces nothing a world unlock could dilute, which is why it ignores the
+/// payout's exclusive rule. It is also what makes crossing several levels at once, on
+/// a lump of offline experience, safe: charges accumulate instead of burning down in a
+/// window nobody is watching.
+///
+/// Must stay strictly above zero, and the failure it guards against is a *quiet* one:
+/// `u32::is_multiple_of(0)` is true only of zero itself, so a cadence of zero does not
+/// crash — it simply stops the charge landing, at every level, forever. A number that
+/// deletes a mechanic without raising anything is exactly what a compile-time
+/// assertion is for.
+pub const LEVEL_REWARD_BOOST_EVERY: u32 = 5;
+
+/// How often a level-up adds an Emerald line: every third level, and never on the two
+/// world levels — Emerald is ore, so it obeys the payout rule the charge escapes.
+///
+/// Emerald earns a rhythm of its own because
+/// [`Fortune`](crate::enchant::EnchantType::Fortune) is the one permanent purchase
+/// whose currency stops being mined once the Overworld is behind the player.
+///
+/// Must stay strictly above zero, for the reason [`LEVEL_REWARD_BOOST_EVERY`] must.
+pub const LEVEL_REWARD_EMERALD_EVERY: u32 = 3;
+
+/// What the Emerald line is worth, in permille of the bundle's budget — and it is paid
+/// **on top of** that budget, not carved out of it.
+///
+/// On top, because the point is that those levels are *visibly better*, not differently
+/// split: a share taken out of the budget would move the same total around and leave
+/// the player unable to tell a third level from any other.
+pub const LEVEL_REWARD_EMERALD_PERMILLE: u32 = 250;
+
 // --- Offline accrual (phase 7) ---
 
 /// The most offline time the auto-miner is ever credited for at once.
@@ -296,6 +349,21 @@ mod tests {
         const {
             assert!(NETHER_UNLOCK_LEVEL < END_UNLOCK_LEVEL);
             assert!(END_UNLOCK_LEVEL <= LEVEL_CAP);
+        }
+    }
+
+    /// The two reward cadences divide the level in
+    /// [`reward_for_level`](crate::reward::reward_for_level). A zero there is not a
+    /// mis-balanced game but a **deleted** one: `is_multiple_of(0)` holds only of zero,
+    /// so every level would silently stop granting its garnish, with nothing raised and
+    /// nothing to notice. The budget is asserted alongside for the same reason — at zero
+    /// every bundle is empty and every line dropped.
+    #[test]
+    fn the_reward_cadences_can_be_divided_by() {
+        const {
+            assert!(LEVEL_REWARD_BASE > 0);
+            assert!(LEVEL_REWARD_BOOST_EVERY > 0);
+            assert!(LEVEL_REWARD_EMERALD_EVERY > 0);
         }
     }
 
