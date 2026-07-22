@@ -226,8 +226,11 @@ impl Block {
     /// (`docs/DECISIONS.md`), so the one regime where the order breaks is the one the
     /// player is meant to spend Redstone on.
     ///
-    /// Provisional; phase 10 balances the twelve bases. Nothing grants XP yet — the
-    /// phase-7 tick is what will read this.
+    /// Read by [`Player::grant_break_experience`](crate::player::Player), which is
+    /// where the "before Fortune" above stops being a convention and becomes a
+    /// signature — it is handed the blocks a swing broke and no pickaxe at all.
+    ///
+    /// Provisional; phase 10 balances the twelve bases.
     pub fn xp_value(self) -> u32 {
         match self {
             Self::Stone => 1,
