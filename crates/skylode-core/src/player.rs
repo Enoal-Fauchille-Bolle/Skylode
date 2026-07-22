@@ -10,6 +10,7 @@
 //! there is no next level to cover, and the bank is emptied to say so.
 
 use crate::{
+    block::Block,
     inventory::Inventory,
     mine_kind::{MineKind, MineLock},
     pickaxe::Pickaxe,
@@ -84,6 +85,15 @@ impl Player {
     /// experience applied is not making a mistake, and the tick loop is expected
     /// to be one.
     ///
+    /// `pub(crate)`, and for the reason [`Mine::take`](crate::mine::Mine) and
+    /// [`Boost::new`](crate::boost::Boost) are: it is **free**. A front-end able
+    /// to call it could hand itself the 122 500 experience the curve asks for and
+    /// stand at [`LEVEL_CAP`] with every world open, in one call. The rules grant
+    /// experience through
+    /// [`grant_break_experience`](Player::grant_break_experience), which is the
+    /// only door that knows *why* experience is arriving — a bare amount is not
+    /// something the core should accept from outside.
+    ///
     /// # The cap
     ///
     /// The climb stops at [`LEVEL_CAP`], and the loop needs no guard of its own
@@ -102,7 +112,7 @@ impl Player {
     /// that this crate refuses rather than traps. Saturating costs nothing here:
     /// any amount large enough to saturate is far past the cap, where the
     /// surplus is discarded anyway.
-    pub fn add_experience(&mut self, amount: u32) -> u32 {
+    pub(crate) fn add_experience(&mut self, amount: u32) -> u32 {
         let level_before = self.level;
         self.experience = self.experience.saturating_add(amount);
         while let Some(needed) = self.experience_to_next_level() {
@@ -116,6 +126,66 @@ impl Player {
             self.experience = 0;
         }
         self.level - level_before
+    }
+
+    /// Grants the experience owed for the blocks one swing broke, and returns
+    /// **how many levels it bought** — [`add_experience`](Player::add_experience)'s
+    /// count, for the same consumer.
+    ///
+    /// **Per block, and before Fortune.** The experience is
+    /// [`Block::xp_value`] — a property of the cell that stood there, not of what
+    /// the player walked away with. That ordering is what holds the two
+    /// progression axes apart: levels open worlds, ore opens pickaxes, and if
+    /// [Fortune](Pickaxe::fortune_multiplier) multiplied experience as well as
+    /// loot, one purchase would advance both and *"neither axis alone carries
+    /// progression"* would quietly stop being true. The same goes for
+    /// [Excavator](crate::enchant::EnchantType), which substitutes a drop and
+    /// leaves the block it came from untouched.
+    ///
+    /// **It takes blocks and nothing else, and that is the enforcement.** There is
+    /// no [`Pickaxe`] parameter here, so Fortune cannot be applied on this path
+    /// even by mistake — the rule is a missing argument rather than a comment a
+    /// caller has to honour. See `docs/MECHANICS.md`.
+    ///
+    /// **Every block that fell pays, including the ones a blast took.** That is
+    /// not the door Fortune was refused through: Fortune multiplies the yield of
+    /// *one* block, while [Explosive, Jackhammer and
+    /// Nuke](crate::mine::Mine::resolve_spatial_procs) make *more blocks fall* —
+    /// the same kind of gain as breaking faster with Efficiency, which nobody
+    /// expects to leave the level bar alone. It also keeps a full grid worth
+    /// `base * (1 + 2w)` for a dial weight `w` whatever procs happened to fire,
+    /// which is the property phase 10 balances the twelve bases against.
+    ///
+    /// **One grant per swing, not one per block.** The phase-7 tick holds the
+    /// impact cell ([`Mine::dig`](crate::mine::Mine)) and the blasted ones in the
+    /// same step, and then owes one
+    /// [reward](crate::reward::reward_for_level) *per level crossed*. A single
+    /// call yields a single count; splitting it would hand the caller two counts
+    /// to add up, and nothing in the types would stop the two from claiming the
+    /// same level.
+    ///
+    /// **A method on [`Player`] rather than a free function**, because phase 8
+    /// puts a permanent per-rank multiplier on experience gain and
+    /// [`prestige`](Player::get_prestige) is already a field here. Anywhere else,
+    /// the rank would have to travel to meet it.
+    ///
+    /// `fold` with `saturating_add` rather than `sum()`: `sum()` panics on
+    /// overflow in a debug build, and this crate's lints refuse a panic where a
+    /// refusal will do. The realistic ceiling is a Nuke over a full grid — 200
+    /// cells at 72 — so the saturation is doctrine rather than necessity, and it
+    /// costs nothing to keep it true after phase 10 moves the bases.
+    ///
+    /// `pub(crate)` for [`add_experience`](Player::add_experience)'s reason: the
+    /// blocks are supplied by the caller, so a front-end holding this could invent
+    /// a swing that broke two hundred End cells.
+    // Dead outside the tests until the phase-7 tick calls it, exactly as
+    // `Mine::dig` — the break this hangs off — is.
+    #[cfg_attr(not(test), expect(dead_code, reason = "awaiting the phase-7 tick"))]
+    pub(crate) fn grant_break_experience(&mut self, broken: &[Block]) -> u32 {
+        let total = broken
+            .iter()
+            .fold(0u32, |total, block| total.saturating_add(block.xp_value()));
+        self.add_experience(total)
     }
 
     /// Returns the experience required to advance from the current level to the
@@ -219,6 +289,7 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enchant::EnchantType;
     use crate::pickaxe::PickaxeTier;
     use crate::tunables::{END_UNLOCK_LEVEL, NETHER_UNLOCK_LEVEL};
     use crate::world::ALL_WORLDS;
@@ -509,5 +580,85 @@ mod tests {
         assert_eq!(piecemeal.level, LEVEL_CAP);
         assert_eq!(piecemeal.level, lump.level);
         assert_eq!(piecemeal.experience, lump.experience);
+    }
+
+    #[test]
+    fn breaking_one_block_grants_exactly_its_xp_value() {
+        let mut player = Player::new();
+        assert_eq!(player.grant_break_experience(&[Block::IronOre]), 0);
+        assert_eq!(player.experience, Block::IronOre.xp_value());
+    }
+
+    /// A swing is the impact cell plus whatever the spatial enchants took with
+    /// it, and every one of them paid for standing there.
+    #[test]
+    fn a_swing_grants_the_sum_of_every_block_it_broke() {
+        let mut player = Player::new();
+        let swing = [Block::IronOre, Block::Stone, Block::Stone, Block::IronBlock];
+        player.grant_break_experience(&swing);
+        assert_eq!(player.experience, 3 + 1 + 1 + 9);
+    }
+
+    /// The settled rule, pinned: the cells a blast takes pay their own way, so
+    /// how the swing is grouped cannot change what a grid is worth. Without this,
+    /// a later refactor could quietly make the experience a swing yields depend
+    /// on which procs fired.
+    #[test]
+    fn a_blast_pays_the_same_as_breaking_its_cells_one_by_one() {
+        let blast = [Block::Endstone, Block::Amethyst, Block::Endstone];
+
+        let mut in_one_swing = Player::new();
+        in_one_swing.grant_break_experience(&blast);
+
+        let mut one_at_a_time = Player::new();
+        for block in blast {
+            one_at_a_time.grant_break_experience(&[block]);
+        }
+
+        assert_eq!(in_one_swing.level, one_at_a_time.level);
+        assert_eq!(in_one_swing.experience, one_at_a_time.experience);
+    }
+
+    /// A tick where nothing broke still calls this, so an empty swing has to be
+    /// a no-op rather than a special case the tick loop remembers to skip.
+    #[test]
+    fn breaking_nothing_grants_nothing() {
+        let mut player = Player::new();
+        player.add_experience(40);
+        assert_eq!(player.grant_break_experience(&[]), 0);
+        assert_eq!(player.experience, 40);
+        assert_eq!(player.level, 1);
+    }
+
+    /// The rule the whole two-axis gate rests on: experience is what the *block*
+    /// was worth, never what the player walked away with. Fortune is pushed to
+    /// its ceiling and the grant must not move — if it ever does, one purchase
+    /// has started advancing both progression axes at once.
+    #[test]
+    fn fortune_does_not_touch_the_experience_a_block_grants() {
+        let mut player = Player::new();
+        while player
+            .pickaxe
+            .upgrade_enchant(EnchantType::Fortune, World::End)
+            .is_ok()
+        {}
+        assert!(
+            player.pickaxe.fortune_multiplier() > 1,
+            "the test proves nothing unless Fortune is actually installed"
+        );
+
+        player.grant_break_experience(&[Block::DiamondOre]);
+        assert_eq!(player.experience, Block::DiamondOre.xp_value());
+    }
+
+    /// The hook the phase-7 tick needs: a single swing can cross a level, and the
+    /// count it reports is what the per-level rewards will be paid against.
+    #[test]
+    fn a_swing_can_cross_a_level_and_says_so() {
+        let mut player = Player::new();
+        // Level 1 costs 100 XP; a full Nuke of Amethyst is worth 72 apiece.
+        assert_eq!(player.grant_break_experience(&[Block::Amethyst; 2]), 1);
+        assert_eq!(player.level, 2);
+        assert_eq!(player.experience, 2 * 72 - 100);
     }
 }
