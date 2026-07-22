@@ -1802,6 +1802,54 @@ mod tests {
         );
     }
 
+    /// A maxed track refuses **before** it debits, and the stock proves it: the
+    /// inventory here holds exactly what the next step would cost, so a purchase
+    /// that checked the purse first would succeed and hand the player a level the
+    /// size table cannot render. The untouched inventory is the real assertion —
+    /// the error kind alone would not catch a debit followed by a refusal.
+    #[test]
+    fn buying_size_past_the_top_of_the_table_refuses_and_debits_nothing() {
+        let mut mine = Mine::new(MineKind::Iron, &mut rng());
+        while !mine.is_size_maxed() {
+            assert!(mine.upgrade_size_level(&mut rng()).is_ok());
+        }
+        let stock = stocked_for(&mine_size_cost(MineKind::Iron, MAX_SIZE_LEVEL), 1);
+        let mut inventory = stock.clone();
+
+        assert_eq!(
+            buy_mine_size(&mut inventory, &mut mine, &mut rng()),
+            Err(CoreError::MineSizeMaxed {
+                level: MAX_SIZE_LEVEL,
+            })
+        );
+        assert_eq!(inventory, stock, "a refusal must not debit");
+        assert_eq!(mine.get_size_level(), MAX_SIZE_LEVEL);
+    }
+
+    /// The richness ceiling's half of the same rule. Past the top rung the weight
+    /// formula clamps, so the level sold would buy not one extra value cell.
+    #[test]
+    fn buying_richness_past_the_top_rung_refuses_and_debits_nothing() {
+        let mut mine = Mine::new(MineKind::Amethyst, &mut rng());
+        while !mine.is_richness_maxed() {
+            assert!(mine.upgrade_richness_level().is_ok());
+        }
+        let stock = stocked_for(
+            &mine_richness_cost(MineKind::Amethyst, MAX_RICHNESS_LEVEL),
+            1,
+        );
+        let mut inventory = stock.clone();
+
+        assert_eq!(
+            buy_mine_richness(&mut inventory, &mut mine),
+            Err(CoreError::RichnessLevelMaxed {
+                level: MAX_RICHNESS_LEVEL,
+            })
+        );
+        assert_eq!(inventory, stock, "a refusal must not debit");
+        assert_eq!(mine.get_richness_level(), MAX_RICHNESS_LEVEL);
+    }
+
     /// The reason Efficiency and the tier jump are separate purchases: buy-max on
     /// Efficiency stops at the cap instead of rolling on into a tier jump.
     #[test]

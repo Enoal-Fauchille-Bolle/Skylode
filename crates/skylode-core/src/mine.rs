@@ -1123,6 +1123,33 @@ mod tests {
         assert_eq!(mine.get_richness_setting(), 0);
     }
 
+    /// The ceiling ladder is walkable to its top rung and stops exactly there. The
+    /// refusal is what keeps a paid purchase honest, the same way the size track's
+    /// is: past [`MAX_RICHNESS_LEVEL`] the weight formula clamps, so a player sold
+    /// level 10 would receive not one extra value cell. `is_richness_maxed` must
+    /// agree with the refusal at every step, since the UI greys the button off the
+    /// former while the purchase is refused by the latter.
+    #[test]
+    fn the_richness_ceiling_ends_at_its_top_rung_and_refuses_past_it() {
+        let mut mine = Mine::new(MineKind::Stone, &mut rng());
+        while !mine.is_richness_maxed() {
+            assert!(mine.upgrade_richness_level().is_ok());
+        }
+        assert_eq!(mine.get_richness_level(), MAX_RICHNESS_LEVEL);
+
+        assert_eq!(
+            mine.upgrade_richness_level(),
+            Err(CoreError::RichnessLevelMaxed {
+                level: MAX_RICHNESS_LEVEL,
+            })
+        );
+        assert_eq!(
+            mine.get_richness_level(),
+            MAX_RICHNESS_LEVEL,
+            "a refused upgrade must not creep the ceiling past the table"
+        );
+    }
+
     /// The formula's shape: a non-zero floor (richness 0 is still mixed), a linear
     /// climb, and a clamp past the top rung — so the value weight never reaches
     /// 100%, which keeps the common weight (`100 - value`) strictly positive and

@@ -227,6 +227,7 @@ impl std::error::Error for CoreError {}
 mod tests {
     use super::*;
     use crate::material::Material;
+    use crate::pickaxe::PickaxeTier;
 
     /// The message names the denomination, because "need 6 Iron, have 650" would
     /// read as nonsense to a player holding 650 raw Iron. It is the *Compressed*
@@ -306,5 +307,22 @@ mod tests {
             needed: 30,
         };
         assert_eq!(err.to_string(), "prestige needs level 30, you are level 23");
+    }
+
+    /// The arm no gameplay path reaches: an *open* lock inside a `MineLocked`.
+    /// [`GameState::select_mine`](crate::game::GameState::select_mine) only builds
+    /// the error from a lock that refused, so both axes being satisfied is a
+    /// contradiction — but [`MineLock`] is plain data a phase-9 save could hand
+    /// back, and the module's doctrine is to *answer* a nonsensical error rather
+    /// than trap on it. A test can build the state the game cannot, which is the
+    /// only way to check the sentence it produces is a sentence at all.
+    #[test]
+    fn a_locked_mine_that_is_not_actually_locked_still_says_something() {
+        let kind = MineKind::Stone;
+        let lock = kind.lock(u32::MAX, PickaxeTier::Netherite);
+        assert!(lock.is_open(), "both axes are satisfied here");
+
+        let err = CoreError::MineLocked { kind, lock };
+        assert_eq!(err.to_string(), "the Stone mine is locked");
     }
 }
