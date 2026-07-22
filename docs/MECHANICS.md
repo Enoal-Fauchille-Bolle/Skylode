@@ -838,9 +838,28 @@ source.
   mine sizes, **mine richness**, enchant levels, and the mining level (XP) all reset
   to the start. Richness goes with size because it is the second track of the same
   object, funded in the same currency: keeping it would make the first prestige
-  nearly painless on mines, and re-walking the progression is the point.
+  nearly painless on mines, and re-walking the progression is the point. Three more
+  go with them, for the same reason rather than as an afterthought: the **boost
+  reserve** (ore already converted, plus the charges the erased levels granted), the
+  **auto-miner's carries**, and the **mines left behind** — a run that kept its
+  visited mines would hold a richness-9 End grid its level-1 player is no longer
+  allowed to enter.
 - **Persists:** the prestige rank and its permanent global multiplier (ore yield,
-  mining speed, and XP gain). The multiplier scale per rank is a tunable.
+  mining speed, and XP gain). The multiplier scale per rank is a tunable. The
+  **seeded generator persists too**, and it is the one thing that must: its position
+  is run state, so rewinding it with the rest would deal the player back an identical
+  second run — same grids, same procs — which is the opposite of what re-walking the
+  progression is for.
+- **Shape of the multiplier:** additive per rank (`1 + k × rank`), quoted and applied
+  as an **integer in permille**, never a float. Every yield in the game is a whole
+  number, so a `×1.2` applied to a one-ore drop truncates to `×1.0` and the first rank
+  is worth nothing through exactly the stretch it exists to shorten. Two rules make it
+  survive: the multiplier is applied **once per swing over the swing's total**, not
+  per block; and the **fraction is carried** to the next swing rather than dropped.
+  The auto-miner is the exception that proves it — there the multiplier lands once on
+  the *rate*, before the microblock split, where the carries that already exist absorb
+  the fraction and the online and offline paths stay one multiplication rather than
+  two.
 - **Gate role:** the prestige rank may also gate late content, replacing paid
   ranks. Whether prestige is a pure endless loop or leads to a defined win
   condition is an open question (see [ROADMAP.md](ROADMAP.md)).

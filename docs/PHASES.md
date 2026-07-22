@@ -174,11 +174,27 @@ wall clock: the caller injects `now`, or core stops being deterministic (see
 
 ## Phase 8 - Prestige
 
-Add the `prestige` module: the condition (reach the End, accumulate enough Amethyst),
-the deep reset (pickaxe, Efficiency, Fortune, enchants, inventory, mine sizes, mine
-richness, XP), and the surviving rank with its permanent global multiplier on ore
-yield, mining speed and XP gain. `Player::prestige` is a `u32` that nothing yet
-increments (see [MECHANICS.md](MECHANICS.md#prestige)).
+Close the loop. Add the `prestige` module — the price of a rank and the multiplier it
+grants, as pure functions — and put the reset itself on `GameState`, which is the only
+thing that owns the nine fields it clears. The condition is the two halves
+[MECHANICS.md](MECHANICS.md#prestige) names, checked in that order: the End's unlock
+level first, then the Amethyst, through the same two-pass till every purchase in the
+game pays through. The level goes first because Amethyst only drops in the End, so
+quoting a price to a player thirty levels short of the ore answers the wrong question.
+
+The deep reset takes the pickaxe, Efficiency, Fortune, every enchant, the inventory,
+every mine's size and richness, and the mining level — plus three the design's list
+does not name and that would otherwise survive by omission: the boost reserve, the
+auto-miner's carries, and the mines left behind. It does **not** take the RNG, whose
+*position* is run state — rewinding it would deal the player back an identical run —
+nor `last_seen`, since prestiging is neither a save nor an absence.
+
+The multiplier is an **integer in permille, applied once per swing, with the fraction
+carried**. Applied per block it would truncate to nothing on a one-ore drop, which is
+exactly the player who has just prestiged; the auto-miner instead takes it once on its
+*rate*, where the microblock carries already there absorb the fraction and the online
+and offline paths stay one multiplication. `Player::prestige` is finally a `u32` that
+something increments.
 
 ## Phase 9 - Save (serialisation half only)
 
