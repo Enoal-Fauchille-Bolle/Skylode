@@ -28,6 +28,8 @@
 //! - [`pickaxe`]: the player's tool, its tier and mining power.
 //! - [`enchant`]: enchantments that modify a pickaxe's behaviour.
 //! - [`player`]: the player's progression state (level, experience, pickaxe).
+//! - [`prestige`]: the price of a rank and the permanent multiplier it grants —
+//!   the endgame reset's arithmetic, without the reset itself.
 //! - [`reward`]: what reaching a level hands over — a world, or a bundle of ore,
 //!   plus the boost charges that ride beside it.
 //! - [`rng`]: the seeded, replayable source of every draw the rules make.
@@ -46,6 +48,7 @@ pub mod mine;
 pub mod mine_kind;
 pub mod pickaxe;
 pub mod player;
+pub mod prestige;
 pub mod reward;
 pub mod rng;
 pub mod tunables;

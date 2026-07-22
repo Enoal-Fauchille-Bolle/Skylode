@@ -390,6 +390,59 @@ pub const BOOST_DURATION_TICKS: u32 = 600;
 /// Provisional.
 pub const BOOST_COST: u32 = 3 * COST_BASE;
 
+// --- Prestige (phase 8) ---
+
+/// What one prestige rank adds to the permanent global multiplier, in permille.
+///
+/// **Additive, not compounding**, and that is the whole content of the number: at
+/// `200` a rank-`n` player multiplies by `1 + 0.2 n`, so rank II is `×1.40` — the
+/// figure `docs/UI.md` §6.8 quotes beside `×1.60` for rank III. A geometric rank
+/// (`1.2ⁿ`) would give `×1.44` there and would make a rank-10 player six times a
+/// rank-5 one, which is a balance problem phase 10 would inherit rather than solve.
+///
+/// Permille, and an integer, because the multiplier has to survive being applied to
+/// **integer** yields. A drop of one ore times `1.2` truncates to one, forever; the
+/// same product in permille leaves a remainder the run carries to the next swing (see
+/// [`prestige::multiplier_permille`](crate::prestige::multiplier_permille)). The
+/// mining-speed path is the only one that reads it as an `f32`, because the power it
+/// multiplies is already one.
+///
+/// Provisional; phase 10 balance sets the final value. Must stay above zero, or a
+/// rank would cost Amethyst and grant nothing.
+pub const PRESTIGE_MULT_PER_RANK_PERMILLE: u32 = 200;
+
+/// Base term of the **prestige** cost curve: what the *first* rank costs, in raw
+/// Amethyst.
+///
+/// Read off `docs/UI.md` §6.8 together with [`PRESTIGE_COST_GROWTH`]: the mock quotes
+/// `512 Amethyst` for the rank II → III step, and `128 × 2²` is exactly that. Adopting
+/// both numbers is what makes the mock *true* rather than illustrative.
+///
+/// Quoted raw and split into denominations by
+/// [`Cost::single`](crate::economy::Cost::single) like every other price, so 512 shows
+/// as `5 Compressed Amethyst + 12 Amethyst` — the game's one rule about how a price is
+/// paid, applied to the one price that is not an upgrade.
+///
+/// Provisional; phase 10 balance sets the final value. Must stay above zero.
+pub const PRESTIGE_COST_BASE: u32 = 128;
+
+/// Growth factor of the **prestige** cost curve — the steepest in the game, and the
+/// only one that is a round number.
+///
+/// **Steeper than the size track** ([`SIZE_COST_GROWTH`]) because it is the only
+/// track priced against a *whole run* rather than against one upgrade's production
+/// gain: each rank is bought with the Amethyst of a fresh climb to the End, and that
+/// climb is itself faster by the multiplier the previous rank granted. A slope below
+/// the pace at which the run accelerates would make each prestige cheaper than the
+/// last in real time.
+///
+/// A doubling is legible in a way `1.55` is not — the player can hold "the next one
+/// costs twice this one" in their head — and the prestige price is the one number in
+/// the game shown to them at a decision point they cannot undo.
+///
+/// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`.
+pub const PRESTIGE_COST_GROWTH: f64 = 2.0;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +506,27 @@ mod tests {
             assert!(SIZE_COST_GROWTH > UPGRADE_COST_GROWTH);
             assert!(SIZE_COST_GROWTH > ENCHANT_COST_GROWTH);
         }
+    }
+
+    /// Prestige is the one track priced against a whole run rather than against one
+    /// upgrade's production gain, and it has to out-climb the run's own acceleration
+    /// — every rank granted makes the next climb to the End faster. A slope at or
+    /// below the size track's would make each prestige cheaper than the last in real
+    /// time, which is the endless free loop the cost exists to prevent.
+    #[test]
+    fn the_prestige_track_out_climbs_every_upgrade_track() {
+        const {
+            assert!(PRESTIGE_COST_BASE > 0);
+            assert!(PRESTIGE_COST_GROWTH > SIZE_COST_GROWTH);
+        }
+    }
+
+    /// A rank must be worth its Amethyst. At zero the multiplier is `×1.0` at every
+    /// rank, so prestige becomes a pure deletion of the run — and it would still be
+    /// *offered*, with a preview quoting `×1.00 → ×1.00`.
+    #[test]
+    fn a_prestige_rank_is_always_worth_buying() {
+        const { assert!(PRESTIGE_MULT_PER_RANK_PERMILLE > 0) }
     }
 
     /// The enchant ladder trades slope for base, and both halves of that trade have
