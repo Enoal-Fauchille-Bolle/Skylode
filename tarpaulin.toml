@@ -1,0 +1,50 @@
+# Coverage configuration, applied to every `cargo tarpaulin` invocation.
+#
+# It lives here rather than in the pre-commit hook so a hand-run
+# `cargo tarpaulin -p skylode-core --out Stdout` reports the same number the hook
+# gates on. Two coverage figures for one repository is a bug report waiting to be
+# filed against nothing.
+
+[default]
+
+# The LLVM source-based backend, not the default ptrace one.
+#
+# ptrace measures by setting a breakpoint at each line's address and watching the
+# process; the addresses come from DWARF, so a statement the optimizer folds into
+# its neighbour has none and is reported uncovered even when it ran. A `break`
+# inside a loop is the case that bit us. The LLVM backend counts instead of
+# watches — the counters are compiled in — so folded statements still register.
+#
+# It also puts ~10% more lines in the denominator (skylode-core: 1134 vs 1035),
+# because ptrace silently drops the lines it cannot address. A smaller
+# denominator makes a percentage easier to reach and less worth reaching.
+#
+# What it keeps, and the reason tarpaulin is here at all rather than
+# cargo-llvm-cov: tarpaulin's own source analysis still excludes `#[cfg(test)]`
+# modules. The tests are inline in this workspace, so a tool that counts them
+# would put ~4300 test lines in the denominator and drown the production ones.
+# `#[coverage(off)]`, the only way to opt out under cargo-llvm-cov, is still
+# nightly-only as of rustc 1.95.
+engine = "Llvm"
+
+# Do not wipe the build directory before measuring.
+#
+# The clean is tarpaulin's default and costs a full rebuild of the dependency
+# tree on *every* run, back-to-back ones included: ~10s per commit here, and
+# several times that on a modest CPU. It guards against cargo reusing an artifact
+# built without the coverage flags.
+#
+# `target-dir` below is what makes skipping it safe: with a directory of its own,
+# nothing else writes artifacts tarpaulin could pick up stale. If a figure ever
+# looks impossible, re-run once with `--force-clean` — a number that changes is a
+# cache artifact, a number that holds is a real gap.
+skip-clean = true
+
+# A build directory tarpaulin does not share.
+#
+# Cargo's fingerprint includes RUSTFLAGS, and tarpaulin adds its own
+# (`--cfg=tarpaulin -Clink-dead-code`, among others). Pointed at the default
+# `target/debug`, it and the hook's earlier `check` / `clippy` / `doc` steps
+# evict each other's artifacts, so every step pays a full rebuild. Separated,
+# the second run of either is free.
+target-dir = "target/tarpaulin-llvm"

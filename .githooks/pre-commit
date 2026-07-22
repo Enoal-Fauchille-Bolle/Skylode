@@ -56,6 +56,11 @@ if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-priva
 fi
 
 # Run cargo test & coverage
+#
+# The backend, the build directory and the skipped clean stage live in
+# `tarpaulin.toml`, not here, so that a hand-run `cargo tarpaulin` measures the
+# same thing this gate does. Only the gate itself is a hook policy: a manual run
+# should report a low figure, not fail on it.
 printf "${WHITE_BOLD}[5/5] Running cargo tarpaulin...${RESET}\n"
 if ! cargo tarpaulin --fail-under 70 --out Stdout; then
     printf "${RED_BOLD}cargo tarpaulin failed. Please fix the failing tests or improve coverage.${RESET}\n"
