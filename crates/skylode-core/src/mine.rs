@@ -9,6 +9,7 @@ use crate::enchant::{EnchantType, Enchants, SPATIAL_PROC_ORDER};
 use crate::error::CoreError;
 use crate::mine_kind::MineKind;
 use crate::rng::Rng;
+use serde::{Deserialize, Serialize};
 use std::num::NonZeroU32;
 
 /// Dimensions `(width, height)` for each of the 10 mine size levels.
@@ -148,7 +149,7 @@ fn draw_cell(kind: MineKind, value_w: u32, rng: &mut Rng) -> Block {
 /// needed `PartialEq`, and no other type embeds a `Mine` to inherit the bound.
 /// [`dig`](Mine::dig) refusing a `NaN` mining power is what keeps the reflexivity
 /// `Eq` would have promised true in practice.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mine {
     /// Which of the twelve canonical mines this is; the source of its block pool.
     kind: MineKind,
@@ -822,9 +823,12 @@ impl Mine {
     ///
     /// [`upgrade_size_level`](Mine::upgrade_size_level) is the only thing that
     /// writes the field, and it stops at [`MAX_SIZE_LEVEL`], so a live mine cannot
-    /// reach the clamp. It stays because the field is a plain `u32` that phase 9
-    /// will read back out of a save file: a hand-edited or corrupted save must
-    /// give the player a 20x10 mine, not a panicking core.
+    /// reach the clamp. A loaded one cannot either, since
+    /// [`validate`](Mine::validate) refuses a save whose size level is past the
+    /// table. The clamp stays anyway, because it is what makes this function
+    /// *total*: it is called from inside `validate` itself, and an accessor that
+    /// panicked on the very state the validator was built to catch would take the
+    /// process down before the refusal could be returned.
     pub fn get_size(&self) -> (u8, u8) {
         let index = self.size_level as usize;
         if index < MINE_SIZES.len() {
@@ -839,6 +843,60 @@ impl Mine {
     /// grey out the buy button before it is pressed.
     pub fn is_size_maxed(&self) -> bool {
         self.size_level >= MAX_SIZE_LEVEL
+    }
+
+    /// Whether this mine could have been produced by the rules.
+    ///
+    /// **Why a mine needs one at all.** Every other path into these fields goes
+    /// through a method that checks — the dial refuses to pass its ceiling,
+    /// `upgrade_size_level` stops at [`MAX_SIZE_LEVEL`], `reset` builds the grid
+    /// *from* the size. Deserialisation goes through none of them: serde writes
+    /// private fields directly, so a save file can describe a mine no play could
+    /// reach. This is where that door is shut.
+    ///
+    /// It lives on [`Mine`] rather than in `save` because the invariants are the
+    /// mine's own; the save module composes, and would otherwise need every field
+    /// of every type made visible to it.
+    ///
+    /// The message is a `&'static str` and not a [`CoreError`]. That enum answers
+    /// *the player* — "you are 40 Iron short", "buy 4 more richness levels" — and
+    /// a broken file gives them nothing to act on but the recovery screen, which
+    /// says the same thing whatever the field was. The string is for the bug
+    /// report.
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if self.size_level > MAX_SIZE_LEVEL {
+            return Err("a mine's size level is past the largest size there is");
+        }
+        if self.richness_level > MAX_RICHNESS_LEVEL {
+            return Err("a mine's richness level is past the highest one for sale");
+        }
+        if self.richness_setting > self.richness_level {
+            return Err("a mine's richness dial is above the ceiling bought for it");
+        }
+
+        // The grid *is* the composition and the hole mask at once, so a grid of the
+        // wrong shape is not a cosmetic mismatch: `dig` draws a target from the
+        // cells it finds, and the size the level promises is what every buyer of an
+        // enlargement paid for.
+        let (width, height) = self.get_size();
+        let shaped = self.grid.len() == usize::from(height)
+            && self.grid.iter().all(|row| row.len() == usize::from(width));
+        if !shaped {
+            return Err("a mine's grid is not the size its level says it is");
+        }
+
+        // A `NaN` here would survive every reset — `NaN >= threshold` is false
+        // forever — and quietly turn the mine into one that can never be dug.
+        if !self.break_progress.is_finite() || self.break_progress < 0.0 {
+            return Err("a mine's break progress is not a number of ticks");
+        }
+
+        match self.target {
+            Some((x, y)) if self.get(x, y).is_none() => {
+                Err("a mine is aimed at a cell that is not standing")
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Increases the mine's size level by 1 and resets the grid to the new size,
@@ -2295,5 +2353,68 @@ mod tests {
             mine.get(4, 0).is_some(),
             "the blast reached past its radius"
         );
+    }
+
+    /// A mine the rules built is valid: the validator must not be a second, stricter
+    /// game that refuses states the first one produces.
+    #[test]
+    fn a_mine_the_rules_built_is_valid() {
+        let mut mine = Mine::new(MineKind::Iron, &mut rng());
+        assert!(mine.validate().is_ok());
+
+        mine.dig(1000.0, &mut rng());
+        assert!(mine.validate().is_ok(), "a half-dug mine is a normal mine");
+    }
+
+    /// The dial is the one field the player moves freely, and its ceiling is the
+    /// only thing bounding it. A save that lifted the dial above the level bought
+    /// for it would hand out a richness nobody paid for, permanently.
+    #[test]
+    fn a_dial_above_its_ceiling_is_refused() {
+        let mut mine = Mine::new(MineKind::Iron, &mut rng());
+        mine.richness_setting = 3;
+
+        assert!(mine.validate().is_err());
+    }
+
+    /// `size_level` and `grid` are two statements of the same fact, and only the
+    /// grid is real. A mismatch would leave a mine drawing targets from cells the
+    /// renderer does not draw, or refusing to draw ones the player can dig.
+    #[test]
+    fn a_grid_that_is_not_the_size_it_claims_is_refused() {
+        let mut mine = Mine::new(MineKind::Iron, &mut rng());
+        mine.size_level = 3;
+
+        assert!(mine.validate().is_err());
+    }
+
+    /// Progress is measured in ticks of mining power, and there is no such thing as
+    /// a negative one. A `NaN` is the worse case and is unreachable through JSON,
+    /// which cannot spell it — the check stays because the field is an `f32` and
+    /// this is the only place that reads one back from outside.
+    #[test]
+    fn a_break_progress_that_is_not_a_count_of_ticks_is_refused() {
+        let mut mine = Mine::new(MineKind::Iron, &mut rng());
+        mine.break_progress = -1.0;
+        assert!(mine.validate().is_err());
+
+        mine.break_progress = f32::NAN;
+        assert!(mine.validate().is_err());
+    }
+
+    /// The aim is held across ticks, so an aim at a hole is not a stale value that
+    /// the next tick clears: `acquire_target` keeps a target it believes in, and
+    /// `dig` would pour progress into a cell that is not there.
+    #[test]
+    fn an_aim_at_a_cell_that_is_not_standing_is_refused() {
+        let mut mine = Mine::new(MineKind::Iron, &mut rng());
+        mine.target = Some((0, 0));
+        assert!(
+            mine.validate().is_ok(),
+            "the fixture must start with a full grid"
+        );
+
+        mine.take(0, 0);
+        assert!(mine.validate().is_err());
     }
 }

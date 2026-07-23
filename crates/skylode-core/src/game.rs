@@ -19,7 +19,7 @@
 //! contract, and it is the one invariant in this module the compiler cannot hold
 //! on its own — `a_state_reads_no_clock_of_its_own` is what does.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use crate::block::Block;
@@ -31,7 +31,7 @@ use crate::material::Item;
 use crate::mine::{Dug, Mine};
 use crate::mine_kind::MineKind;
 use crate::player::Player;
-use crate::prestige;
+use crate::prestige::{self, PERMILLE};
 use crate::reward::{self, LevelReward, Payout};
 use crate::rng::Rng;
 use crate::tunables::{
@@ -40,6 +40,7 @@ use crate::tunables::{
     TICKS_PER_SECOND,
 };
 use crate::world::World;
+use serde::{Deserialize, Serialize};
 
 /// Everything a saved run consists of.
 ///
@@ -48,7 +49,7 @@ use crate::world::World;
 ///
 /// - **The selected mine is not a key into the map.** It is a [`Mine`], owned
 ///   directly, and the map holds only the mines the player has *left*. A
-///   `HashMap<MineKind, Mine>` plus a `selected: MineKind` makes "the mine in front
+///   `BTreeMap<MineKind, Mine>` plus a `selected: MineKind` makes "the mine in front
 ///   of the player" a lookup that can miss, so every reader — the renderer most of
 ///   all — would carry an [`Option`] for a value that is never absent, and the
 ///   crate's lints leave no `unwrap` to dismiss it with. Splitting the two makes
@@ -63,7 +64,7 @@ use crate::world::World;
 /// mine has no state worth persisting — its grid is a function of its kind and the
 /// generator — and building all twelve up front would spend twelve grid draws on
 /// mines a run may never open, moving the generator for nothing.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GameState {
     /// Level, experience, pickaxe, inventory and prestige rank.
     player: Player,
@@ -74,7 +75,14 @@ pub struct GameState {
     /// Holes included: leaving a mine and coming back must find it exactly as it
     /// was left, or switching screens would hand out a free batch reset
     /// (`MECHANICS.md`, *mines persist*).
-    visited: HashMap<MineKind, Mine>,
+    ///
+    /// Ordered rather than hashed, like the inventory and enchant maps it is saved
+    /// beside ([`Inventory`](crate::inventory::Inventory)): a save is
+    /// written in this map's iteration order, and a
+    /// [`HashMap`](std::collections::HashMap)'s is unspecified — the same run would
+    /// write a different file every time. Twelve entries at the very most, so the
+    /// ordering is free.
+    visited: BTreeMap<MineKind, Mine>,
     /// Boost charges bought or granted and not yet fired.
     ///
     /// A plain count, not a collection: every boost in the game is identical, so a
@@ -112,10 +120,10 @@ pub struct GameState {
     /// the remainder is kept and paid on a later swing (see
     /// [`prestige::apply_with_carry`]).
     ///
-    /// **A [`Vec`] and not a [`HashMap`]**, unlike the mines above. The key here is an
+    /// **A [`Vec`] and not a map**, unlike the mines above. The key here is an
     /// [`Item`] and the population is tiny — a swing produces the mine's common block,
     /// its value block, and at most one Excavator substitution — so a linear scan over
-    /// three entries beats hashing, and it is the shape
+    /// three entries beats any tree or table, and it is the shape
     /// [`credit_auto_mining`](GameState::credit_auto_mining) already builds and
     /// searches for the same reason. It is keyed by [`Item`] rather than by
     /// [`Material`](crate::material::Material) so a Compressed substitution carries its
@@ -130,7 +138,49 @@ pub struct GameState {
     rng: Rng,
     /// When this run was last written, for the offline accrual phase 7 credits on
     /// resume. Supplied by the caller — see the module header.
+    #[serde(with = "epoch_seconds")]
     last_seen: SystemTime,
+}
+
+/// How [`last_seen`](GameState) crosses into a save: whole seconds since the Unix
+/// epoch.
+///
+/// **Not [`SystemTime`]'s own serde impl**, for two reasons that both matter here.
+/// It writes a two-field object where one number says everything the accrual reads
+/// — nothing in the game measures an absence to the nanosecond — and it *fails*
+/// outright for an instant before 1970, which would make a machine with a wrong
+/// clock unable to write its save at all. Losing a run to a bad clock is the one
+/// outcome a save system must not have.
+///
+/// So a clock before the epoch clamps to 0 on the way out, which is the reading
+/// [`resume`](GameState::resume) already gives a backward clock: clamp, credit
+/// nothing, punish nobody. On the way back in, a number too large to be an instant
+/// is refused rather than trapped — the crate's lints leave no `unwrap` for it, and
+/// a load that stops beats a process that dies.
+mod epoch_seconds {
+    use super::{Duration, SystemTime};
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::UNIX_EPOCH;
+
+    pub(super) fn serialize<S: Serializer>(
+        time: &SystemTime,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let seconds = time
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since_epoch| since_epoch.as_secs());
+        serializer.serialize_u64(seconds)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<SystemTime, D::Error> {
+        let seconds = u64::deserialize(deserializer)?;
+        UNIX_EPOCH
+            .checked_add(Duration::from_secs(seconds))
+            .ok_or_else(|| D::Error::custom(format!("{seconds} seconds is not an instant")))
+    }
 }
 
 impl GameState {
@@ -149,7 +199,7 @@ impl GameState {
         Self {
             player: Player::new(),
             mine,
-            visited: HashMap::new(),
+            visited: BTreeMap::new(),
             boost_charges: 0,
             active_boost: None,
             auto_common_progress: 0,
@@ -225,6 +275,66 @@ impl GameState {
     /// The player: level, experience, pickaxe, inventory, prestige.
     pub fn player(&self) -> &Player {
         &self.player
+    }
+
+    /// Whether this run could have been produced by the rules, or the first
+    /// invariant that says it could not.
+    ///
+    /// **What this is for.** Every field of every type below is private, and every
+    /// method that writes one checks first. Deserialisation writes them all
+    /// directly, so a save file is the one input that reaches this struct without
+    /// passing a single rule. The HMAC catches a *player* editing the file; it says
+    /// nothing about a migration this project writes badly, and that is the failure
+    /// this function is aimed at.
+    ///
+    /// It **refuses rather than repairs**, which is the same answer
+    /// [`set_richness_setting`](Mine::set_richness_setting) gives a dial above its
+    /// ceiling: clamping silently hands the player a run that is not the one they
+    /// saved. The front-end turns the refusal into the recovery screen, which offers
+    /// the backup — seconds old, per the autosave cadence — and that is a better
+    /// outcome than a quietly different game.
+    ///
+    /// The per-type checks live with their types; only the **cross-cutting** two are
+    /// here, because only this struct can see both sides of them. Both concern the
+    /// split that makes [`current_mine`](GameState::current_mine) total: the mine the
+    /// player is in is a field, and the map holds the ones they left.
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        self.player.validate()?;
+        self.mine.validate()?;
+
+        for (kind, mine) in &self.visited {
+            mine.validate()?;
+            // A mine filed under the wrong key would be handed back by
+            // `select_mine` as a different mine entirely — the player walks into
+            // the Coal mine and finds the Iron one's grid.
+            if *kind != mine.kind() {
+                return Err("a mine is filed under a kind that is not its own");
+            }
+        }
+        // Two copies of one mine is the state the field/map split exists to make
+        // unrepresentable: leaving would file the current one over its stale twin,
+        // and whichever copy the player had been digging would win by accident.
+        if self.visited.contains_key(&self.mine.kind()) {
+            return Err("the mine the player is in is also filed among the ones they left");
+        }
+
+        if let Some(boost) = &self.active_boost {
+            boost.validate()?;
+        }
+
+        // Both carries are remainders of a division by `MICROBLOCKS_PER_BLOCK`:
+        // above it, a whole block is owed that no later call will ever pay.
+        if self.auto_common_progress >= MICROBLOCKS_PER_BLOCK
+            || self.auto_value_progress >= MICROBLOCKS_PER_BLOCK
+        {
+            return Err("the auto-miner is holding a whole block it never paid out");
+        }
+
+        if self.yield_carry.iter().any(|&(_, carry)| carry >= PERMILLE) {
+            return Err("a yield carry is a whole item that was never paid");
+        }
+
+        Ok(())
     }
 
     /// Boost charges held and not yet fired.
@@ -782,8 +892,8 @@ impl GameState {
 /// The running total for `item` in a `(item, amount)` list, inserted at zero if the
 /// list has not seen it yet.
 ///
-/// A free function, and a **linear scan over a [`Vec`]** rather than a
-/// [`HashMap`] entry, for the reason [`yield_carry`](GameState) gives: the lists it
+/// A free function, and a **linear scan over a [`Vec`]** rather than a map entry,
+/// for the reason [`yield_carry`](GameState) gives: the lists it
 /// walks hold at most three items, so hashing costs more than looking. It exists at
 /// all because three call sites wanted the same six lines — the auto-miner's merge of
 /// two blocks that may be the same one, and both halves of the swing's haul.
@@ -914,6 +1024,7 @@ mod tests {
     use crate::enchant::Enchants;
     use crate::material::Material;
     use crate::pickaxe::{Pickaxe, PickaxeTier};
+    use crate::test_json;
     use crate::tunables::BOOST_COST;
     use crate::world::World;
 
@@ -2016,6 +2127,183 @@ mod tests {
 
         assert_eq!(run(2024), run(2024), "the same seed diverged");
         assert_ne!(run(2024), run(1), "two seeds produced the same run");
+    }
+
+    // --- The save ---
+
+    /// A run with something in every field a save has to carry: two mines left
+    /// behind, a dug grid, a boost running, and both carries part-paid.
+    ///
+    /// Built by *playing*, not by writing fields, for the reason
+    /// [`ready_to_prestige`](self) is: it is the only way to reach states the rules
+    /// actually produce, and a save test on a state the rules cannot produce proves
+    /// nothing about the saves players will write.
+    fn a_run_in_progress(seed: u64) -> GameState {
+        let mut state = GameState::new(
+            seed,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000),
+        );
+        state.player.grant_break_experience(&[Block::Amethyst; 700]);
+        equip(&mut state, PickaxeTier::Netherite, instamining());
+
+        // Two mines entered and left, so `visited` is not empty and carries holes.
+        for kind in [MineKind::Iron, MineKind::Coal, MineKind::Stone] {
+            assert!(state.select_mine(kind).is_ok(), "{kind:?} should be open");
+            for _ in 0..30 {
+                state.tick(Input { space_held: true });
+            }
+        }
+
+        state.boost_charges = 2;
+        assert!(state.fire_boost().is_ok());
+        for tick in 0..200 {
+            state.tick(Input {
+                space_held: tick % 4 != 3,
+            });
+        }
+        state
+    }
+
+    /// The round trip, stated as the only thing that matters: a written run reads
+    /// back as the same run.
+    ///
+    /// Compared through the *text* rather than by `==`, because [`GameState`] is
+    /// deliberately not [`PartialEq`] — an `f32` sits in the mine's break progress.
+    /// Re-writing what was read is a stronger check than it looks: it walks every
+    /// field twice, so a field silently dropped on the way in shows up as a shorter
+    /// text on the way out.
+    #[test]
+    fn a_written_run_reads_back_identically() {
+        let state = a_run_in_progress(2024);
+
+        let written = test_json::write(&state);
+        let read: GameState = test_json::read(&written);
+        let rewritten = test_json::write(&read);
+
+        assert_eq!(rewritten, written);
+    }
+
+    /// **The point of the whole phase.** A run written to a file and read back is
+    /// the same *history*, not merely the same numbers: it continues on the dice it
+    /// left off at, so the two go on producing identical ticks forever.
+    ///
+    /// This is what would fail if the generator's position were dropped from the
+    /// save and only its seed kept — the states would compare equal on every visible
+    /// field and diverge on the first proc.
+    #[test]
+    fn a_reloaded_run_continues_the_same_history() {
+        let mut original = a_run_in_progress(7);
+        let written = test_json::write(&original);
+        let mut reloaded: GameState = test_json::read(&written);
+
+        let mut original_events = 0;
+        let mut reloaded_events = 0;
+        for tick in 0..300 {
+            let input = Input {
+                space_held: tick % 3 != 2,
+            };
+            original_events += original.tick(input).len();
+            reloaded_events += reloaded.tick(input).len();
+        }
+
+        assert_eq!(reloaded_events, original_events, "the two runs diverged");
+        assert_eq!(test_json::write(&reloaded), test_json::write(&original),);
+    }
+
+    /// Two runs that are the same run must write the same bytes. This is what the
+    /// ordered maps buy: with hashed ones the *contents* would still match while the
+    /// text differed from write to write, which costs a golden save, a usable diff
+    /// between two saves, and any future "has this changed?" check.
+    #[test]
+    fn the_same_run_always_writes_the_same_text() {
+        assert_eq!(
+            test_json::write(&a_run_in_progress(11)),
+            test_json::write(&a_run_in_progress(11)),
+        );
+    }
+
+    /// A run the rules built is valid — at every point of one, not just at its
+    /// start. A validator that refused states the game produces would turn every
+    /// autosave into a lost run.
+    #[test]
+    fn a_run_the_rules_built_is_valid() {
+        let state = a_run_in_progress(2024);
+        assert_eq!(state.validate(), Ok(()));
+    }
+
+    /// The first of the two invariants only this struct can see. A mine filed under
+    /// the wrong key is handed back by [`select_mine`](GameState::select_mine) as a
+    /// different mine entirely: the player walks into the Coal mine and finds the
+    /// Iron one's grid, holes and all.
+    #[test]
+    fn a_mine_filed_under_the_wrong_kind_is_refused() {
+        let mut state = a_run_in_progress(2024);
+        let coal = match state.visited.remove(&MineKind::Coal) {
+            Some(mine) => mine,
+            None => unreachable!("the fixture leaves the Coal mine behind"),
+        };
+
+        state.visited.insert(MineKind::Diamond, coal);
+
+        assert!(state.validate().is_err());
+    }
+
+    /// The second: the field-plus-map split is what makes
+    /// [`current_mine`](GameState::current_mine) total, and two copies of one mine
+    /// is the state it exists to make unrepresentable. Leaving would file the
+    /// current copy over its stale twin, and whichever one the player had been
+    /// digging would win by accident.
+    #[test]
+    fn a_mine_that_is_both_current_and_left_behind_is_refused() {
+        let mut state = a_run_in_progress(2024);
+        let current = state.mine.kind();
+        let twin = Mine::new(current, &mut state.rng);
+
+        state.visited.insert(current, twin);
+
+        assert!(state.validate().is_err());
+    }
+
+    /// A carry holding a whole unit is one the auto-miner earned and will never be
+    /// paid: `credit_auto_mining` subtracts the whole blocks it pays out, so at rest
+    /// both carries are remainders.
+    #[test]
+    fn an_auto_miner_carry_holding_a_whole_block_is_refused() {
+        let mut state = a_run_in_progress(2024);
+        state.auto_value_progress = MICROBLOCKS_PER_BLOCK;
+
+        assert!(state.validate().is_err());
+    }
+
+    /// A clock set before 1970 must not cost the player their save.
+    ///
+    /// [`SystemTime`]'s own serde impl fails here, which is why `last_seen` has a
+    /// helper: it clamps to the epoch, exactly as
+    /// [`resume`](GameState::resume) clamps a backward clock to zero elapsed.
+    #[test]
+    fn a_clock_before_the_epoch_still_writes_a_save() {
+        let mut state = GameState::new(1, SystemTime::UNIX_EPOCH - Duration::from_secs(86_400));
+
+        let written = test_json::write(&state);
+        let read: GameState = test_json::read(&written);
+
+        assert_eq!(read.last_seen(), SystemTime::UNIX_EPOCH);
+        // And the run stays playable: the clamp is a written value, not a poison.
+        state.touch(SystemTime::UNIX_EPOCH);
+        assert_eq!(state.last_seen(), SystemTime::UNIX_EPOCH);
+    }
+
+    /// A number too large to be an instant is refused rather than trapped: the
+    /// crate's lints leave no `unwrap` for it, and a load that stops beats a process
+    /// that dies on a corrupt file.
+    #[test]
+    fn an_impossible_instant_is_refused() {
+        let state = GameState::new(1, SystemTime::UNIX_EPOCH);
+        let written = test_json::write(&state);
+        let tampered = written.replace(r#""last_seen":0"#, r#""last_seen":18446744073709551615"#);
+        assert_ne!(tampered, written, "the field name moved; fix this test");
+
+        assert!(serde_json::from_str::<GameState>(&tampered).is_err());
     }
 
     // --- Prestige ---

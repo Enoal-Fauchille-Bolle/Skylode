@@ -36,6 +36,8 @@
 //!
 //! [`Pickaxe::mining_power`]: crate::pickaxe::Pickaxe::mining_power
 
+use serde::{Deserialize, Serialize};
+
 /// A temporary multiplier on mining speed, and how many ticks it has left.
 ///
 /// The one job the design gives it is closing a gap permanent upgrades cannot:
@@ -50,7 +52,7 @@
 /// the ambient clock read the core's determinism contract forbids. Ticks are also
 /// what the save can carry without a unit conversion: a reloaded run resumes the
 /// countdown on the integer it left off at.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Boost {
     /// The factor mining power is multiplied by while this boost runs.
     multiplier: f32,
@@ -116,6 +118,26 @@ impl Boost {
     /// Whether the boost has lapsed — the predicate phase 7's sweep drops it on.
     pub fn is_expired(&self) -> bool {
         self.remaining_ticks == 0
+    }
+
+    /// Whether this boost could have been produced by the rules.
+    ///
+    /// [`new`](Boost::new) validates nothing, and says why: its only caller reads
+    /// [`BOOST_MULTIPLIER`](crate::tunables::BOOST_MULTIPLIER), whose floor is
+    /// asserted at compile time, so no input can reach it wrong. **A save file is
+    /// the input that route does not cover** — it writes the field directly. The
+    /// two states worth naming are the two `new` was allowed to ignore: a
+    /// multiplier below 1.0 would be a *slow*, which the game has no concept of,
+    /// and a non-finite one would poison `break_progress` on the first swing and
+    /// leave a mine that can never be dug.
+    ///
+    /// See [`Mine::validate`](crate::mine::Mine) for why the message is a plain
+    /// string.
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if !self.multiplier.is_finite() || self.multiplier < 1.0 {
+            return Err("a boost multiplies mining power by something that is not a speed-up");
+        }
+        Ok(())
     }
 
     /// Burns one tick off the countdown.
@@ -238,5 +260,34 @@ mod tests {
         boost.extend(BOOST_DURATION_TICKS);
 
         assert_eq!(boost.remaining_ticks(), u32::MAX);
+    }
+
+    /// Every boost the rules can build passes, which is what makes the validator a
+    /// filter on files rather than a second opinion on the game.
+    #[test]
+    fn a_boost_the_rules_built_is_valid() {
+        assert!(
+            Boost::new(BOOST_MULTIPLIER, BOOST_DURATION_TICKS)
+                .validate()
+                .is_ok()
+        );
+        // A lapsed boost is a legitimate state: the sweep drops it on the next tick.
+        assert!(Boost::new(BOOST_MULTIPLIER, 0).validate().is_ok());
+    }
+
+    /// The two states `new` was allowed to skip checking, because no caller could
+    /// produce them — until a save file became a caller.
+    #[test]
+    fn a_boost_that_does_not_speed_the_player_up_is_refused() {
+        assert!(Boost::new(0.5, BOOST_DURATION_TICKS).validate().is_err());
+        assert!(
+            Boost::new(f32::NAN, BOOST_DURATION_TICKS)
+                .validate()
+                .is_err()
+        );
+        // Exactly 1.0 is not a speed-up either, but it is not a *slow*; it is what
+        // `multiplier()` already returns for a lapsed boost, so refusing it would
+        // refuse a state the game itself reports.
+        assert!(Boost::new(1.0, BOOST_DURATION_TICKS).validate().is_ok());
     }
 }

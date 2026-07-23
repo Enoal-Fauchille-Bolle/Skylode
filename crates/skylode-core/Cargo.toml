@@ -12,8 +12,25 @@ edition = "2024"
 # bias `random_range` accepts by default (one sample in 2^96 for `u32`). The flag
 # is cheap here, but it also *changes the draw sequence*, so it has to be decided
 # now: turning it on later would desynchronise every existing save.
+#
+# `rand_chacha`'s `serde` feature is what makes the save able to store a *position
+# in a sequence* rather than only the seed a run started from. It serialises the
+# generator as `{seed, stream, word_pos}`, and the crate pins that shape with a
+# format-stability test of its own — the same guarantee that put `ChaCha8Rng` here
+# instead of `StdRng` in the first place.
 rand = { version = "0.9", default-features = false, features = ["alloc", "unbiased"] }
-rand_chacha = { version = "0.9", default-features = false }
+rand_chacha = { version = "0.9", default-features = false, features = ["serde"] }
+
+# Serialisation is not optional: a build of this game that cannot write a save is
+# not a build anyone ships. Putting it behind a feature flag would double the
+# `clippy`/`test` surface for a configuration nobody runs, so `serde` is a plain
+# dependency and `save` is a plain module.
+#
+# `derive` is the macro that reads a struct's declaration at compile time and
+# writes its `Serialize`/`Deserialize` for it; `serde_json` is the one format the
+# save is written in (`docs/SYSTEMS.md`: one file, human-debuggable).
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [lints]
 workspace = true

@@ -12,7 +12,8 @@
 use crate::error::CoreError;
 use crate::material::{Item, Material};
 use crate::tunables::RAW_PER_COMPRESSED;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The player's stock, as a sparse map from [`Item`] to count.
 ///
@@ -21,17 +22,34 @@ use std::collections::HashMap;
 /// private so that invariant cannot be broken from outside: [`remove`] deletes
 /// an entry the moment it hits zero, so a count of `0` is never stored.
 ///
+/// **A [`BTreeMap`] and not a [`HashMap`](std::collections::HashMap)**, for the
+/// save's sake. A `HashMap`'s iteration order is deliberately unspecified, so the
+/// same inventory would serialise to a different text on every write — and a text
+/// that varies is one no golden save can pin and no two players can diff. Sorted
+/// order makes "the same state writes the same file" a property of the type rather
+/// than a convention to remember at every call site, which is the move
+/// [`Mine`](crate::mine::Mine)'s grid already made by fusing its hole mask into the
+/// cells. It costs nothing to be right here: an inventory holds a handful of
+/// entries, where a B-tree walk beats hashing anyway.
+///
+/// **[`transparent`]**, so a save writes the map itself — `{"iron": 42}` — and not
+/// the wrapper around it. The field is private and named for this module's own
+/// convenience; a file format has no business depending on that name, and would
+/// otherwise break the day it changed.
+///
 /// [`remove`]: Inventory::remove
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// [`transparent`]: https://serde.rs/container-attrs.html#transparent
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Inventory {
-    items: HashMap<Item, u32>,
+    items: BTreeMap<Item, u32>,
 }
 
 impl Inventory {
     /// Creates a new, empty inventory.
     pub fn new() -> Self {
         Inventory {
-            items: HashMap::new(),
+            items: BTreeMap::new(),
         }
     }
 
@@ -137,11 +155,30 @@ impl Inventory {
         );
         Ok(())
     }
+
+    /// Whether this stock could have been produced by the rules.
+    ///
+    /// One invariant, the one the type docs open with: **a count of `0` is never
+    /// stored.** [`remove`](Inventory::remove) deletes the entry instead, so
+    /// "absent" and "held zero times" are the same state and no code has to tell
+    /// them apart. A save could carry the difference back in, and then two
+    /// inventories holding exactly the same items would stop comparing equal —
+    /// which is quietly the end of every test in this crate that compares one.
+    ///
+    /// See [`Mine::validate`](crate::mine::Mine) for why the message is a plain
+    /// string.
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if self.items.values().any(|&count| count == 0) {
+            return Err("an inventory holds a count of zero, which is not a state it has");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_json;
 
     #[test]
     fn add_and_remove_track_the_count() {
@@ -277,5 +314,65 @@ mod tests {
         assert!(inventory.compress(Material::Iron, 1).is_ok());
         assert_eq!(inventory.count(Item::Raw(Material::Gold)), 100);
         assert_eq!(inventory.count(Item::Compressed(Material::Gold)), 0);
+    }
+
+    /// The map is keyed by [`Item`], which JSON cannot express as an object key
+    /// on its own — the derived shape would be `{"Raw": "Iron"}` in key position,
+    /// and `serde_json` refuses that at **run time**, never at compile time. So
+    /// this test is the only thing standing between a hand-written key format and
+    /// a save that fails the first time a player picks up an ore.
+    #[test]
+    fn an_inventory_survives_the_round_trip() {
+        let mut inventory = Inventory::new();
+        inventory.add(Item::Raw(Material::Iron), 42);
+        inventory.add(Item::Compressed(Material::Iron), 3);
+        inventory.add(Item::Raw(Material::Amethyst), 7);
+
+        let written = test_json::write(&inventory);
+        let read: Inventory = test_json::read(&written);
+
+        assert_eq!(read, inventory);
+    }
+
+    /// `docs/SYSTEMS.md` picks JSON *because* the file can be read by a human. An
+    /// inventory that wrote its wrapper struct, or its variants' Rust names, would
+    /// still round-trip and still lose that. Sorted, because the map is ordered:
+    /// the same stock writes the same text, every time.
+    #[test]
+    fn an_inventory_writes_itself_readably() {
+        let mut inventory = Inventory::new();
+        inventory.add(Item::Compressed(Material::Iron), 3);
+        inventory.add(Item::Raw(Material::Iron), 42);
+
+        assert_eq!(
+            test_json::write(&inventory),
+            r#"{"iron":42,"compressed_iron":3}"#
+        );
+    }
+
+    /// The "absent means zero" invariant, checked from the one direction that can
+    /// break it. Two inventories holding the same items would otherwise stop
+    /// comparing equal depending on which one had been *spent* down to nothing.
+    #[test]
+    fn a_stored_zero_is_not_a_state_an_inventory_has() {
+        let mut inventory = Inventory::new();
+        inventory.add(Item::Raw(Material::Iron), 5);
+        assert!(inventory.validate().is_ok());
+
+        // Only a save can put this back; `remove` deletes the entry instead.
+        inventory.items.insert(Item::Raw(Material::Gold), 0);
+        assert!(inventory.validate().is_err());
+    }
+
+    /// Spending the last of something leaves a valid inventory, not an entry at
+    /// zero — the path the check above exists to protect.
+    #[test]
+    fn spending_the_last_of_an_item_leaves_no_entry_behind() {
+        let mut inventory = Inventory::new();
+        inventory.add(Item::Raw(Material::Iron), 5);
+        assert!(inventory.remove(Item::Raw(Material::Iron), 5).is_ok());
+
+        assert!(inventory.validate().is_ok());
+        assert_eq!(inventory, Inventory::new());
     }
 }

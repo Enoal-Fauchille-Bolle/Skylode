@@ -17,7 +17,8 @@ use crate::material::{Item, Material};
 use crate::pickaxe::PickaxeTier;
 use crate::rng::Rng;
 use crate::world::World;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The radius of the smallest [`Explosive`](EnchantType::Explosive) square: a
 /// 3x3 around the impact.
@@ -173,7 +174,7 @@ pub struct Enchant {
 
 /// The kinds of enchantment a pickaxe can have.
 ///
-/// Derives [`Hash`]/[`Eq`] so it can be used as a [`HashMap`] key inside
+/// Derives [`Ord`]/[`Eq`] so it can be used as a [`BTreeMap`] key inside
 /// [`Enchants`]. Each variant's effective level cap comes from
 /// [`max_level`](EnchantType::max_level).
 ///
@@ -197,7 +198,7 @@ pub struct Enchant {
 /// in the game that a level-1 player could max, which made the one lever no
 /// progression paced. What the third group actually protected was Efficiency, and
 /// Efficiency still has it.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum EnchantType {
     /// Increases mining speed, by `level² + 1` added to the pickaxe's base power.
     /// Capped by the pickaxe tier: 5, or 15 at Netherite.
@@ -269,9 +270,20 @@ pub enum EnchantType {
 /// level 0, so only active enchantments consume memory. The `levels` field is
 /// private — callers go through the methods below to keep the "absent == 0"
 /// invariant intact.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// A [`BTreeMap`], for [`Inventory`](crate::inventory::Inventory)'s reason: its
+/// order is what a save is written in, and an unspecified one would make the same
+/// pickaxe serialise differently on every write. The order it sorts by is
+/// [`EnchantType`]'s declaration order, which is not
+/// [`PROC_ORDER`] — nothing here reads the map to
+/// decide who rolls first, and nothing should.
+///
+/// `transparent` for [`Inventory`](crate::inventory::Inventory)'s reason: a save
+/// writes `{"Fortune": 3}`, not a wrapper around a private field name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Enchants {
-    levels: HashMap<EnchantType, u8>,
+    levels: BTreeMap<EnchantType, u8>,
 }
 
 impl Enchant {
@@ -460,7 +472,7 @@ impl Enchants {
     /// Creates a new instance of [`Enchants`].
     pub fn new() -> Self {
         Self {
-            levels: HashMap::new(),
+            levels: BTreeMap::new(),
         }
     }
 
@@ -590,7 +602,7 @@ impl Enchants {
     }
 
     /// Resets all enchantments to level 0.
-    /// This will clear the internal HashMap of enchantments.
+    /// This will clear the internal map of enchantments.
     pub fn reset(&mut self) {
         self.levels.clear();
     }

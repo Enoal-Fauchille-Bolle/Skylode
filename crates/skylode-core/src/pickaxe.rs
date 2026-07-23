@@ -17,6 +17,7 @@ use crate::enchant::{EnchantType, Enchants};
 use crate::error::CoreError;
 use crate::tunables::HASTE_PER_LEVEL;
 use crate::world::World;
+use serde::{Deserialize, Serialize};
 
 /// The material tier of a pickaxe.
 ///
@@ -24,7 +25,7 @@ use crate::world::World;
 /// `pickaxe.tier >= block.min_pickaxe_tier()`); the ordering follows
 /// declaration order, from weakest ([`Wooden`](PickaxeTier::Wooden)) to
 /// strongest ([`Netherite`](PickaxeTier::Netherite)).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PickaxeTier {
     Wooden,
     Stone,
@@ -35,7 +36,7 @@ pub enum PickaxeTier {
 }
 
 /// The player's mining tool: a tier plus its enchantments.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pickaxe {
     /// The tier of the pickaxe, which determines its base mining power.
     tier: PickaxeTier,

@@ -13,6 +13,7 @@ use rand::distr::Distribution as _;
 use rand::distr::weighted::WeightedIndex;
 use rand_chacha::ChaCha8Rng;
 use rand_chacha::rand_core::SeedableRng as _;
+use serde::{Deserialize, Serialize};
 use std::num::NonZeroU32;
 
 /// The game's random-number generator: a seeded PRNG whose state is part of the
@@ -33,7 +34,7 @@ use std::num::NonZeroU32;
 ///
 /// This wrapper is also the only place in the core that names a `rand` type, so the
 /// dependency cannot leak into the rules.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rng(ChaCha8Rng);
 
 impl Rng {
@@ -133,6 +134,7 @@ impl Rng {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_json;
 
     /// `below` takes a `NonZeroU32`; the tests do not care to say so ten times.
     fn nz(n: u32) -> NonZeroU32 {
@@ -191,8 +193,8 @@ mod tests {
     /// is state, so a run restored mid-sequence has to continue it, not restart
     /// it — otherwise a player could reload to reroll an unlucky proc, and,
     /// worse, a run would stop being one continuous history. Proven here in
-    /// memory, without serde or a filesystem: phase 9 only has to persist what
-    /// this test restores by hand.
+    /// memory, without serde or a filesystem — its sibling below proves the save
+    /// carries exactly what this test restores by hand.
     #[test]
     fn restoring_the_position_resumes_the_sequence() {
         let mut rng = Rng::from_seed(3);
@@ -208,6 +210,46 @@ mod tests {
         let resumed: Vec<u32> = (0..5).map(|_| reloaded.0.random::<u32>()).collect();
 
         assert_eq!(resumed, expected);
+    }
+
+    /// The same promise, made by the save this time: the file carries the
+    /// *position*, not just the seed. This is the single test that would fail if
+    /// `rand_chacha`'s `serde` feature were ever dropped from the manifest — the
+    /// run would silently restart its dice at every load, and nothing else in the
+    /// crate would notice.
+    #[test]
+    fn a_serialised_generator_resumes_the_sequence() {
+        let mut rng = Rng::from_seed(3);
+        for _ in 0..5 {
+            let _ = rng.below(nz(100));
+        }
+
+        let written = test_json::write(&rng);
+        let expected: Vec<u32> = (0..5).map(|_| rng.below(nz(100))).collect();
+
+        let mut reloaded: Rng = test_json::read(&written);
+        let resumed: Vec<u32> = (0..5).map(|_| reloaded.below(nz(100))).collect();
+
+        assert_eq!(resumed, expected);
+    }
+
+    /// The seed alone is not the state, and a test that only checked "same seed,
+    /// same numbers" would pass on a save that stored nothing but the seed.
+    #[test]
+    fn a_serialised_generator_is_not_a_fresh_one() {
+        let mut rng = Rng::from_seed(3);
+        for _ in 0..5 {
+            let _ = rng.below(nz(100));
+        }
+
+        let written = test_json::write(&rng);
+        let mut reloaded: Rng = test_json::read(&written);
+        let mut fresh = Rng::from_seed(3);
+
+        assert_ne!(
+            (0..5).map(|_| reloaded.below(nz(100))).collect::<Vec<_>>(),
+            (0..5).map(|_| fresh.below(nz(100))).collect::<Vec<_>>(),
+        );
     }
 
     #[test]

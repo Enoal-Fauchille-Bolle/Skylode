@@ -40,6 +40,7 @@ use crate::block::Block;
 use crate::material::Material;
 use crate::pickaxe::PickaxeTier;
 use crate::world::World;
+use serde::{Deserialize, Serialize};
 
 /// One of the game's twelve canonical mines.
 ///
@@ -48,11 +49,19 @@ use crate::world::World;
 /// [`value_block`](MineKind::value_block) pair. Variants are grouped by world, in
 /// progression order, matching the layout of [`Block`] and [`World`].
 ///
-/// [`Hash`] because a run keys its mines by kind
-/// ([`GameState`](crate::game::GameState)): the twelve are a fixed, dataless set,
-/// so the derived hash is the discriminant and agrees with the derived [`Eq`] by
-/// construction — the one obligation a manual `Hash` would owe.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+/// [`Ord`] because a run keys its mines by kind
+/// ([`GameState`](crate::game::GameState)) in a
+/// [`BTreeMap`](std::collections::BTreeMap), so that a save is written in a fixed
+/// order rather than in a hash table's unspecified one. The twelve are a fixed,
+/// dataless set, so the derived order *is* the declaration order above — world by
+/// world, in progression order — which is the order a reader of the save file
+/// would have sorted them into anyway.
+///
+/// [`Hash`] is kept beside it: it costs nothing, and the derived hash is the
+/// discriminant, which agrees with the derived [`Eq`] by construction.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 pub enum MineKind {
     // --- Overworld ---
     /// The starter mine: `Stone` with `Cobblestone`, both yielding Stone.

@@ -18,13 +18,14 @@ use crate::{
     tunables::LEVEL_CAP,
     world::World,
 };
+use serde::{Deserialize, Serialize};
 
 /// The player's persistent progression state.
 ///
 /// [`Debug`] because [`GameState`](crate::game::GameState) derives it, and a run
 /// that cannot be printed is a run that cannot be dropped into a failing
 /// assertion. Every field is already `Debug`.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Player {
     /// The pickaxe the player currently mines with.
     pickaxe: Pickaxe,
@@ -316,6 +317,55 @@ impl Player {
         self.prestige
     }
 
+    /// Whether this progression could have been produced by the rules.
+    ///
+    /// What a save can break here that play cannot: the level is the axis every
+    /// other gate reads — the worlds it unlocks, the enchant ceiling those worlds
+    /// set, the mines they open — so a level outside `1..=LEVEL_CAP` is not one
+    /// wrong number but a wrong answer to every question asked afterwards. A level
+    /// of `0` in particular makes [`xp_for_level`](Player::xp_for_level) answer
+    /// [`None`], which reads as "already at the cap": the run would silently stop
+    /// levelling forever.
+    ///
+    /// The enchant caps are checked against the tier and the world the level
+    /// **currently** gives, which is stricter than the rules were when the levels
+    /// were bought — a prestige resets the level and re-locks the worlds. It is
+    /// deliberately so: [`prestige_reset`](Player::prestige_reset) resets the
+    /// pickaxe too, so no honest save has enchants its player could not buy again.
+    ///
+    /// See [`Mine::validate`](crate::mine::Mine) for why the message is a plain
+    /// string.
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if self.level == 0 || self.level > LEVEL_CAP {
+            return Err("a player's level is outside the ladder the game has");
+        }
+
+        // The carry is a *remainder* of a division by 1000; at or above it, a whole
+        // point of experience is owed and was never paid.
+        if self.xp_carry >= prestige::PERMILLE {
+            return Err("a player's experience carry is a whole point that was never paid");
+        }
+
+        // Banked experience is always below the next level's price: the grant loop
+        // spends it down as it crosses. Above it, the player is owed a level-up that
+        // will never come, because nothing re-checks between grants.
+        if let Some(needed) = self.experience_to_next_level()
+            && self.experience >= needed
+        {
+            return Err("a player has banked a level's worth of experience without gaining it");
+        }
+
+        let tier = self.pickaxe.get_tier();
+        let world = self.highest_unlocked_world();
+        for (kind, level) in self.pickaxe.enchants().iter() {
+            if level > kind.max_level(tier, world) {
+                return Err("an enchant is above the cap its tier and world allow");
+            }
+        }
+
+        self.inventory.validate()
+    }
+
     /// The inventory, mutably: where a swing's loot and a level-up's bundle land.
     ///
     /// `pub(crate)`, unlike its `&self` twin. [`Inventory::add`] is free and
@@ -393,7 +443,7 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enchant::EnchantType;
+    use crate::enchant::{EnchantType, Enchants};
     use crate::material::{Item, Material};
     use crate::pickaxe::PickaxeTier;
     use crate::tunables::{END_UNLOCK_LEVEL, NETHER_UNLOCK_LEVEL};
@@ -852,5 +902,80 @@ mod tests {
             player.prestige_reset();
             assert_eq!(player.get_prestige(), expected);
         }
+    }
+
+    /// A player the rules built is valid, at both ends of the ladder.
+    #[test]
+    fn a_player_the_rules_built_is_valid() {
+        let mut player = Player::new();
+        assert!(player.validate().is_ok());
+
+        player.grant_break_experience(&[Block::Amethyst; 700]);
+        assert!(
+            player.validate().is_ok(),
+            "a levelled player is a normal player"
+        );
+    }
+
+    /// The level is the axis every other gate reads, so a level off the ladder is
+    /// not one wrong number: level 0 in particular makes `xp_for_level` answer
+    /// `None`, which every caller reads as "already at the cap" — the run would stop
+    /// levelling for good, silently.
+    #[test]
+    fn a_level_off_the_ladder_is_refused() {
+        let mut player = Player::new();
+
+        player.level = 0;
+        assert!(player.validate().is_err());
+
+        player.level = LEVEL_CAP + 1;
+        assert!(player.validate().is_err());
+
+        player.level = LEVEL_CAP;
+        assert!(player.validate().is_ok(), "the cap itself is a legal level");
+    }
+
+    /// Banked experience is spent down as levels are crossed, so a bank at or above
+    /// the next level's price is a level-up that was owed and never happened —
+    /// nothing re-checks between grants.
+    #[test]
+    fn banked_experience_past_the_next_level_is_refused() {
+        let mut player = Player::new();
+        let needed = match player.experience_to_next_level() {
+            Some(needed) => needed,
+            None => unreachable!("a level-1 player has a next level"),
+        };
+
+        player.experience = needed - 1;
+        assert!(player.validate().is_ok());
+
+        player.experience = needed;
+        assert!(player.validate().is_err());
+    }
+
+    /// The carry is the remainder of a division by 1000; a whole point sitting in it
+    /// is experience the player earned and will never be paid.
+    #[test]
+    fn a_carry_holding_a_whole_point_is_refused() {
+        let mut player = Player::new();
+        player.xp_carry = prestige::PERMILLE;
+
+        assert!(player.validate().is_err());
+    }
+
+    /// The caps are the whole of the two-axis progression: an enchant above what its
+    /// tier and world allow is an upgrade the player could not have bought.
+    #[test]
+    fn an_enchant_above_its_cap_is_refused() {
+        let mut player = Player::new();
+        let mut enchants = Enchants::new();
+        for _ in 0..10 {
+            let _ = enchants.upgrade(EnchantType::Fortune, PickaxeTier::Netherite, World::End);
+        }
+        player.pickaxe = Pickaxe::new(PickaxeTier::Netherite, enchants);
+
+        // Legal at the End's ceiling; the same pickaxe on a level-1 player is not,
+        // because the worlds their level opens set a lower one.
+        assert!(player.validate().is_err());
     }
 }

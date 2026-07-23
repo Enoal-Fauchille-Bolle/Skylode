@@ -12,7 +12,16 @@
 
 use crate::tunables::RAW_PER_COMPRESSED;
 use crate::world::World;
+use serde::de::{Unexpected, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
+
+/// What a [`Compressed`](Item::Compressed) key is prefixed with in a save.
+///
+/// No [`Material`] key begins with it, which is what makes
+/// [`Item::from_save_key`] able to split a key by looking at its front and nothing
+/// else. `every_material_key_is_a_word_of_its_own` holds that.
+const COMPRESSED_PREFIX: &str = "compressed_";
 
 /// A raw resource obtained by mining blocks.
 ///
@@ -71,6 +80,49 @@ impl Material {
             Self::Endstone => "End Stone",
             Self::Amethyst => "Amethyst",
         }
+    }
+
+    /// The name this material is written under in a save file.
+    ///
+    /// **A second table, and not [`name`](Material::name), on purpose.** A display
+    /// name belongs to the UI and may be reworded — "End Stone" was spaced for
+    /// exactly that reason — while a save key is a promise to every file already
+    /// written: change it, and a player's Amethyst becomes an unknown word their
+    /// next load refuses. Keeping them apart is what lets the first move freely.
+    ///
+    /// Lowercase and `snake_case` because these are JSON object keys, and
+    /// `docs/SYSTEMS.md` asks the file to stay debuggable by hand.
+    pub(crate) fn save_key(self) -> &'static str {
+        match self {
+            Self::Stone => "stone",
+            Self::Coal => "coal",
+            Self::Iron => "iron",
+            Self::Gold => "gold",
+            Self::Lapis => "lapis",
+            Self::Redstone => "redstone",
+            Self::Emerald => "emerald",
+            Self::Diamond => "diamond",
+            Self::Netherrack => "netherrack",
+            Self::Quartz => "quartz",
+            Self::AncientDebris => "ancient_debris",
+            Self::Obsidian => "obsidian",
+            Self::CryingObsidian => "crying_obsidian",
+            Self::Endstone => "endstone",
+            Self::Amethyst => "amethyst",
+        }
+    }
+
+    /// The material a save key names, or [`None`] if no material answers to it.
+    ///
+    /// [`None`] rather than a default: an unknown key is a file this build does
+    /// not understand, and guessing at it would load a run the player never
+    /// played. The refusal travels up to `save`, which turns it into a load that
+    /// fails cleanly.
+    pub(crate) fn from_save_key(key: &str) -> Option<Self> {
+        // Written as a reverse walk over the same table rather than a second
+        // `match`, so the two directions cannot drift apart. Fifteen entries, read
+        // at load time only.
+        ALL_MATERIALS.iter().copied().find(|m| m.save_key() == key)
     }
 
     /// Returns every [`World`] in which this material can be obtained.
@@ -155,6 +207,74 @@ impl Item {
             Self::Compressed(_) => RAW_PER_COMPRESSED,
         }
     }
+
+    /// The item a save key names, or [`None`] if no item answers to it.
+    ///
+    /// The denomination is read off the front of the key and the rest is a
+    /// [`Material`], which works because [`COMPRESSED_PREFIX`] is not the start of
+    /// any material's own key.
+    pub(crate) fn from_save_key(key: &str) -> Option<Self> {
+        match key.strip_prefix(COMPRESSED_PREFIX) {
+            Some(rest) => Material::from_save_key(rest).map(Self::Compressed),
+            None => Material::from_save_key(key).map(Self::Raw),
+        }
+    }
+}
+
+/// Written as a bare string — `"iron"`, `"compressed_iron"` — and not as the
+/// derived shape of the enum.
+///
+/// **Hand-written because an [`Item`] is a map *key*.** The inventory is a map from
+/// item to count, and JSON demands that an object's keys be strings; the derive
+/// would emit `{"Raw": "Iron"}`, which `serde_json` rejects outright in key
+/// position (at run time, never at compile time — hence
+/// `an_inventory_survives_the_round_trip`). A string is also what makes the file
+/// readable, which is the reason `docs/SYSTEMS.md` chose JSON over anything denser.
+///
+/// [`collect_str`](Serializer::collect_str) with a
+/// [`format_args!`] rather than a `String`: the prefixed name is written straight
+/// into the output, so the common case — an autosave every ten seconds — allocates
+/// nothing for it.
+impl Serialize for Item {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Raw(material) => serializer.serialize_str(material.save_key()),
+            Self::Compressed(material) => {
+                serializer.collect_str(&format_args!("{COMPRESSED_PREFIX}{}", material.save_key()))
+            }
+        }
+    }
+}
+
+/// Reads back what [`Serialize`] wrote, and refuses anything else.
+///
+/// An unknown key is an error rather than a skipped entry: silently dropping it
+/// would hand the player a run missing whatever the word meant, which is a worse
+/// outcome than a load that stops and says so.
+impl<'de> Deserialize<'de> for Item {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// The one shape an [`Item`] can arrive in.
+        ///
+        /// A visitor is serde's answer to "the data format decides what it hands
+        /// you": it offers one method per kind of value, and the ones left
+        /// unimplemented become type errors with a decent message for free.
+        struct ItemKey;
+
+        impl Visitor<'_> for ItemKey {
+            type Value = Item;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an item key such as \"iron\" or \"compressed_iron\"")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<Item, E> {
+                Item::from_save_key(key)
+                    .ok_or_else(|| E::invalid_value(Unexpected::Str(key), &self))
+            }
+        }
+
+        deserializer.deserialize_str(ItemKey)
+    }
 }
 
 /// Renders as `Iron` or `Compressed Iron`.
@@ -171,10 +291,14 @@ impl fmt::Display for Item {
     }
 }
 
-/// Every [`Material`] variant, for tests that must cover the whole enum.
+/// Every [`Material`] variant, in declaration order.
 ///
-/// Test-only; see [`ALL_BLOCKS`](crate::block::ALL_BLOCKS) for the rationale.
-#[cfg(test)]
+/// It exists because an enum cannot enumerate itself (see `block`'s `ALL_BLOCKS`,
+/// which states the rationale), and unlike its siblings it is **not**
+/// test-only: [`Material::from_save_key`] reads it to walk
+/// [`save_key`](Material::save_key) backwards. That is the whole reason the reverse
+/// lookup is a walk and not a second `match` — one table, so the two directions of
+/// the save's naming cannot drift apart.
 pub(crate) const ALL_MATERIALS: &[Material] = &[
     Material::Stone,
     Material::Coal,
@@ -196,6 +320,7 @@ pub(crate) const ALL_MATERIALS: &[Material] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_json;
 
     #[test]
     fn all_materials_covers_every_variant() {
@@ -297,5 +422,71 @@ mod tests {
             assert_eq!(Item::Raw(material).material(), material);
             assert_eq!(Item::Compressed(material).material(), material);
         }
+    }
+
+    /// Two materials sharing a save key would make one of them unreadable: the
+    /// reverse walk answers with whichever comes first, so a run's Emeralds could
+    /// load back as Diamonds.
+    #[test]
+    fn save_keys_are_unique() {
+        for (index, &a) in ALL_MATERIALS.iter().enumerate() {
+            for &b in &ALL_MATERIALS[index + 1..] {
+                assert_ne!(
+                    a.save_key(),
+                    b.save_key(),
+                    "{a:?} and {b:?} share the save key {}",
+                    a.save_key()
+                );
+            }
+        }
+    }
+
+    /// What lets [`Item::from_save_key`] split a key on its prefix alone. A
+    /// material whose own key started with `compressed_` would be read back as the
+    /// Compressed denomination of something else — or of nothing.
+    #[test]
+    fn every_material_key_is_a_word_of_its_own() {
+        for &material in ALL_MATERIALS {
+            assert!(
+                !material.save_key().starts_with(COMPRESSED_PREFIX),
+                "{material:?}'s key {} collides with the Compressed prefix",
+                material.save_key()
+            );
+        }
+    }
+
+    /// The save's two directions have to agree for every variant, not just the
+    /// ones a test happened to name.
+    #[test]
+    fn every_item_survives_its_save_key() {
+        for &material in ALL_MATERIALS {
+            for item in [Item::Raw(material), Item::Compressed(material)] {
+                let key = test_json::write(&item);
+                let read: Item = test_json::read(&key);
+                assert_eq!(read, item, "{item:?} did not survive the key {key}");
+            }
+        }
+    }
+
+    /// The denomination is part of the key because it is part of the identity —
+    /// the same reason it is part of the display name.
+    #[test]
+    fn a_key_names_its_denomination() {
+        assert_eq!(test_json::write(&Item::Raw(Material::Iron)), "\"iron\"");
+        assert_eq!(
+            test_json::write(&Item::Compressed(Material::Iron)),
+            "\"compressed_iron\""
+        );
+    }
+
+    /// A key this build does not know is a file it cannot honour. Reading it as
+    /// anything — or skipping it — would hand the player a run missing whatever
+    /// the word meant.
+    #[test]
+    fn an_unknown_key_is_refused() {
+        assert!(serde_json::from_str::<Item>("\"unobtainium\"").is_err());
+        assert!(serde_json::from_str::<Item>("\"compressed_unobtainium\"").is_err());
+        // The display name is not the save key, and must not be accepted as one.
+        assert!(serde_json::from_str::<Item>("\"Ancient Debris\"").is_err());
     }
 }

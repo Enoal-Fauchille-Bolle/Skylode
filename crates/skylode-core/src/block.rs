@@ -18,6 +18,7 @@
 use crate::material::{Item, Material};
 use crate::pickaxe::PickaxeTier;
 use crate::world::World;
+use serde::{Deserialize, Serialize};
 
 /// Number of raw items a *dense* block yields when mined.
 ///
@@ -36,7 +37,7 @@ const RAW_PER_DENSE_BLOCK: u32 = 9;
 /// dense form exists, plus standalone blocks (Netherrack, Obsidian, …) that have
 /// no dual form. The whole enum is `Copy` because a block is just a lightweight
 /// tag with no owned data.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Block {
     // --- Overworld ---
     #[default]
