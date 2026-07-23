@@ -2402,6 +2402,25 @@ mod tests {
         assert!(mine.validate().is_err());
     }
 
+    /// A size level past the top of the table is refused before the grid check even
+    /// looks at it: above the ceiling `get_size` clamps, so the level and its grid
+    /// would agree while promising an enlargement no shop could ever have sold.
+    #[test]
+    fn a_size_level_past_the_largest_is_refused() {
+        let mut mine = Mine::new(MineKind::Iron, &mut rng());
+        mine.size_level = MAX_SIZE_LEVEL + 1;
+        assert!(mine.validate().is_err());
+    }
+
+    /// A richness level above the highest one for sale is a ceiling nobody could
+    /// have bought, so a save that claims it was tampered with.
+    #[test]
+    fn a_richness_level_past_the_highest_for_sale_is_refused() {
+        let mut mine = Mine::new(MineKind::Iron, &mut rng());
+        mine.richness_level = MAX_RICHNESS_LEVEL + 1;
+        assert!(mine.validate().is_err());
+    }
+
     /// The aim is held across ticks, so an aim at a hole is not a stale value that
     /// the next tick clears: `acquire_target` keeps a target it believes in, and
     /// `dig` would pour progress into a cell that is not there.

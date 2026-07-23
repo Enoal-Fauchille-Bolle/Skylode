@@ -544,4 +544,29 @@ mod tests {
             assert!(!refusal.to_string().is_empty(), "{refusal:?} says nothing");
         }
     }
+
+    /// The two refusals that wrap a `serde_json::Error` render it inside their own
+    /// sentence and forward it as their [`source`](std::error::Error::source); the
+    /// self-contained ones have no source. `source` is what lets a front-end log the
+    /// underlying parser error beneath the friendly line on the recovery screen.
+    #[test]
+    fn the_wrapped_errors_render_and_expose_their_source() {
+        use std::error::Error;
+
+        // Any failed parse hands back a real `serde_json::Error` to wrap; the shape
+        // it failed on does not matter, only that it is one of serde_json's own.
+        let wrapped = || match serde_json::from_str::<i32>("not a number") {
+            Ok(number) => unreachable!("that is not a number: {number}"),
+            Err(error) => error,
+        };
+
+        let unwritable = SaveError::Unwritable(wrapped());
+        let unreadable = SaveError::Unreadable(wrapped());
+
+        assert!(unwritable.to_string().contains("could not be written"));
+        assert!(unreadable.to_string().contains("could not be read"));
+        assert!(unwritable.source().is_some());
+        assert!(unreadable.source().is_some());
+        assert!(SaveError::MissingVersion.source().is_none());
+    }
 }

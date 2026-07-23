@@ -494,4 +494,16 @@ mod tests {
         // The display name is not the save key, and must not be accepted as one.
         assert!(serde_json::from_str::<Item>("\"Ancient Debris\"").is_err());
     }
+
+    /// The rejection is renderable. A load that stops on an unknown word owes the
+    /// bug report a message naming what it wanted, which is the visitor's
+    /// `expecting`: serde only reaches for it once a `visit_str` has refused.
+    #[test]
+    fn an_unknown_key_names_what_it_expected() {
+        let message = match serde_json::from_str::<Item>("\"unobtainium\"") {
+            Ok(item) => unreachable!("an unknown key must not parse: {item:?}"),
+            Err(error) => error.to_string(),
+        };
+        assert!(message.contains("item key"), "unhelpful message: {message}");
+    }
 }

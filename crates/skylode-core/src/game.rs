@@ -2275,6 +2275,20 @@ mod tests {
         assert!(state.validate().is_err());
     }
 
+    /// A yield carry holding a whole item is the prestige path's version of the
+    /// auto-miner's unpaid block: [`apply_with_carry`](crate::prestige::apply_with_carry)
+    /// keeps only the remainder below [`PERMILLE`], so a carry at or above it is an
+    /// item the run earned and no later swing will ever hand over.
+    #[test]
+    fn a_yield_carry_holding_a_whole_item_is_refused() {
+        let mut state = a_run_in_progress(2024);
+        state
+            .yield_carry
+            .push((Item::Raw(Material::Iron), PERMILLE));
+
+        assert!(state.validate().is_err());
+    }
+
     /// A clock set before 1970 must not cost the player their save.
     ///
     /// [`SystemTime`]'s own serde impl fails here, which is why `last_seen` has a
