@@ -23,30 +23,61 @@ no partial updates. JSON is simple and human-debuggable.
 The `data` blob (see [Integrity](#integrity-hmac) below) serializes one cohesive
 game-state struct. The fields, derived from the mechanics:
 
-- `version`: schema version, for migrations.
-- `prng`: the seeded PRNG state — a *position in a sequence*, not just the seed, so a
+- `version`: schema version, for migrations. **Inside the blob**, not beside it —
+  see [Integrity](#integrity-hmac).
+- `rng`: the seeded PRNG state — a *position in a sequence*, not just the seed, so a
   reloaded run continues its dice rather than rerolling them.
-- `last_seen`: wall-clock time of the last write, for offline accrual.
-- `pickaxe`: tier, Efficiency, Fortune, and each enchant's level.
-- `inventory`: a map from ore (raw and Compressed) to count.
-- `level`: mining XP and current level. The **unlocked worlds are not a field**:
-  they are derived from the level, a monotone function of state already stored, so
-  a second copy would only be an invariant to maintain by hand — and prestige,
-  which resets the level, re-locks them for free.
-- `mines`: per mine, its current size and its remaining-blocks grid state.
-- `selected_mine`: the world and mine currently targeted.
-- `prestige`: prestige rank and the derived permanent multiplier.
-- `boosts`: the **reserve of unspent boost charges** (a count — every boost in the
-  game is identical, so nothing else distinguishes them), plus any running boost
-  and its remaining timer. The reserve is a field of its own because level-up
-  grants charges the player has not fired: dropping it would make a reload eat
-  every charge earned and not yet spent.
+- `last_seen`: wall-clock time of the last write, for offline accrual. Written as
+  whole seconds since the Unix epoch, and a clock set before 1970 clamps to it
+  rather than failing the write: losing a run to a wrong clock is the one outcome a
+  save system must not have.
+- `player`: the pickaxe (tier plus each enchant's level), the inventory, the mining
+  level and banked XP, the prestige rank, and the XP carry. The **unlocked worlds
+  are not a field**: they are derived from the level, a monotone function of state
+  already stored, so a second copy would only be an invariant to maintain by hand —
+  and prestige, which resets the level, re-locks them for free. The prestige
+  *multiplier* is not a field either, for the same reason: it is a function of the
+  rank.
+- `inventory`: a map from item to count, written with **word keys** — `"iron"`,
+  `"compressed_iron"`. JSON object keys must be strings, and the key table is
+  deliberately separate from the display name so the UI can reword "End Stone"
+  without invalidating every file on disk.
+- `mine` and `visited`: the mine the player is in, and every mine they have entered
+  and left — each with its size, its richness level and dial, and its grid, holes
+  included. Two fields rather than a map plus a selected key, so "the mine in front
+  of the player" is a value that is always there rather than a lookup that can miss.
+  A mine never visited has no state worth storing: its grid is a function of its
+  kind and the generator.
+- `boost_charges` and `active_boost`: the **reserve of unspent charges** (a count —
+  every boost in the game is identical, so nothing else distinguishes them), plus
+  any running boost and its remaining timer. The reserve is a field of its own
+  because level-up grants charges the player has not fired: dropping it would make a
+  reload eat every charge earned and not yet spent.
+- the **carries**: the auto-miner's unpaid fractions of a common and a value cell,
+  and the prestige multiplier's unpaid fraction of each item. They look like
+  bookkeeping and are not: dropping them turns a fractional rate into a floor, which
+  at a low enough rate is zero forever.
 - `config`: the player's *preferences* — colour palette (256 or the 16-colour
   fallback), ASCII-only glyphs, mining input mode, number format. **Not** game
-  state, but it lives here anyway: see below.
+  state, but it lives here anyway: see below. The core carries it as a **type
+  parameter** and never learns what it is — the front-end gets its own type back.
 
-The exact field names and shapes are settled during implementation; this is the
-information the save must carry.
+All the maps in the file are **ordered**, not hashed, so the same run always writes
+the same bytes: a text that varies from write to write can be neither pinned by a
+test nor diffed against another save.
+
+### A load validates before it returns
+
+Deserialization writes private fields directly, so it is the one input that reaches
+the game state without passing a single rule. A file that parses and still describes
+a run the rules could not produce — a richness dial above the ceiling bought for it,
+a grid that is not the size its level claims, a level off the ladder, an inventory
+entry at zero, a boost that is a *slow* — is **refused, never repaired**. Clamping
+would hand the player a run that is not the one they saved, and the recovery screen's
+backup is seconds old.
+
+This is aimed at a bug in a migration we write, not at a player with a text editor;
+the HMAC below is what covers the latter.
 
 ### Config in the save
 
@@ -89,8 +120,14 @@ An HMAC is a keyed hash. On save: serialize the state to text, compute
 `mac = HMAC-SHA256(key, text)`, and write:
 
 ```json
-{ "version": 1, "data": "<serialized state>", "mac": "<hmac hex>" }
+{ "data": "<serialized state, version included>", "mac": "<hmac hex>" }
 ```
+
+**The version is inside `data`, not beside it.** The MAC covers `data` alone, so a
+version in the envelope would be the one field a tamperer could edit freely — and it
+is precisely the field that decides which migration runs. Signed, it cannot be used
+to steer the loader. Nothing stops the envelope from *repeating* it later as a
+routing hint; hoisting it out of the signature is the move that could not be undone.
 
 The key is embedded in the binary. On load: recompute the HMAC over `data` and
 compare to the stored `mac`. A match means intact; a mismatch means modified or
@@ -242,7 +279,9 @@ The core is split by concern, each unit testable in isolation:
 - `economy`: costs (composite compressed plus raw), the compression denomination,
   and boosts.
 - `prestige`: the reset and the permanent multiplier.
-- `save`: serialization, HMAC, atomic write, and migration.
+- `save`: serialization and migration **only**. The HMAC, the atomic write, the
+  `.bak` recovery and the clock reading live outside the core, or it would stop
+  being the pure, I/O-free library the rest of this section describes.
 
 The TUI (`skylode-tui`) holds the screens (Mine, Mines, Inventory, Upgrades,
 Stats), reads core state to render, and forwards keyboard input.

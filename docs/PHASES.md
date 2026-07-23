@@ -12,10 +12,11 @@ lives in [ROADMAP.md](ROADMAP.md); the *why* behind each rule lives in
 [DECISIONS.md](DECISIONS.md) — PHASES.md stays focused on order and intent.
 
 Module names follow the code, which is singular and folds progression into
-`player` (`world`, `block`, `material`, `inventory`, `mine`, `pickaxe`, `enchant`,
-`player`, `rng`, `error`). [SYSTEMS.md](SYSTEMS.md#core-modules) still lists the
-older plural sketch (`worlds`, `pickaxes`, `progression`, …); where the two differ,
-the code's names win.
+`player` (`world`, `block`, `material`, `inventory`, `mine`, `mine_kind`, `pickaxe`,
+`enchant`, `player`, `economy`, `boost`, `reward`, `prestige`, `game`, `save`, `rng`,
+`tunables`, `error`). [SYSTEMS.md](SYSTEMS.md#core-modules) still lists the older
+plural sketch (`worlds`, `pickaxes`, `progression`, …); where the two differ, the
+code's names win.
 
 ## Hard ordering constraints
 
@@ -199,12 +200,37 @@ something increments.
 ## Phase 9 - Save (serialisation half only)
 
 Make the state persistable, keeping the core pure. Add serde derives on every
-persisted type, including the PRNG state; a versioned save struct with
+persisted type, including the PRNG state; a versioned save with
 `to_json` / `from_json`, testable without a filesystem; and a migration hook keyed on
 the `version` field. The HMAC, the atomic write, the `.bak` recovery, and the clock
 reading stay **outside** core (in `skylode-tui` or a dedicated crate), so core keeps
 its "pure, no I/O, deterministic" contract and its tests never touch disk (see
 [SYSTEMS.md](SYSTEMS.md#save-system)).
+
+Four things the shape of the code decided, none of them optional once the first save
+is written:
+
+- **The version lives inside the signed payload**, not in the envelope
+  [SYSTEMS.md](SYSTEMS.md#integrity-hmac) sketches. The MAC covers `data` alone, so a
+  version outside it is the one field a tamperer can edit freely — and it is exactly
+  the field that selects which migration runs.
+- **The maps are ordered, not hashed.** A `HashMap`'s iteration order is unspecified,
+  so the same run would write a different text on every save: no golden save could
+  pin it, and no two saves could be diffed. `BTreeMap` makes "the same state writes
+  the same bytes" a property of the type.
+- **An `Item` is written as a word** — `"iron"`, `"compressed_iron"` — because JSON
+  object keys must be strings and the inventory is keyed by item. The key table is
+  separate from the display name, so the UI can reword "End Stone" without
+  invalidating every file on disk.
+- **A load validates before it returns.** Deserialisation writes private fields
+  directly, so it is the one input that reaches the state without passing a single
+  rule; a file describing a dial above its ceiling, a grid that is not the size it
+  claims, or a level off the ladder is **refused**, never repaired. Clamping would
+  hand the player a run that is not the one they saved, and the recovery screen's
+  backup is seconds old.
+
+The configuration the save carries stays a **type parameter**: the core transports the
+front-end's preferences without ever learning what a palette is.
 
 ## Phase 10 - Balance
 
