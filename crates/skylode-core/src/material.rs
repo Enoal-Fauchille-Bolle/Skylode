@@ -246,6 +246,31 @@ impl Serialize for Item {
     }
 }
 
+/// The one shape an [`Item`] can arrive in.
+///
+/// A visitor is serde's answer to "the data format decides what it hands you": it
+/// offers one method per kind of value, and the ones left unimplemented become type
+/// errors with a decent message for free.
+///
+/// It sits at module scope rather than nested inside [`Item::deserialize`] — serde's
+/// usual home for a one-off visitor — for a coverage reason and no other: tarpaulin's
+/// line parser counts an `impl` declared inside a function body as an executable line
+/// no region ever covers, and drops the crate below 100%. Hoisted here it is an
+/// ordinary private helper, invisible outside this module.
+struct ItemKey;
+
+impl Visitor<'_> for ItemKey {
+    type Value = Item;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an item key such as \"iron\" or \"compressed_iron\"")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<Item, E> {
+        Item::from_save_key(key).ok_or_else(|| E::invalid_value(Unexpected::Str(key), &self))
+    }
+}
+
 /// Reads back what [`Serialize`] wrote, and refuses anything else.
 ///
 /// An unknown key is an error rather than a skipped entry: silently dropping it
@@ -253,26 +278,6 @@ impl Serialize for Item {
 /// outcome than a load that stops and says so.
 impl<'de> Deserialize<'de> for Item {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        /// The one shape an [`Item`] can arrive in.
-        ///
-        /// A visitor is serde's answer to "the data format decides what it hands
-        /// you": it offers one method per kind of value, and the ones left
-        /// unimplemented become type errors with a decent message for free.
-        struct ItemKey;
-
-        impl Visitor<'_> for ItemKey {
-            type Value = Item;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an item key such as \"iron\" or \"compressed_iron\"")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<Item, E> {
-                Item::from_save_key(key)
-                    .ok_or_else(|| E::invalid_value(Unexpected::Str(key), &self))
-            }
-        }
-
         deserializer.deserialize_str(ItemKey)
     }
 }
