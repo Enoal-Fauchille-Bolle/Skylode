@@ -835,7 +835,15 @@ source.
 - **Currency:** Amethyst, the rare ore of the End. The player farms the End, then
   spends Amethyst to prestige. Amethyst is dual-use (push the End enchant cap or
   prestige), which creates a real spending choice.
-- **Condition:** reach the End (level 30) and accumulate enough Amethyst.
+- **Condition:** a **fully realised run** — the mining level at its cap (50), a
+  Netherite pickaxe with Efficiency maxed — plus enough Amethyst to pay. Reaching the
+  End (level 30) is no longer sufficient: with the End's ore [gated behind
+  Netherite](#mine-gating-table), the old condition left the shortest path to prestige
+  an XP race to level 30 that never climbed a pickaxe tier (the balance harness
+  measured that floor at ~2.6 h). Requiring the full climb puts the two-axis gate back
+  on the prestige itself. The progression gates are checked **before** the price, since
+  Amethyst only drops past the level gate; `Player::prestige_lock` reports which are
+  still shut, the shape `MineLock` takes for the mine gate.
 - **Deep reset:** pickaxe (back to Wooden), Efficiency, Fortune, ore inventory,
   mine sizes, **mine richness**, enchant levels, and the mining level (XP) all reset
   to the start. Richness goes with size because it is the second track of the same

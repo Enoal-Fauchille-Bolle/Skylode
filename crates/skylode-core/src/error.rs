@@ -17,6 +17,7 @@
 use crate::enchant::EnchantType;
 use crate::material::Item;
 use crate::mine_kind::{MineKind, MineLock};
+use crate::prestige::PrestigeLock;
 use std::fmt;
 
 /// Something the rules would not allow.
@@ -150,15 +151,14 @@ pub enum CoreError {
     /// [`MineLocked`](CoreError::MineLocked) would name a mine the player never asked
     /// to enter.
     ///
-    /// Carries both numbers for the reason every other variant here does: `needed -
-    /// level` is the sentence `docs/UI.md` §6.8 ends the preview on — "you are Lv 23
-    /// of the 30 it takes to get there" — and a refusal that only says *no* leaves it
-    /// with nothing to print.
+    /// Carries the whole [`PrestigeLock`] rather than a single number, for the reason
+    /// [`MineLocked`](CoreError::MineLocked) carries a [`MineLock`]: the condition is
+    /// several gates now — the level cap, Netherite, a maxed Efficiency — and
+    /// `docs/UI.md` §6.8 draws the preview as one line per unmet gate. A refusal that
+    /// flattened them to a single number would leave it re-deriving the rest.
     PrestigeLocked {
-        /// The player's current mining level.
-        level: u32,
-        /// The level the End — and so a prestige — opens at.
-        needed: u32,
+        /// Which progression gates are still shut.
+        lock: PrestigeLock,
     },
 }
 
@@ -214,8 +214,22 @@ impl fmt::Display for CoreError {
                 (None, None) => write!(f, "the {} mine is locked", kind.name()),
             },
             Self::NoBoostCharge => write!(f, "no boost charge to fire"),
-            Self::PrestigeLocked { level, needed } => {
-                write!(f, "prestige needs level {needed}, you are level {level}")
+            // One clause per shut gate, level first — the order `docs/UI.md` §6.8
+            // leads the preview with, since Amethyst only drops past the level gate.
+            // The tier prints through `Debug`, like `MineLocked`, every variant name
+            // being the word a player would use for it.
+            Self::PrestigeLocked { lock } => {
+                let mut needs = Vec::new();
+                if let Some(level) = lock.missing_level() {
+                    needs.push(format!("level {level}"));
+                }
+                if let Some(tier) = lock.missing_tier() {
+                    needs.push(format!("a {tier:?} pickaxe"));
+                }
+                if let Some(efficiency) = lock.missing_efficiency() {
+                    needs.push(format!("Efficiency {efficiency}"));
+                }
+                write!(f, "prestige needs {}", needs.join(", "))
             }
         }
     }
@@ -296,17 +310,18 @@ mod tests {
         );
     }
 
-    /// Both numbers again, and for the sharpest reason of the lot: `docs/UI.md` §6.8
-    /// draws the prestige preview **unaffordable**, since Amethyst only drops in the
-    /// End. The honest last line there is not "you need 512 more" but how far off the
-    /// level is, and this is where that gap comes from.
+    /// The preview `docs/UI.md` §6.8 draws is a run short on every axis — Lv 23,
+    /// Diamond, Efficiency 5 — so the message names all three gates, **level first**,
+    /// which is the order the preview leads with because Amethyst only drops past the
+    /// level gate.
     #[test]
-    fn a_prestige_before_the_end_names_the_level_it_is_short_of() {
-        let err = CoreError::PrestigeLocked {
-            level: 23,
-            needed: 30,
-        };
-        assert_eq!(err.to_string(), "prestige needs level 30, you are level 23");
+    fn a_prestige_short_on_every_axis_names_them_level_first() {
+        let lock = crate::prestige::lock(23, PickaxeTier::Diamond, 5);
+        let err = CoreError::PrestigeLocked { lock };
+        assert_eq!(
+            err.to_string(),
+            "prestige needs level 50, a Netherite pickaxe, Efficiency 15"
+        );
     }
 
     /// The arm no gameplay path reaches: an *open* lock inside a `MineLocked`.

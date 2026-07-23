@@ -236,7 +236,7 @@ owns the timer.
 │   Ancient Debris   6 x 4   R 0     ││        free, reversible, any time      │
 │ ▸ Obsidian         8 x 5   R 6     ││                                        │
 │ End                      Lv 30  ✗  ││ The enhancement past Netherite eats    │
-│   End             locked   Lv 30   ││ both of them, so this dial has an      │
+│   End           locked   Netherite ││ both of them, so this dial has an      │
 │                                    ││ optimum, not a maximum.                │
 │                                    ││                                        │
 │                                    ││ ← →  move the dial                     │
@@ -329,8 +329,8 @@ dip warning a place to be read *before* it is bought.
 │    Netherite Eff VII          ✗  ░│ │ Repaid at Netherite Eff V (35.0) │     │
 │    Netherite Eff VIII         ✗  █│ └──────────────────────────────────┘     │
 │    Netherite Eff IX           ✗  █│                                          │
-│    Netherite Eff X            ✗  █│ Unlocks  nothing new — Diamond already   │
-│    Netherite Eff XI           ✗  █│          opens every mine                │
+│    Netherite Eff X            ✗  █│ Unlocks  the End's Amethyst mine,        │
+│    Netherite Eff XI           ✗  █│          gated behind Netherite          │
 │    Netherite Eff XII          ✗  █│                                          │
 │    Netherite Eff XIII         ✗  █│ Ceiling  Efficiency 5 → 15               │
 │    Netherite Eff XIV          ✗  █│                                          │
@@ -782,8 +782,8 @@ a deliberate decision point, so the frame states the trade and offers the deal, 
     │ Every mine's size and richness                                       │
     │ Your entire inventory                                                │
     │                                                                      │
-    │ Amethyst only drops in the End.  You are Lv 23 of the 30             │
-    │ it takes to get there.                                               │
+    │ You are Lv 23 of 50, a Diamond pickaxe short of Netherite, and       │
+    │ Efficiency IV of the XV — and Amethyst drops past the level.         │
     │                                                                      │
     └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -792,8 +792,10 @@ a deliberate decision point, so the frame states the trade and offers the deal, 
 brutal: the deep reset exists because re-walking the progression is the point, and a
 preview that soft-pedals it sets up the one complaint that cannot be undone.
 
-**Drawn unaffordable, which is the common case** — Amethyst only drops in the End, so
-the honest last line is not "you need 512 more" but "you are not there yet".
+**Drawn unaffordable, which is the common case** — the condition is a fully realised
+run (level cap, Netherite, Efficiency maxed), so the honest last line names the
+progression still owed, not "you need 512 more Amethyst": that ore only drops past
+those gates, and quoting a price to a player short of them answers the wrong question.
 
 ### 6.9 Prestige confirm
 

@@ -39,7 +39,6 @@ use crate::tunables::{
     MICROBLOCKS_PER_MILLIBLOCK, MILLIBLOCKS_PER_BLOCK, MILLIS_PER_SECOND, OFFLINE_CAP,
     TICKS_PER_SECOND,
 };
-use crate::world::World;
 use serde::{Deserialize, Serialize};
 
 /// Everything a saved run consists of.
@@ -380,7 +379,7 @@ impl GameState {
 
     /// Buys one level of an enchant, capped by the highest world reached.
     ///
-    /// Supplies the [`World`] itself rather than taking one:
+    /// Supplies the [`World`](crate::world::World) itself rather than taking one:
     /// the cap is keyed by the *player's* progress, and a caller free to pass any
     /// world could buy an End-capped Fortune from the Overworld.
     pub fn buy_enchant(&mut self, kind: EnchantType) -> Result<(), CoreError> {
@@ -828,11 +827,13 @@ impl GameState {
     ///
     /// ## The order, and why nothing here is interchangeable
     ///
-    /// 1. **The level gate**, refusing with [`CoreError::PrestigeLocked`]. Amethyst
-    ///    only drops in the End, so a player who cannot reach it can never pay — but
-    ///    checking solvency first would answer "you need 512 Amethyst" to someone
-    ///    thirty levels from the ore, which is the wrong sentence
-    ///    (`docs/UI.md` §6.8 says so, and prints the level gap instead).
+    /// 1. **The progression gate**, refusing with [`CoreError::PrestigeLocked`]. The
+    ///    condition is a *fully realised run* — the mining level at its cap, the
+    ///    pickaxe at Netherite, its Efficiency maxed
+    ///    ([`Player::prestige_lock`](crate::player::Player::prestige_lock)) — checked
+    ///    before the price because Amethyst only drops in the End: answering "you need
+    ///    512 Amethyst" to a player short of the level is the wrong sentence
+    ///    (`docs/UI.md` §6.8 says so, and prints the gaps instead).
     /// 2. **The price**, through [`economy::pay`] — the same two-pass till every
     ///    purchase in the game uses, so an unaffordable prestige debits nothing. The
     ///    debit is *superseded* a line later by the wipe, and it is still routed
@@ -867,11 +868,9 @@ impl GameState {
     ///
     /// [`economy::pay`]: crate::economy
     pub fn prestige(&mut self) -> Result<(), CoreError> {
-        if !self.player.has_unlocked(World::End) {
-            return Err(CoreError::PrestigeLocked {
-                level: self.player.get_level(),
-                needed: World::End.unlock_level(),
-            });
+        let lock = self.player.prestige_lock();
+        if !lock.is_open() {
+            return Err(CoreError::PrestigeLocked { lock });
         }
 
         let cost = prestige::cost(self.player.get_prestige());
@@ -2332,10 +2331,19 @@ mod tests {
     /// and that is the better test anyway: the gate this exercises is the one a real
     /// run walks through.
     fn ready_to_prestige(state: &mut GameState) {
-        state.player.grant_break_experience(&[Block::Amethyst; 700]);
+        // Every progression gate open: a Netherite pickaxe with Efficiency maxed, and
+        // the mining level driven to its cap. The XP is granted in slugs until the
+        // level gate closes, so the fixture survives whatever shape phase 10 gives the
+        // XP curve rather than pinning a block count to one of them.
+        equip(state, PickaxeTier::Netherite, instamining());
+        while state.player.prestige_lock().missing_level().is_some() {
+            state
+                .player
+                .grant_break_experience(&[Block::Amethyst; 1000]);
+        }
         assert!(
-            state.player.has_unlocked(World::End),
-            "the fixture must clear the level gate for the test to be about the price"
+            state.player.prestige_lock().is_open(),
+            "the fixture must open every gate for the test to be about the price"
         );
 
         let cost = prestige::cost(state.player.get_prestige());
@@ -2344,19 +2352,18 @@ mod tests {
         }
     }
 
-    /// The level half of the condition, and the half `docs/UI.md` §6.8 says the
-    /// preview leads with: Amethyst only drops in the End, so a player short of it is
-    /// told how far off the *level* is, not how much ore they lack.
+    /// The progression half of the condition: a fresh run is short on all three
+    /// gates, and the refusal names them without moving the dice. `docs/UI.md` §6.8
+    /// leads the preview with the level, since Amethyst only drops past it.
     #[test]
-    fn a_prestige_before_the_end_is_refused_and_changes_nothing() {
+    fn a_prestige_from_a_fresh_run_is_refused_and_changes_nothing() {
         let mut state = state();
         let draws = next_draws(&state);
 
         assert_eq!(
             state.prestige(),
             Err(CoreError::PrestigeLocked {
-                level: 1,
-                needed: World::End.unlock_level(),
+                lock: prestige::lock(1, PickaxeTier::Wooden, 0),
             })
         );
 
