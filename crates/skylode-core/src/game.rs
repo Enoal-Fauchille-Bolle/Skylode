@@ -2603,7 +2603,7 @@ mod tests {
     // =====================================================================
 
     use crate::mine_kind::ALL_MINES;
-    use crate::tunables::{RAW_PER_COMPRESSED, TICKS_PER_SECOND};
+    use crate::tunables::{LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND};
 
     /// One thing the reference player can pour ore into. Each is priced on its
     /// own curve, which is the whole point of the greedy: it compares them.
@@ -2818,21 +2818,81 @@ mod tests {
         }
     }
 
-    /// Moves to the deepest open mine, and sets its dial to its bought ceiling.
+    /// The next step toward a maxed pickaxe: Efficiency up to the current tier's cap,
+    /// then the tier jump, then nothing — the pickaxe is done and the remaining gates
+    /// (level 50, the banked Amethyst) come from mining, not a purchase.
     ///
-    /// `ALL_MINES` is ordered shallow → deep, so the last one whose lock is open
-    /// is the most valuable the player can currently enter.
-    fn select_deepest_open(state: &mut GameState) {
-        let target = ALL_MINES
+    /// This is the *progression* half of the hybrid reference player. The greedy in
+    /// [`develop`] would never prioritise the tier jump over the cheaper upgrades
+    /// around it, and a player that never climbs a tier never reaches the Netherite
+    /// the endgame ore — and so the prestige — now needs.
+    fn progression_target(state: &mut GameState) -> Option<Track> {
+        let tier = current_tier(state);
+        let efficiency = enchant_level(state, EnchantType::Efficiency);
+        if efficiency < tier.efficiency_cap() {
+            Some(Track::Efficiency)
+        } else if tier != PickaxeTier::Netherite {
+            Some(Track::Tier)
+        } else {
+            None
+        }
+    }
+
+    /// The deepest open mine that produces `material`, as either of its cells.
+    ///
+    /// The tier jump is paid in a *specific* material — leaving Wooden costs Stone,
+    /// leaving Stone costs Coal — that the deepest mine does not produce, so a player
+    /// climbing tiers has to farm the mine that does, not just the richest one open.
+    fn mine_for_material(state: &GameState, material: Material) -> Option<MineKind> {
+        ALL_MINES.iter().copied().rfind(|&kind| {
+            (kind.common_material() == material || kind.value_material() == material)
+                && state.player().mine_lock(kind).is_open()
+        })
+    }
+
+    /// The deepest open mine, whatever it produces — the richest one the player can
+    /// enter, and the Amethyst mine once Netherite opens it.
+    fn deepest_open(state: &GameState) -> Option<MineKind> {
+        ALL_MINES
             .iter()
             .copied()
-            .rfind(|&kind| state.player().mine_lock(kind).is_open());
-        if let Some(kind) = target
+            .rfind(|&kind| state.player().mine_lock(kind).is_open())
+    }
+
+    /// Puts the player in the mine that funds the progression target, or — when the
+    /// pickaxe is done — the deepest open mine, to bank Amethyst and earn the last
+    /// levels. Sets the dial to the bought ceiling on arrival.
+    fn select_working_mine(state: &mut GameState) {
+        let target_material = progression_target(state)
+            .and_then(|track| track_cost(state, track))
+            .and_then(|cost| cost.lines().first().map(|line| line.material));
+        let kind = target_material
+            .and_then(|material| mine_for_material(state, material))
+            .or_else(|| deepest_open(state));
+        if let Some(kind) = kind
             && kind != state.current_mine().kind()
         {
             let _ = state.select_mine(kind);
             let ceiling = state.current_mine().get_richness_level();
             let _ = state.set_richness_setting(ceiling);
+        }
+    }
+
+    /// Buys the progression target to exhaustion — the priority the greedy lacks: the
+    /// tier jump is taken the moment it is affordable, however many cheaper upgrades
+    /// are also on offer. Each buy consumes wealth, so the loop terminates.
+    fn advance_progression(state: &mut GameState) {
+        while let Some(target) = progression_target(state) {
+            let Some(cost) = track_cost(state, target) else {
+                break;
+            };
+            if !affordable_by_wealth(state, &cost) {
+                break;
+            }
+            compress_for(state, &cost);
+            if buy_track(state, target).is_err() {
+                break;
+            }
         }
     }
 
@@ -2852,6 +2912,8 @@ mod tests {
         nether: Option<u64>,
         end: Option<u64>,
         netherite: Option<u64>,
+        pickaxe_maxed: Option<u64>,
+        level_50: Option<u64>,
         first_prestige: Option<u64>,
         final_level: u32,
         final_tier: PickaxeTier,
@@ -2869,6 +2931,8 @@ mod tests {
             nether: None,
             end: None,
             netherite: None,
+            pickaxe_maxed: None,
+            level_50: None,
             first_prestige: None,
             final_level: 1,
             final_tier: PickaxeTier::Wooden,
@@ -2885,10 +2949,11 @@ mod tests {
             }
 
             fire_boost_if_idle(&mut state);
-            select_deepest_open(&mut state);
+            select_working_mine(&mut state);
+            advance_progression(&mut state);
 
-            // Milestones are read before the prestige attempt, which resets the
-            // level and the tier the two of them measure.
+            // Milestones are read after advancing, before the prestige attempt that
+            // resets the level and tier the two of them measure.
             if report.nether.is_none() && state.player().has_unlocked(World::Nether) {
                 report.nether = Some(tick);
             }
@@ -2898,10 +2963,18 @@ mod tests {
             if report.netherite.is_none() && current_tier(&mut state) == PickaxeTier::Netherite {
                 report.netherite = Some(tick);
             }
+            // The pickaxe is fully maxed exactly when there is no progression step
+            // left — Netherite with its Efficiency at the cap.
+            if report.pickaxe_maxed.is_none() && progression_target(&mut state).is_none() {
+                report.pickaxe_maxed = Some(tick);
+            }
+            if report.level_50.is_none() && state.player().get_level() >= LEVEL_CAP {
+                report.level_50 = Some(tick);
+            }
 
             // Prestige first: the banked Amethyst is spent here or nowhere, since
-            // `develop` never touches it. Compress for the price the same way a
-            // purchase does — the strict payment wants a Compressed Amethyst too.
+            // neither `develop` nor `advance_progression` touches it. Compress for the
+            // price the same way a purchase does — the payment wants Compressed too.
             let prestige_cost = prestige::cost(state.player().get_prestige());
             compress_for(&mut state, &prestige_cost);
             if state.prestige().is_ok() {
@@ -2944,25 +3017,21 @@ mod tests {
             }
         }
 
-        println!(
-            "\nseed | Nether | End | Netherite | 1st prestige | lvl | end tier | end mine | Amethyst"
-        );
-        println!(
-            "-----|--------|-----|-----------|--------------|-----|----------|----------|---------"
-        );
+        // Phase breakdown, so a re-balance can see *where* the time goes: the tier
+        // climb (→ Netherite), the Netherite Efficiency climb (→ pickaxe maxed), the
+        // XP climb (→ level 50), and the Amethyst bank (→ prestige).
+        println!("\nseed | Netherite | Px maxed | Lv 50 | 1st prestige | end mine");
+        println!("-----|-----------|----------|-------|--------------|---------");
         for seed in [1_u64, 2, 3, 42, 100] {
             let r = run_reference(seed, MAX_TICKS);
             println!(
-                "{:>4} | {:>6} | {:>3} | {:>9} | {:>12} | {:>3} | {:>8?} | {:>8?} | {:>8}",
+                "{:>4} | {:>9} | {:>8} | {:>5} | {:>12} | {:>8?}",
                 r.seed,
-                hours(r.nether),
-                hours(r.end),
                 hours(r.netherite),
+                hours(r.pickaxe_maxed),
+                hours(r.level_50),
                 hours(r.first_prestige),
-                r.final_level,
-                r.final_tier,
                 r.final_mine,
-                r.banked_amethyst,
             );
         }
         println!();
