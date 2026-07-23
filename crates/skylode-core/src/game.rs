@@ -2563,4 +2563,401 @@ mod tests {
         }
         assert!(prestige::cost(1).lines()[0].compressed > prestige::cost(0).lines()[0].compressed);
     }
+
+    // =====================================================================
+    // Phase 10 — the balance harness.
+    //
+    // A *reference player*: a deterministic strategy driven against a real
+    // `GameState`, tick by tick, so "N ticks ⇒ this level, this inventory"
+    // becomes a stable, reproducible measurement. The harness is the tool the
+    // balance pass reasons with; the numbers it prints are what the open
+    // tunables are set against.
+    //
+    // The strategy, decided with Enoal:
+    //   * holds Space every tick (the ideal miner never stops);
+    //   * re-decides purchases on a coarse cadence, not every tick — the same
+    //     result far faster, since prices move slowly;
+    //   * always stands in the deepest *open* mine (the most valuable one its
+    //     level and tier reach);
+    //   * spends **greedily by price**: at each step it buys the single
+    //     cheapest affordable track, then re-evaluates;
+    //   * **banks the prestige currency (Amethyst) instead of spending it**,
+    //     and prestiges the first instant the bank covers the price. Without
+    //     this rule the greedy would sink Amethyst into End upgrades and the
+    //     bank would never reach the threshold, so "prestige as soon as
+    //     possible" would never fire — the interaction that shapes what is
+    //     actually being measured;
+    //   * fires a held boost charge whenever none is running, for the two
+    //     blocks no permanent upgrade can instamine.
+    //
+    // No production API was added for this: the harness reads pickaxe state
+    // through the same `pub(crate)` door the other tests use, and everything
+    // else it needs is already `pub`.
+    // =====================================================================
+
+    use crate::mine_kind::ALL_MINES;
+    use crate::tunables::{RAW_PER_COMPRESSED, TICKS_PER_SECOND};
+
+    /// One thing the reference player can pour ore into. Each is priced on its
+    /// own curve, which is the whole point of the greedy: it compares them.
+    #[derive(Clone, Copy, Debug)]
+    enum Track {
+        Efficiency,
+        Tier,
+        Enchant(EnchantType),
+        MineSize,
+        MineRichness,
+    }
+
+    /// The enchants the reference player buys through [`GameState::buy_enchant`].
+    ///
+    /// Efficiency is **not** here: it is priced in the tier material and bought
+    /// through the pickaxe door ([`Track::Efficiency`]), so listing it under
+    /// `Enchant` would double-count it against itself.
+    const REFERENCE_ENCHANTS: [EnchantType; 6] = [
+        EnchantType::Fortune,
+        EnchantType::Explosive,
+        EnchantType::Jackhammer,
+        EnchantType::Nuke,
+        EnchantType::Excavator,
+        EnchantType::Haste,
+    ];
+
+    /// How many ticks between two purchase re-decisions. One second at 20 tps:
+    /// fine enough that no windfall sits unspent for long, coarse enough to keep
+    /// a multi-million-tick run tractable.
+    const DECISION_CADENCE: u64 = TICKS_PER_SECOND;
+
+    /// Reads the pickaxe's tier without holding a borrow across the call.
+    ///
+    /// There is no shared `&Pickaxe` getter — and there should not be one just
+    /// for a test — so the harness takes the `pub(crate)` mutable door, reads a
+    /// `Copy` value, and lets the borrow end. Same for [`enchant_level`].
+    fn current_tier(state: &mut GameState) -> PickaxeTier {
+        let (_, pickaxe) = state.player.inventory_and_pickaxe_mut();
+        pickaxe.get_tier()
+    }
+
+    /// The level currently held on `kind`, read the same scoped way as
+    /// [`current_tier`].
+    fn enchant_level(state: &mut GameState, kind: EnchantType) -> u8 {
+        let (_, pickaxe) = state.player.inventory_and_pickaxe_mut();
+        pickaxe.enchants().get_level(kind)
+    }
+
+    /// The cost of a track's next step, or [`None`] if it is capped, gated, or
+    /// otherwise unavailable right now.
+    ///
+    /// This is where the two-axis gates live for the strategy: the tier jump
+    /// only appears once Efficiency is maxed (the shop refuses it otherwise),
+    /// and every enchant disappears at its per-world cap.
+    fn track_cost(state: &mut GameState, track: Track) -> Option<economy::Cost> {
+        let world = state.player().highest_unlocked_world();
+        let tier = current_tier(state);
+        match track {
+            Track::Efficiency => {
+                let level = enchant_level(state, EnchantType::Efficiency);
+                (level < tier.efficiency_cap())
+                    .then(|| economy::pickaxe_efficiency_cost(tier, level))
+            }
+            Track::Tier => {
+                let efficiency = enchant_level(state, EnchantType::Efficiency);
+                // The shop gates the jump on a maxed Efficiency, and Netherite is
+                // the top of the ladder — no jump to price past it.
+                (tier != PickaxeTier::Netherite && efficiency >= tier.efficiency_cap())
+                    .then(|| economy::pickaxe_tier_cost(tier))
+            }
+            Track::Enchant(kind) => {
+                let level = enchant_level(state, kind);
+                if level >= kind.max_level(tier, world) {
+                    return None;
+                }
+                economy::enchant_cost(kind, level, world)
+            }
+            Track::MineSize => {
+                let mine = state.current_mine();
+                (!mine.is_size_maxed())
+                    .then(|| economy::mine_size_cost(mine.kind(), mine.get_size_level()))
+            }
+            Track::MineRichness => {
+                let mine = state.current_mine();
+                (!mine.is_richness_maxed())
+                    .then(|| economy::mine_richness_cost(mine.kind(), mine.get_richness_level()))
+            }
+        }
+    }
+
+    /// A single scalar to rank two costs by, in raw-equivalent items.
+    ///
+    /// A heuristic, and knowingly so: it sums raw across materials as if an Iron
+    /// and an Amethyst were worth the same, which they are not. But the greedy
+    /// only needs a consistent order to pick "the cheapest", and the prestige
+    /// currency — the one whose cross-material value would matter most — is
+    /// excluded from the comparison entirely (see [`spends_prestige_currency`]).
+    fn raw_equiv(cost: &economy::Cost) -> u64 {
+        cost.lines()
+            .iter()
+            .map(|line| {
+                u64::from(line.compressed) * u64::from(RAW_PER_COMPRESSED) + u64::from(line.raw)
+            })
+            .sum()
+    }
+
+    /// Whether a cost is paid, in any part, in the prestige currency.
+    ///
+    /// The reference player never spends Amethyst: it is banked toward the
+    /// prestige it is saving for. A purchase that would touch it is skipped.
+    fn spends_prestige_currency(cost: &economy::Cost) -> bool {
+        cost.lines()
+            .iter()
+            .any(|line| line.material == Material::Amethyst)
+    }
+
+    /// Applies one bought track, and — for richness — pushes the free dial up to
+    /// the ceiling just raised, since a bought ceiling the dial never reaches is
+    /// ore spent on nothing.
+    fn buy_track(state: &mut GameState, track: Track) -> Result<(), CoreError> {
+        match track {
+            Track::Efficiency => state.buy_pickaxe_efficiency(),
+            Track::Tier => state.buy_pickaxe_tier(),
+            Track::Enchant(kind) => state.buy_enchant(kind),
+            Track::MineSize => state.buy_mine_size(),
+            Track::MineRichness => {
+                state.buy_mine_richness()?;
+                let ceiling = state.current_mine().get_richness_level();
+                // A no-op if the dial is already there; otherwise a deterministic
+                // redraw of the standing cells, which is the point of buying it.
+                let _ = state.set_richness_setting(ceiling);
+                Ok(())
+            }
+        }
+    }
+
+    /// Every track the reference player weighs each step.
+    fn all_tracks() -> Vec<Track> {
+        let mut tracks = vec![
+            Track::Efficiency,
+            Track::Tier,
+            Track::MineSize,
+            Track::MineRichness,
+        ];
+        tracks.extend(REFERENCE_ENCHANTS.map(Track::Enchant));
+        tracks
+    }
+
+    /// Can the player afford this **if they compress first**?
+    ///
+    /// The greedy filters on *wealth* ([`Inventory::raw_value`]), not on the strict
+    /// denominations [`economy::pay`] demands, then mints the Compressed units it
+    /// needs just before paying (see [`compress_for`]). This models the manual step
+    /// the strict payment forces: a player sitting on loose ore compresses on
+    /// demand rather than holding a pre-split stock.
+    fn affordable_by_wealth(state: &GameState, cost: &economy::Cost) -> bool {
+        cost.lines().iter().all(|line| {
+            let need =
+                u64::from(line.compressed) * u64::from(RAW_PER_COMPRESSED) + u64::from(line.raw);
+            u64::from(state.player().get_inventory().raw_value(line.material)) >= need
+        })
+    }
+
+    /// Mints exactly the Compressed units a cost needs, and no more, so the strict
+    /// payment finds both denominations present.
+    ///
+    /// A no-op where the stock is already right; it declines silently where the raw
+    /// stock is short, which leaves the purchase for [`economy::pay`] to refuse —
+    /// the honest "not affordable yet". Compressing the *deficit* only (rather than
+    /// all raw) is what keeps enough loose ore for the line's raw part.
+    fn compress_for(state: &mut GameState, cost: &economy::Cost) {
+        let inventory = state.player.inventory_mut();
+        for line in cost.lines() {
+            let held = inventory.count(Item::Compressed(line.material));
+            if held < line.compressed {
+                let _ = inventory.compress(line.material, line.compressed - held);
+            }
+        }
+    }
+
+    /// Spends greedily by price until nothing affordable remains: pick the
+    /// cheapest wealth-affordable track that does not touch the prestige currency,
+    /// compress for it, buy it, repeat.
+    fn develop(state: &mut GameState) {
+        loop {
+            let mut best: Option<(Track, u64, economy::Cost)> = None;
+            for track in all_tracks() {
+                let Some(cost) = track_cost(state, track) else {
+                    continue;
+                };
+                if spends_prestige_currency(&cost) {
+                    continue;
+                }
+                if !affordable_by_wealth(state, &cost) {
+                    continue;
+                }
+                let price = raw_equiv(&cost);
+                if best
+                    .as_ref()
+                    .is_none_or(|(_, best_price, _)| price < *best_price)
+                {
+                    best = Some((track, price, cost));
+                }
+            }
+            let Some((track, _, cost)) = best else {
+                break;
+            };
+            compress_for(state, &cost);
+            if buy_track(state, track).is_err() {
+                break;
+            }
+        }
+    }
+
+    /// Moves to the deepest open mine, and sets its dial to its bought ceiling.
+    ///
+    /// `ALL_MINES` is ordered shallow → deep, so the last one whose lock is open
+    /// is the most valuable the player can currently enter.
+    fn select_deepest_open(state: &mut GameState) {
+        let target = ALL_MINES
+            .iter()
+            .copied()
+            .rfind(|&kind| state.player().mine_lock(kind).is_open());
+        if let Some(kind) = target
+            && kind != state.current_mine().kind()
+        {
+            let _ = state.select_mine(kind);
+            let ceiling = state.current_mine().get_richness_level();
+            let _ = state.set_richness_setting(ceiling);
+        }
+    }
+
+    /// Fires a held charge if none is running, for the boost's whole reason to
+    /// exist: instamining the two blocks no permanent upgrade reaches.
+    fn fire_boost_if_idle(state: &mut GameState) {
+        if state.active_boost().is_none() && state.boost_charges() > 0 {
+            let _ = state.fire_boost();
+        }
+    }
+
+    /// What one reference run reached, in ticks. `None` where a milestone was
+    /// never hit inside the tick budget.
+    #[derive(Debug)]
+    struct PacingReport {
+        seed: u64,
+        nether: Option<u64>,
+        end: Option<u64>,
+        netherite: Option<u64>,
+        first_prestige: Option<u64>,
+        final_level: u32,
+        final_tier: PickaxeTier,
+        final_mine: MineKind,
+        banked_amethyst: u32,
+    }
+
+    /// Runs the reference player from a fresh seed for at most `max_ticks`,
+    /// stopping the instant the first prestige fires — that is the milestone the
+    /// 15–25 h target is stated against.
+    fn run_reference(seed: u64, max_ticks: u64) -> PacingReport {
+        let mut state = GameState::new(seed, SystemTime::UNIX_EPOCH);
+        let mut report = PacingReport {
+            seed,
+            nether: None,
+            end: None,
+            netherite: None,
+            first_prestige: None,
+            final_level: 1,
+            final_tier: PickaxeTier::Wooden,
+            final_mine: MineKind::Stone,
+            banked_amethyst: 0,
+        };
+
+        for tick in 0..max_ticks {
+            state.tick(MINING);
+            report.final_level = report.final_level.max(state.player().get_level());
+
+            if !tick.is_multiple_of(DECISION_CADENCE) {
+                continue;
+            }
+
+            fire_boost_if_idle(&mut state);
+            select_deepest_open(&mut state);
+
+            // Milestones are read before the prestige attempt, which resets the
+            // level and the tier the two of them measure.
+            if report.nether.is_none() && state.player().has_unlocked(World::Nether) {
+                report.nether = Some(tick);
+            }
+            if report.end.is_none() && state.player().has_unlocked(World::End) {
+                report.end = Some(tick);
+            }
+            if report.netherite.is_none() && current_tier(&mut state) == PickaxeTier::Netherite {
+                report.netherite = Some(tick);
+            }
+
+            // Prestige first: the banked Amethyst is spent here or nowhere, since
+            // `develop` never touches it. Compress for the price the same way a
+            // purchase does — the strict payment wants a Compressed Amethyst too.
+            let prestige_cost = prestige::cost(state.player().get_prestige());
+            compress_for(&mut state, &prestige_cost);
+            if state.prestige().is_ok() {
+                report.first_prestige = Some(tick);
+                return report;
+            }
+
+            develop(&mut state);
+
+            report.final_tier = current_tier(&mut state);
+            report.final_mine = state.current_mine().kind();
+            report.banked_amethyst = state.player().get_inventory().raw_value(Material::Amethyst);
+        }
+
+        report
+    }
+
+    /// Prints the reference player's pacing across several seeds.
+    ///
+    /// **Ignored by default**: a run long enough to reach the first prestige is
+    /// several million ticks, far too slow for the commit gate. It is a
+    /// measurement tool, not a regression guard — run it by hand, in release:
+    ///
+    /// ```text
+    /// cargo test -p skylode-core --release balance_pacing -- --ignored --nocapture
+    /// ```
+    ///
+    /// The target, decided with Enoal, is a first prestige in **~15–25 h** of
+    /// active play — `1_080_000` to `1_800_000` ticks at 20 tps.
+    #[test]
+    #[ignore = "multi-million-tick measurement; run in release with --ignored --nocapture"]
+    fn balance_pacing_report() {
+        // ~70 h ceiling, so a slow seed still reaches the prestige it is timed to.
+        const MAX_TICKS: u64 = 5_000_000;
+
+        fn hours(ticks: Option<u64>) -> String {
+            match ticks {
+                Some(t) => format!("{:.1} h", t as f64 / (TICKS_PER_SECOND as f64 * 3600.0)),
+                None => "—".to_string(),
+            }
+        }
+
+        println!(
+            "\nseed | Nether | End | Netherite | 1st prestige | lvl | end tier | end mine | Amethyst"
+        );
+        println!(
+            "-----|--------|-----|-----------|--------------|-----|----------|----------|---------"
+        );
+        for seed in [1_u64, 2, 3, 42, 100] {
+            let r = run_reference(seed, MAX_TICKS);
+            println!(
+                "{:>4} | {:>6} | {:>3} | {:>9} | {:>12} | {:>3} | {:>8?} | {:>8?} | {:>8}",
+                r.seed,
+                hours(r.nether),
+                hours(r.end),
+                hours(r.netherite),
+                hours(r.first_prestige),
+                r.final_level,
+                r.final_tier,
+                r.final_mine,
+                r.banked_amethyst,
+            );
+        }
+        println!();
+    }
 }
