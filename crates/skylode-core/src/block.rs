@@ -171,16 +171,21 @@ impl Block {
     }
 
     /// Returns the minimum pickaxe tier required to mine the block.
+    ///
+    /// The gate is what makes pickaxe tier the *mine-opening* axis of the two-axis
+    /// progression: a block a tier cannot break cannot stand in a mine that tier can
+    /// enter, so the tier the mine gates on is the tier of its cells (see
+    /// [`MineKind::gating_tier`](crate::mine_kind::MineKind::gating_tier)). The
+    /// endgame ore is gated at the top of the ladder on purpose: **Amethyst — the
+    /// prestige currency and the highest enchant material — needs Netherite**, and
+    /// the Nether's Quartz needs Diamond, so reaching either is proof of a full
+    /// climb rather than of patience alone. This is also what finally gives Netherite
+    /// a mine to unlock, where the Overworld's own ladder tops out at Iron.
     pub fn min_pickaxe_tier(self) -> PickaxeTier {
         match self {
-            Self::Stone
-            | Self::Cobblestone
-            | Self::CoalOre
-            | Self::CoalBlock
-            | Self::Netherrack
-            | Self::QuartzOre
-            | Self::Endstone
-            | Self::Amethyst => PickaxeTier::Wooden,
+            Self::Stone | Self::Cobblestone | Self::CoalOre | Self::CoalBlock => {
+                PickaxeTier::Wooden
+            }
             Self::IronOre | Self::IronBlock | Self::LapisOre | Self::LapisBlock => {
                 PickaxeTier::Stone
             }
@@ -192,9 +197,13 @@ impl Block {
             | Self::DiamondBlock
             | Self::EmeraldOre
             | Self::EmeraldBlock => PickaxeTier::Iron,
-            Self::AncientDebris | Self::NetheriteBlock | Self::Obsidian | Self::CryingObsidian => {
-                PickaxeTier::Diamond
-            }
+            Self::AncientDebris
+            | Self::NetheriteBlock
+            | Self::Obsidian
+            | Self::CryingObsidian
+            | Self::Netherrack
+            | Self::QuartzOre => PickaxeTier::Diamond,
+            Self::Endstone | Self::Amethyst => PickaxeTier::Netherite,
         }
     }
 
@@ -590,25 +599,37 @@ mod tests {
         }
     }
 
-    /// A fresh player holds a Wooden pickaxe, so the filler block of every
-    /// world must be breakable with it — otherwise arriving in that world
-    /// would soft-lock the run.
+    /// The **starter** world's filler must be breakable with the Wooden pickaxe a
+    /// fresh player holds, or the opening mine would soft-lock. The deeper worlds'
+    /// fillers gate higher — Netherrack behind Diamond, End Stone behind Netherite —
+    /// but that is not a soft-lock: the mine's own tier gate refuses entry before a
+    /// player can stand in front of a cell they cannot break.
     #[test]
-    fn every_world_filler_is_breakable_with_a_wooden_pickaxe() {
-        for block in [Block::Stone, Block::Netherrack, Block::Endstone] {
-            assert_eq!(block.min_pickaxe_tier(), PickaxeTier::Wooden);
-        }
+    fn the_starter_filler_is_breakable_with_a_wooden_pickaxe() {
+        assert_eq!(Block::Stone.min_pickaxe_tier(), PickaxeTier::Wooden);
     }
 
     #[test]
-    fn obsidian_class_blocks_gate_behind_diamond() {
+    fn the_nether_gates_behind_diamond() {
         for block in [
             Block::Obsidian,
             Block::CryingObsidian,
             Block::AncientDebris,
             Block::NetheriteBlock,
+            Block::Netherrack,
+            Block::QuartzOre,
         ] {
             assert_eq!(block.min_pickaxe_tier(), PickaxeTier::Diamond);
+        }
+    }
+
+    /// The End's ore is the top of the gate, which is what gives Netherite a mine to
+    /// open — Amethyst is the prestige currency, and reaching it is proof of the full
+    /// tier climb.
+    #[test]
+    fn the_end_gates_behind_netherite() {
+        for block in [Block::Endstone, Block::Amethyst] {
+            assert_eq!(block.min_pickaxe_tier(), PickaxeTier::Netherite);
         }
     }
 }

@@ -417,8 +417,8 @@ ore mine never has filler as its common cell, or unlocking it would drop the pla
 into breaking mostly-valueless Stone (see [DECISIONS.md](DECISIONS.md)). The Nether
 Quartz mine is the one place Netherrack — otherwise the sole material with no
 economic function — earns a role: it is that mine's common cell and its growth
-currency, with Quartz Ore as the value. Netherrack and Quartz are both soft-gated
-(Wooden pickaxe) but sit behind the Nether's level-15 XP gate.
+currency, with Quartz Ore as the value. Netherrack and Quartz gate behind Diamond,
+with the rest of the Nether's mines, and behind the Nether's level-15 XP gate.
 
 ### Batch reset
 
@@ -512,12 +512,14 @@ Amethyst) each own a distinct function, so no two ores are redundant.
 
 ### Mine gating table
 
-Which pickaxe tier can open which mine follows Minecraft's tool rules. The current
-mapping lives in `block.rs` (`min_pickaxe_tier`): Stone/Coal need Wooden, Iron
-needs Stone, Gold/Redstone/Diamond/Emerald need Iron, Lapis needs Stone, Ancient
-Debris/Obsidian/Crying Obsidian need Diamond, Quartz and Amethyst are soft (Wooden)
-but sit behind their world's XP gate. The End's rich role is carried by Amethyst
-requiring late-game reach, not a high tier.
+Which pickaxe tier can open which mine follows the two-axis gate. The mapping lives
+in `block.rs` (`min_pickaxe_tier`): Stone/Coal need Wooden, Iron needs Stone,
+Gold/Redstone/Diamond/Emerald need Iron, Lapis needs Stone, the **whole Nether** —
+Ancient Debris/Obsidian/Crying Obsidian **and Quartz** — needs Diamond, and the
+**End's End Stone/Amethyst needs Netherite**. Amethyst is the prestige currency and
+the top enchant material, so gating it at the top of the ladder makes reaching it
+proof of a full tier climb — and it is what finally gives Netherite a mine to open,
+where the Overworld's ladder tops out at Iron.
 
 ## Enchants
 

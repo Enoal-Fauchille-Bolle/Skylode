@@ -1136,23 +1136,25 @@ mod tests {
         );
     }
 
-    /// The End's own mine locks on **one** axis only — End Stone is Wooden-gated,
-    /// so what stands between a fresh player and the Amethyst is the level alone.
-    /// The message must not invent a pickaxe requirement that is not there.
+    /// A mine short on **one** axis names just that axis. The Iron mine is in the
+    /// Overworld — always unlocked — so a fresh Wooden player is short a pickaxe
+    /// tier and nothing else; the message must not invent a level requirement.
+    /// (The level-only half is `mine_kind`'s `a_mine_in_a_shut_world_owes_only_a_level`,
+    /// now that the endgame ore is tier-gated and no longer isolates it here.)
     #[test]
     fn a_mine_short_on_one_axis_names_only_that_one() {
         let mut state = state();
-        let lock = state.player().mine_lock(MineKind::Amethyst);
+        let lock = state.player().mine_lock(MineKind::Iron);
         let err = CoreError::MineLocked {
-            kind: MineKind::Amethyst,
+            kind: MineKind::Iron,
             lock,
         };
 
-        assert_eq!(state.select_mine(MineKind::Amethyst), Err(err));
+        assert_eq!(state.select_mine(MineKind::Iron), Err(err));
 
-        assert_eq!(lock.missing_level(), Some(30));
-        assert_eq!(lock.missing_tier(), None);
-        assert_eq!(err.to_string(), "the End mine needs level 30");
+        assert_eq!(lock.missing_level(), None);
+        assert_eq!(lock.missing_tier(), Some(PickaxeTier::Stone));
+        assert_eq!(err.to_string(), "the Iron mine needs a Stone pickaxe");
     }
 
     /// A refusal changes nothing — **including the generator**. A first visit mints

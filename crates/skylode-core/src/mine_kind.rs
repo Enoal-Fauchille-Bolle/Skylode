@@ -147,8 +147,8 @@ impl MineKind {
     /// Derived from the common cell, and it is safe to derive from *one* cell only
     /// because both cells of every mine share a minimum tier — an ore and its
     /// dense form always do, and the three two-material mines were built to as
-    /// well (Netherrack/Quartz are Wooden, Obsidian/Crying are Diamond,
-    /// Endstone/Amethyst are Wooden). If a future mine broke that,
+    /// well (Netherrack/Quartz are Diamond, Obsidian/Crying are Diamond,
+    /// Endstone/Amethyst are Netherite). If a future mine broke that,
     /// [`common_and_value_share_a_gating_tier`](self) would fail rather than let a
     /// mine unlock with cells its pickaxe cannot break — which would sit in the
     /// grid as permanent holes.
@@ -455,10 +455,11 @@ mod tests {
         }
     }
 
-    /// The level axis alone. The End mine's cells are Wooden-tier, so a player one
-    /// level short of the End is held by the *world* and nothing else — which is
-    /// exactly the state `UI-EN.md` §5.3 draws, and the reason the lock has to name
-    /// a level rather than report a bare "locked".
+    /// The level axis alone, isolated by handing the player a pickaxe that already
+    /// clears the tier gate (Netherite, which the End mine now needs): one level
+    /// short of the End they are held by the *world* and nothing else — the state
+    /// `UI-EN.md` §5.3 draws, and the reason the lock names a level rather than a
+    /// bare "locked".
     #[test]
     fn a_mine_in_a_shut_world_owes_only_a_level() {
         let lock = MineKind::Amethyst.lock(END_UNLOCK_LEVEL - 1, PickaxeTier::Netherite);
