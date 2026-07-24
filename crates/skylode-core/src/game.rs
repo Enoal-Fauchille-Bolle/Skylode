@@ -3232,6 +3232,90 @@ mod tests {
             .sum()
     }
 
+    /// Runs the reference player for exactly `ticks` and hands back the state it
+    /// reached — the **bounded** sibling of [`run_reference`].
+    ///
+    /// It deliberately never attempts the prestige: a trajectory assertion wants the run
+    /// as it stands at tick `N`, and a prestige firing mid-way would reset the very level,
+    /// tier and inventory the caller is about to read.
+    fn reference_state_after(seed: u64, ticks: u64, style: ReferenceStyle) -> GameState {
+        let mut state = GameState::new(seed, SystemTime::UNIX_EPOCH);
+        for tick in 0..ticks {
+            state.tick(MINING);
+            if !tick.is_multiple_of(DECISION_CADENCE) {
+                continue;
+            }
+            fire_boost_if_idle(&mut state);
+            select_working_mine(&mut state, style);
+            advance_progression(&mut state, style);
+            develop(&mut state, style);
+        }
+        state
+    }
+
+    /// **The phase-10 simulation test**: `N` ticks of a seeded reference run ⇒ this tier,
+    /// this level, this inventory.
+    ///
+    /// Unlike the [pacing report](balance_pacing_report) this one **runs in the gate**, and
+    /// that is its whole point: the golden vector pins the RNG's draw order and the golden
+    /// save pins the written bytes, but until this test nothing pinned *the run itself*. A
+    /// change to a drop, an XP value, a proc curve, a cost or the swing's order moves these
+    /// numbers, and moving them silently is what phase 10 exists to prevent.
+    ///
+    /// Exact values, not a window, because at a fixed tick the run is a single determined
+    /// state — the same standard `the_written_shape_is_pinned` holds the save to. If it
+    /// fails, the question is not "what are the new numbers?" but "what did we just change
+    /// about how a run unfolds?".
+    #[test]
+    fn a_seeded_reference_run_reaches_a_known_state() {
+        let mut state = reference_state_after(1, 20_000, ReferenceStyle::Speedrun);
+
+        // Where the run stands: both progression axes, and the mine the strategy chose.
+        assert_eq!(current_tier(&mut state), PickaxeTier::Iron);
+        assert_eq!(state.player().get_level(), 13);
+        assert_eq!(state.current_mine().kind(), MineKind::Iron);
+
+        // What it is holding. The total is the sensitive one — it moves if any drop, any
+        // proc, any price or the swing's order moves — while Lapis is the canary the
+        // audit already names: with no sink past the world's enchant cap it only ever
+        // accumulates, so a change to *income* shows up here undiluted by spending.
+        assert_eq!(inventory_raw_total(&state), 978);
+        assert_eq!(
+            state.player().get_inventory().raw_value(Material::Lapis),
+            450
+        );
+    }
+
+    /// **The pacing band guard**: the reference speedrunner's first prestige lands inside
+    /// the window phase 10 tuned it to.
+    ///
+    /// A window rather than an exact tick, and that is a deliberate departure from the
+    /// crate's other pinned vectors: here the design constraint *is* a window — Enoal's
+    /// call that a passive idle game wants a first prestige around an hour, not fifteen —
+    /// so an exact number would break on every legitimate retune while saying nothing the
+    /// window does not. The bounds are wide enough to survive a deliberate nudge and tight
+    /// enough to catch the class of regression that actually happened: a shared cost curve
+    /// quietly turning a one-hour run into a thirty-nine-hour one.
+    #[test]
+    fn the_first_prestige_lands_inside_the_pacing_window() {
+        // 0.5 h to 2 h at 20 tps. The measured run sits at ~1.0 h, near the middle.
+        const FLOOR: u64 = 36_000;
+        const CEILING: u64 = 144_000;
+
+        let report = run_reference(1, CEILING * 2, ReferenceStyle::Speedrun);
+        // `unwrap_or(0)` and not `expect`: the crate's lints refuse the panicking
+        // accessors everywhere, tests included, and zero falls outside the window anyway
+        // — so a run that never prestiged fails the same assertion, with the same message.
+        let prestige = report.first_prestige.unwrap_or(0);
+        assert!(
+            (FLOOR..=CEILING).contains(&prestige),
+            "first prestige at {prestige} ticks ({:.2} h) is outside the {:.1}–{:.1} h window",
+            prestige as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
+            FLOOR as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
+            CEILING as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
+        );
+    }
+
     /// Prints both reference players' pacing across several seeds.
     ///
     /// The speedrunner sets the band's lower edge (rush the first prestige) and the
