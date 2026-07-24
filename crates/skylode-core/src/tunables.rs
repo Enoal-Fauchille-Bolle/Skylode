@@ -318,18 +318,37 @@ pub const SIZE_COST_GROWTH: f64 = 1.55;
 /// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`.
 pub const RICHNESS_COST_GROWTH: f64 = 1.35;
 
-/// Growth factor shared by the two **pickaxe** tracks: Efficiency within a tier, and
-/// the tier jump itself.
+/// Growth factor shared by the two **ordinary pickaxe** tracks: Efficiency `1..=5`
+/// within a tier, and the tier jump itself.
 ///
-/// The one slope that must survive a **fifteen-step** track (Netherite's Efficiency
-/// climb) as well as a five-step one, which is what holds it below the size slope. At
-/// `1.55` the fifteenth step alone would cost 643 full Obsidian grids — over five
-/// hours of mining for a single Efficiency level — because a slope compounds over
-/// however many steps a track has, and two tracks of different lengths cannot share
-/// one without the longer one running away.
+/// Every tier resets Efficiency, so the longest run this slope prices is **five steps**
+/// (a tier's `1..=5`), plus the six tier jumps sitting one rung past each cap. Netherite's
+/// Efficiency `6..=15` — the enhancement — used to ride this slope too and made it a
+/// fifteen-step track whose top rung was an Obsidian wall; phase 10 moved that onto its
+/// own [`NETHERITE_ENHANCEMENT_COST_GROWTH`] so this one no longer has to survive a long
+/// completionist-only climb *and* the short climbs every run makes.
 ///
 /// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`.
 pub const UPGRADE_COST_GROWTH: f64 = 1.45;
+
+/// Growth factor of the **Netherite Efficiency enhancement** (`6..=15`), the pickaxe's
+/// one completionist-only track, priced apart from [`UPGRADE_COST_GROWTH`].
+///
+/// **Why its own slope.** The enhancement is ten steps that only the completionist buys;
+/// the ordinary pickaxe tracks are ≤5-step climbs every run makes. One slope cannot price
+/// both without coupling them — steepen it for the speedrun's tier jumps and the ten-step
+/// enhancement runs away; flatten it for the enhancement and the jumps go slack. Splitting
+/// the enhancement onto its own dial is what lets the phase-10 pass pull the completionist
+/// ceiling down (its dominant cost) without moving the speedrun, which never climbs here.
+///
+/// Gentler than [`UPGRADE_COST_GROWTH`] because it compounds over twice as many steps: at
+/// the shared `1.45` the enhancement's ten rungs summed to ~8900 Obsidian-and-Crying and
+/// cost roughly 3.7 h of the completionist's run; the flatter slope trims the top rungs,
+/// where the scarce Crying Obsidian bites hardest.
+///
+/// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`, and
+/// below [`SIZE_COST_GROWTH`] so size stays the steepest track in the game.
+pub const NETHERITE_ENHANCEMENT_COST_GROWTH: f64 = 1.10;
 
 /// Base term of the **enchant** ladder's cost curve — an order of magnitude above
 /// [`COST_BASE`], and paired with the game's gentlest slope.
@@ -490,6 +509,7 @@ mod tests {
             assert!(SIZE_COST_GROWTH > 1.0);
             assert!(RICHNESS_COST_GROWTH > 1.0);
             assert!(UPGRADE_COST_GROWTH > 1.0);
+            assert!(NETHERITE_ENHANCEMENT_COST_GROWTH > 1.0);
             assert!(ENCHANT_COST_GROWTH > 1.0);
         }
     }
@@ -504,6 +524,7 @@ mod tests {
         const {
             assert!(SIZE_COST_GROWTH > RICHNESS_COST_GROWTH);
             assert!(SIZE_COST_GROWTH > UPGRADE_COST_GROWTH);
+            assert!(SIZE_COST_GROWTH > NETHERITE_ENHANCEMENT_COST_GROWTH);
             assert!(SIZE_COST_GROWTH > ENCHANT_COST_GROWTH);
         }
     }

@@ -46,8 +46,9 @@ use crate::mine_kind::MineKind;
 use crate::pickaxe::{Pickaxe, PickaxeTier};
 use crate::rng::Rng;
 use crate::tunables::{
-    BOOST_COST, COST_BASE, ENCHANT_COST_BASE, ENCHANT_COST_GROWTH, RAW_PER_COMPRESSED,
-    RICHNESS_COST_GROWTH, SIZE_COST_GROWTH, UPGRADE_COST_GROWTH,
+    BOOST_COST, COST_BASE, ENCHANT_COST_BASE, ENCHANT_COST_GROWTH,
+    NETHERITE_ENHANCEMENT_COST_GROWTH, RAW_PER_COMPRESSED, RICHNESS_COST_GROWTH, SIZE_COST_GROWTH,
+    UPGRADE_COST_GROWTH,
 };
 use crate::world::World;
 
@@ -110,6 +111,19 @@ fn richness_curve(n: u32) -> u32 {
 /// held below [`size_curve`]'s slope because Netherite's Efficiency runs fifteen steps.
 fn upgrade_curve(n: u32) -> u32 {
     cost_curve(COST_BASE, UPGRADE_COST_GROWTH, n)
+}
+
+/// The price of the `n`-th step of the **Netherite Efficiency enhancement** (`6..=15`),
+/// on its own gentler slope ([`NETHERITE_ENHANCEMENT_COST_GROWTH`]) rather than
+/// [`upgrade_curve`]'s.
+///
+/// It shares [`COST_BASE`] with the ordinary upgrade curve — the two meet at step zero —
+/// and parts from it only in slope, because the enhancement's ten completionist-only
+/// steps compound where the ordinary tracks' five reset every tier. Splitting the slope
+/// is what lets phase 10 price the enhancement's endgame down without touching the tier
+/// jumps that ride the same base.
+fn enhancement_curve(n: u32) -> u32 {
+    cost_curve(COST_BASE, NETHERITE_ENHANCEMENT_COST_GROWTH, n)
 }
 
 /// The price of the `n`-th level of an **enchant**: the one track with its own base,
@@ -407,7 +421,7 @@ pub fn pickaxe_efficiency_cost(tier: PickaxeTier, current_level: u8) -> Cost {
         // Obsidian/Crying ramp, so the two align by construction: Eff 6 is step 0 on
         // each.
         let step = u32::from(current_level - NETHERITE_BASE_EFFICIENCY);
-        let total = upgrade_curve(step);
+        let total = enhancement_curve(step);
         let span = u32::from(tier.efficiency_cap() - NETHERITE_BASE_EFFICIENCY - 1);
         let (obsidian, crying) = split_rare(total, step, span, RECIPE_RAMP_START_PERMILLE);
 
