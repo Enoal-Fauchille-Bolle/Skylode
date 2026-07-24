@@ -382,6 +382,16 @@ const NETHERITE_BASE_EFFICIENCY: u8 = 5;
 /// quarter Crying at the first enhancement level, climbing to the dial's own ceiling
 /// at the last.
 ///
+/// **The enhancement restarts the curve at zero**, the way a tier jump restarts
+/// Efficiency for every other tier: Eff `6` reads `upgrade_curve(0)`, not
+/// `upgrade_curve(5)`, and Eff `15` reads `upgrade_curve(9)` rather than
+/// `upgrade_curve(14)`. Without the reset that last level was an Obsidian wall roughly
+/// six times its neighbours — the single longest grind in the game before phase 10;
+/// with it, the enhancement climbs its own short ladder like any other tier's
+/// Efficiency. The one-off dip at Eff `5 → 6` is the kind
+/// [`PickaxeTier::base_power`](crate::pickaxe::PickaxeTier::base_power) already documents
+/// for a tier jump — a step down in *price*, never a regression in power.
+///
 /// **The climbing share is what gives that mine's dial a reason to move.** At the flat
 /// 3:1 this once used, the ratio the recipe wanted never changed, so the optimum dial
 /// setting sat at 1.7 of 9 for the whole enhancement and the seven rungs above it
@@ -392,11 +402,13 @@ const NETHERITE_BASE_EFFICIENCY: u8 = 5;
 /// It is the one pickaxe cost that is not a single material, which is why the split
 /// lives here rather than in [`pickaxe_material`].
 pub fn pickaxe_efficiency_cost(tier: PickaxeTier, current_level: u8) -> Cost {
-    let total = upgrade_curve(u32::from(current_level));
-
     if tier == PickaxeTier::Netherite && current_level >= NETHERITE_BASE_EFFICIENCY {
-        let span = u32::from(tier.efficiency_cap() - NETHERITE_BASE_EFFICIENCY - 1);
+        // `step` is both the reset index into the curve and the rung on the
+        // Obsidian/Crying ramp, so the two align by construction: Eff 6 is step 0 on
+        // each.
         let step = u32::from(current_level - NETHERITE_BASE_EFFICIENCY);
+        let total = upgrade_curve(step);
+        let span = u32::from(tier.efficiency_cap() - NETHERITE_BASE_EFFICIENCY - 1);
         let (obsidian, crying) = split_rare(total, step, span, RECIPE_RAMP_START_PERMILLE);
 
         let mut lines = Vec::new();
@@ -411,7 +423,10 @@ pub fn pickaxe_efficiency_cost(tier: PickaxeTier, current_level: u8) -> Cost {
         return Cost::new(lines);
     }
 
-    Cost::single(pickaxe_material(tier), total)
+    Cost::single(
+        pickaxe_material(tier),
+        upgrade_curve(u32::from(current_level)),
+    )
 }
 
 /// The cost of advancing **out of** `from` — the pickaxe's second priced action, kept
@@ -419,21 +434,29 @@ pub fn pickaxe_efficiency_cost(tier: PickaxeTier, current_level: u8) -> Cost {
 /// two phases already inside [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe::upgrade)).
 ///
 /// **The tier being left, not the one being reached**, and both halves of the price
-/// come from it: [`upgrade_curve`] at *its* index, in *its* material. Leaving Gold
-/// costs Gold. The jump is the last thing a tier is for, so it is priced as that
-/// tier's final purchase rather than as a down payment on the next — the player spends
-/// what they have been mining all along, not a material the mine they are about to
-/// unlock has not given them yet.
+/// come from it: [`upgrade_curve`] one step **past that tier's Efficiency cap**, in
+/// that tier's material. Leaving Gold costs Gold. The jump is the last thing a tier is
+/// for, so it is priced as that tier's *dearest* purchase — the rung right after its
+/// last Efficiency level (`curve(5)`), never below it. That reunites the two pickaxe
+/// curves into one: within a tier the player climbs Eff `1..=5` (steps `0..=4`) and
+/// then the jump (step `5 + rank`), each rung dearer than the last. The old keying —
+/// the jump at the bare `tier_index` — made leaving Wooden cost `curve(0)` against that
+/// same tier's `curve(4)` Efficiency, so the tier's final act was its cheapest.
 ///
-/// Taking the material from one tier and the curve index from another, as this once
-/// did, made the price describe two concepts at once and left no answer to "which tier
-/// is this the price of?". Provisional in its numbers; the keying is not.
+/// **The `+ rank` keeps the jump climbing tier to tier**, so reaching a later tier
+/// still costs strictly more even though every jump now sits past a `5`-step Efficiency
+/// run: Wooden's is `curve(5)`, Stone's `curve(6)`, … Diamond's `curve(9)`. The
+/// cross-tier escalation therefore rides *both* the climbing index and the scarcer
+/// material, not the material alone. Provisional in its numbers; the keying is not.
 ///
 /// A corollary worth naming: [`Netherite`](PickaxeTier::Netherite) is never a source,
 /// since there is nothing past it to reach — the mirror of the old shape, where
 /// [`Wooden`](PickaxeTier::Wooden) was never a target.
 pub fn pickaxe_tier_cost(from: PickaxeTier) -> Cost {
-    Cost::single(pickaxe_material(from), upgrade_curve(tier_index(from)))
+    // Step `efficiency_cap + rank`: one rung past the tier's last Efficiency level, and
+    // one higher again for each tier up the ladder.
+    let step = u32::from(from.efficiency_cap()) + tier_index(from);
+    Cost::single(pickaxe_material(from), upgrade_curve(step))
 }
 
 /// The material an enchant `kind` is bought with in `world`, or `None` for
@@ -1180,27 +1203,50 @@ mod tests {
         );
 
         // The switch changes *what* is owed, never *how much*: the raw total is
-        // still the curve's, merely split across two materials.
+        // still the curve's, merely split across two materials. The enhancement
+        // restarts the curve at zero (Eff 6 is step 0), so that total is `curve(0)`,
+        // not `curve(5)` — the reset that shrinks the Obsidian wall.
         assert_eq!(
             raw_total(&above),
-            upgrade_curve(5),
+            upgrade_curve(0),
             "splitting the cost across two materials must not change the total"
         );
     }
 
-    /// Efficiency climbs in price within a tier — the within-tier escalation half
-    /// of the pricing (the material is the cross-tier half).
+    /// Efficiency climbs in price within a segment — the within-tier escalation half
+    /// of the pricing (the material is the cross-tier half). Netherite has *two*
+    /// segments: the ordinary Ancient-Debris climb (Eff `1..=5`) and the Obsidian
+    /// enhancement (Eff `6..=15`), and the enhancement **restarts the curve at zero**.
+    /// So each segment climbs, and the one seam between them steps *down* on purpose —
+    /// the reset that shrinks the Obsidian wall.
     #[test]
-    fn efficiency_gets_dearer_with_each_level() {
+    fn efficiency_gets_dearer_within_each_segment() {
         let tier = PickaxeTier::Netherite;
-        for level in 0..14u8 {
+        // Base segment: buying Eff 1..=5 (levels held 0..=4), all Ancient Debris.
+        for level in 0..4u8 {
             assert!(
                 raw_total(&pickaxe_efficiency_cost(tier, level + 1))
                     > raw_total(&pickaxe_efficiency_cost(tier, level)),
-                "Efficiency {} is no dearer than {level}",
+                "Efficiency {} is no dearer than {level} within the base segment",
                 level + 1
             );
         }
+        // Enhancement segment: buying Eff 7..=15 (levels held 6..=14). The seam at
+        // `5 → 6` is excluded, since the reset makes it a deliberate step down.
+        for level in 5..14u8 {
+            assert!(
+                raw_total(&pickaxe_efficiency_cost(tier, level + 1))
+                    > raw_total(&pickaxe_efficiency_cost(tier, level)),
+                "Efficiency {} is no dearer than {level} within the enhancement",
+                level + 1
+            );
+        }
+        // The seam itself: Eff 6 (the reset's step 0) is cheaper than Eff 5.
+        assert!(
+            raw_total(&pickaxe_efficiency_cost(tier, 5))
+                < raw_total(&pickaxe_efficiency_cost(tier, 4)),
+            "the enhancement's reset must make Eff 6 cheaper than Eff 5"
+        );
     }
 
     /// Reaching a later tier costs strictly more than reaching an earlier one, so
