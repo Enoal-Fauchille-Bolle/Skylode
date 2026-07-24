@@ -3,9 +3,22 @@
 //! Prestige is the endgame loop `docs/MECHANICS.md` adds where SkyMines had paid
 //! ranks: the player trades the whole run — pickaxe, enchants, inventory, every
 //! mine, and the mining level itself — for a rank that permanently multiplies ore
-//! yield, mining speed and experience gain. This module is the *arithmetic* half of
+//! yield and experience gain. This module is the *arithmetic* half of
 //! that trade. The trade itself is [`GameState::prestige`], because a reset that
 //! touches nine fields of the run belongs to whatever owns the nine.
+//!
+//! ## Two things it multiplies, and one it deliberately does not
+//!
+//! **Mining speed was a third, and phase 10 took it out.** The reason is not that it was
+//! too strong but that it was strong in the wrong half of the run. Past the point where a
+//! pickaxe instamines — a block falls in one tick and no further power buys anything — the
+//! speed multiplier is thrown away, so it paid nothing during the endgame it was meant to
+//! reward. What it *did* do was compound with the yield and experience multipliers during
+//! the **climb**, the stretch a reset player spends walking six pickaxe tiers back up, and
+//! three multipliers on one stretch shrank it eleven-fold across ten ranks. The loop's own
+//! content was the thing being deleted. Removing the speed term leaves the climb scaling
+//! with roughly the square of the multiplier instead of its cube; see
+//! [`PRESTIGE_MULT_PER_RANK_PERMILLE`].
 //!
 //! ## Why the multiplier is an integer
 //!
@@ -25,17 +38,19 @@
 //! carries (see [`GameState`]): a fractional rate truncated on every application is a
 //! rate of zero.
 //!
-//! **The one exception is mining speed**, which multiplies a power that is already an
-//! `f32` ([`multiplier`]). Nothing is truncated there, so nothing needs carrying.
+//! There is **no exception left**: mining speed was the one path that multiplied an
+//! `f32` and so needed no carry, and it no longer takes the multiplier at all. Every
+//! consumer now goes through [`multiplier_permille`] and pays a whole number.
 //!
 //! [`GameState`]: crate::game::GameState
 //! [`GameState::prestige`]: crate::game::GameState::prestige
 
-use crate::economy::{Cost, cost_curve};
+use crate::economy::Cost;
 use crate::material::Material;
 use crate::pickaxe::PickaxeTier;
 use crate::tunables::{
-    LEVEL_CAP, PRESTIGE_COST_BASE, PRESTIGE_COST_GROWTH, PRESTIGE_MULT_PER_RANK_PERMILLE,
+    AMETHYST_PER_CLIMB, LEVEL_CAP, PRESTIGE_MULT_PER_RANK_PERMILLE, PRESTIGE_SURCHARGE_BASE,
+    PRESTIGE_SURCHARGE_PER_RANK_PERMILLE,
 };
 
 /// The denominator every permille in this module is quoted against.
@@ -65,34 +80,42 @@ pub(crate) const PERMILLE: u32 = 1_000;
 /// catch it are the ones nobody expects a prestige commit to touch.
 ///
 /// Saturating throughout, and it is not doctrine here: the rank is unbounded on
-/// purpose (whether prestige is an endless loop or leads to a win condition is still
-/// open in `docs/ROADMAP.md`), so this is the arithmetic that has to survive the
-/// answer being *endless*.
+/// purpose — and, since phase 10, unbounded *by design* rather than pending a decision.
+/// The price below no longer outgrows the income that pays it, so a player who keeps
+/// prestiging past whatever the achievements mark keeps meeting runs of much the same
+/// length instead of a wall. This is the arithmetic that has to survive that being true.
 ///
 /// [`Pickaxe::haste_multiplier`]: crate::pickaxe::Pickaxe::haste_multiplier
 pub fn multiplier_permille(rank: u32) -> u32 {
     PERMILLE.saturating_add(PRESTIGE_MULT_PER_RANK_PERMILLE.saturating_mul(rank))
 }
 
-/// The same multiplier as an `f32`, for the one consumer that wants one.
-///
-/// Mining speed multiplies [`Pickaxe::mining_power`], which is already an `f32` and is
-/// already multiplied by the boost — so folding the rank in there is exact and needs
-/// no carry. Everywhere else the yield is a whole number and
-/// [`multiplier_permille`] is what to reach for.
-///
-/// Exactly `1.0` at rank 0, since `1000 / 1000` is representable without loss.
-///
-/// [`Pickaxe::mining_power`]: crate::pickaxe::Pickaxe::mining_power
-pub fn multiplier(rank: u32) -> f32 {
-    multiplier_permille(rank) as f32 / PERMILLE as f32
-}
-
 /// What buying the rank *after* `rank` costs, in Amethyst.
 ///
-/// Reads off the shared geometric [`cost_curve`] like every other price in the game,
-/// with the steepest slope of any track — a rank is priced against a whole run rather
-/// than against one upgrade's production gain (see [`PRESTIGE_COST_GROWTH`]).
+/// **A sum, not a curve**, and the two terms answer different questions:
+///
+/// ```text
+/// price(n) = AMETHYST_PER_CLIMB + PRESTIGE_SURCHARGE_BASE × (1 + SURCHARGE_PER_RANK × n)
+///            └─ what the climb   └─ what the player must actually go and mine
+///               already banked
+/// ```
+///
+/// The first term is [measured](AMETHYST_PER_CLIMB), not chosen: a run banks about five
+/// thousand Amethyst while grinding the experience between the End and the level cap,
+/// whatever its rank and whatever its strategy. Any price under that figure is **free** —
+/// the run reaches the gates already holding it — so quoting a total means quoting a
+/// number whose first five thousand do nothing. The second term is the whole of what the
+/// design controls, and because the income rate is known (`≈ 2 700 × multiplier` per
+/// hour) it converts to minutes directly.
+///
+/// This replaces a shared geometric [`cost_curve`](crate::economy::cost_curve) that
+/// doubled per rank. Doubling against a multiplier that only *adds* per rank is a race an
+/// exponential always wins, and the harness measured what winning looked like: the price
+/// stayed under the free five thousand and cost nothing at all for six ranks, then passed
+/// it and grew to swallow the run, 3.5 h of a 3.5 h rank-10 run spent banking. Both halves
+/// of that were the same bug — a price with no fixed relationship to the income paying it.
+/// Two linear terms have one, and it is [a comparison of two
+/// slopes](PRESTIGE_SURCHARGE_PER_RANK_PERMILLE).
 ///
 /// **Amethyst, and only Amethyst.** `docs/DECISIONS.md` makes it dual-use on purpose:
 /// the same ore pushes the End's enchant cap or buys a rank, which is what turns the
@@ -100,18 +123,29 @@ pub fn multiplier(rank: u32) -> f32 {
 /// always worth maxing.
 ///
 /// A [`Cost`] rather than a bare number, so the price is quoted and paid in the same
-/// denominations as everything else — 512 raw reads as `5 Compressed Amethyst +
-/// 12 Amethyst`, never as a flat 512.
+/// denominations as everything else — 6 540 raw reads as `65 Compressed Amethyst +
+/// 40 Amethyst`, never as a flat 6 540.
 ///
-/// Far out the curve **saturates** rather than wrapping ([`cost_curve`] explains the
-/// cast), so an absurd rank becomes unbuyable instead of cheap. That is the whole of
-/// this module's answer to the unbounded rank: no cap is written anywhere, and none is
-/// needed for the arithmetic to stay honest.
+/// Far out it **saturates** rather than wrapping, so an absurd rank becomes unbuyable
+/// instead of cheap — the same promise the geometric curve made, kept for the same
+/// reason, though it now takes a rank in the millions to reach.
 pub fn cost(rank: u32) -> Cost {
-    Cost::single(
-        Material::Amethyst,
-        cost_curve(PRESTIGE_COST_BASE, PRESTIGE_COST_GROWTH, rank),
-    )
+    Cost::single(Material::Amethyst, amethyst_price(rank))
+}
+
+/// The price as a bare raw total, split out so the two saturating steps are readable.
+///
+/// Private because a raw total is half an answer: every price in the game is quoted in
+/// both denominations, and a caller handed the number alone would print `6540` where the
+/// till expects `65 Compressed + 40`. [`cost`] is the whole answer.
+///
+/// `u64` inside for the same reason [`apply_with_carry`] widens: the surcharge product
+/// overflows a `u32` well before the rank does, and the crate's lints refuse a debug-build
+/// panic where a widening will do.
+fn amethyst_price(rank: u32) -> u32 {
+    let growth = PERMILLE.saturating_add(PRESTIGE_SURCHARGE_PER_RANK_PERMILLE.saturating_mul(rank));
+    let surcharge = u64::from(PRESTIGE_SURCHARGE_BASE) * u64::from(growth) / u64::from(PERMILLE);
+    u32::try_from(u64::from(AMETHYST_PER_CLIMB) + surcharge).unwrap_or(u32::MAX)
 }
 
 /// Why a run cannot prestige yet — or that it can.
@@ -214,78 +248,121 @@ mod tests {
     #[test]
     fn rank_zero_multiplies_by_exactly_one() {
         assert_eq!(multiplier_permille(0), PERMILLE);
-        assert_eq!(multiplier(0), 1.0);
     }
 
     #[test]
     fn each_rank_adds_its_share_and_never_compounds() {
-        assert_eq!(multiplier_permille(1), 1_200);
-        assert_eq!(multiplier_permille(2), 1_400);
-        assert_eq!(multiplier_permille(3), 1_600);
+        assert_eq!(multiplier_permille(1), 1_100);
+        assert_eq!(multiplier_permille(2), 1_200);
+        assert_eq!(multiplier_permille(3), 1_300);
     }
 
-    /// `docs/UI.md` §6.8 draws the preview at rank II → III with `×1.40 → ×1.60`. The
+    /// `docs/UI.md` §6.8 draws the preview at rank II → III with `×1.20 → ×1.30`. The
     /// mock is the specification here, not an illustration.
     #[test]
     fn the_ui_preview_quotes_the_multipliers_this_module_computes() {
-        assert_eq!(multiplier(2), 1.4);
-        assert_eq!(multiplier(3), 1.6);
+        assert_eq!(multiplier_permille(2), 1_200);
+        assert_eq!(multiplier_permille(3), 1_300);
     }
 
-    /// The other half of the same mock: `Cost 512 Amethyst` on the rank II → III step.
+    /// The other half of the same mock: `Cost 6 540 Amethyst` on the rank II → III step,
+    /// which is `5 000 + 1 100 × 1.4`.
     #[test]
     fn the_third_rank_costs_what_the_ui_mock_quotes() {
         let lines = cost(2);
         let lines = lines.lines();
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].material, Material::Amethyst);
-        // 512 raw, quoted in the two denominations the till takes.
+        // 6 540 raw, quoted in the two denominations the till takes.
         assert_eq!(
             lines[0].requirements(),
             vec![
-                (Item::Compressed(Material::Amethyst), 5),
-                (Item::Raw(Material::Amethyst), 12)
+                (Item::Compressed(Material::Amethyst), 65),
+                (Item::Raw(Material::Amethyst), 40)
             ]
         );
     }
 
+    /// The shape of the price, stated where it can be read: **a fixed floor plus a
+    /// surcharge that grows in a straight line**.
+    ///
+    /// Rank 0 pays the base surcharge and nothing more, and every rank after adds the
+    /// same 220 (`1 100 × 0.2`). The old test in this slot asserted the opposite shape —
+    /// that the ladder *doubled* — so leaving it and only changing its numbers would have
+    /// preserved a claim the price no longer makes.
     #[test]
-    fn the_ladder_doubles_from_its_base() {
-        assert_eq!(cost_curve(PRESTIGE_COST_BASE, PRESTIGE_COST_GROWTH, 0), 128);
-        assert_eq!(cost_curve(PRESTIGE_COST_BASE, PRESTIGE_COST_GROWTH, 1), 256);
-        assert_eq!(cost_curve(PRESTIGE_COST_BASE, PRESTIGE_COST_GROWTH, 2), 512);
+    fn a_rank_costs_one_climb_plus_a_surcharge_that_grows_in_a_straight_line() {
+        assert_eq!(amethyst_price(0), AMETHYST_PER_CLIMB + 1_100);
+        assert_eq!(amethyst_price(1), AMETHYST_PER_CLIMB + 1_320);
+        assert_eq!(amethyst_price(2), AMETHYST_PER_CLIMB + 1_540);
+
+        // A straight line is a constant step, which is the whole claim.
+        let steps: Vec<u32> = (0..9)
+            .map(|rank| amethyst_price(rank + 1) - amethyst_price(rank))
+            .collect();
+        assert_eq!(steps, vec![220; 9]);
+    }
+
+    /// **Every price must clear the floor the climb hands over for free.**
+    ///
+    /// A rank priced at or below [`AMETHYST_PER_CLIMB`] costs the player no time at all:
+    /// they arrive at the gates already holding it and prestige on the spot. That is not
+    /// a hypothetical failure mode — it is what the previous geometric curve did for its
+    /// first six ranks, and the reason it went unnoticed is that a price *looks* fine
+    /// while doing it. The surcharge being strictly positive is what rules it out, at
+    /// every rank rather than at the one someone thought to check.
+    #[test]
+    fn no_rank_is_paid_for_by_the_climb_alone() {
+        for rank in 0..64 {
+            assert!(
+                amethyst_price(rank) > AMETHYST_PER_CLIMB,
+                "rank {rank} costs {} — at or under the {AMETHYST_PER_CLIMB} a climb \
+                 banks by itself, so it would cost no time to buy",
+                amethyst_price(rank)
+            );
+        }
     }
 
     /// A rank must never be cheaper than the one before it, over the range a run can
-    /// plausibly reach before the curve saturates.
+    /// plausibly reach — and far past it, into where the arithmetic saturates.
     #[test]
     fn the_prestige_ladder_only_climbs() {
         for rank in 0..20 {
-            let (here, next) = (
-                cost_curve(PRESTIGE_COST_BASE, PRESTIGE_COST_GROWTH, rank),
-                cost_curve(PRESTIGE_COST_BASE, PRESTIGE_COST_GROWTH, rank + 1),
-            );
             assert!(
-                next > here,
+                amethyst_price(rank + 1) > amethyst_price(rank),
                 "rank {rank} is not cheaper than rank {}",
                 rank + 1
             );
         }
     }
 
-    /// The arithmetic the carry exists for, spelled out: at rank I a 1-drop block pays
-    /// 1, 1, 1, 1, 2 — six ore over five swings, which is exactly `5 × 1.2`. Truncating
-    /// would pay five and the multiplier would be worth nothing.
+    /// An absurd rank must become **unbuyable, not cheap**. The price is now linear
+    /// rather than doubling, so reaching the saturating end takes a rank no run produces
+    /// — which is exactly why it needs asserting rather than assuming: nothing else in
+    /// the game will ever walk this far and notice a wrap.
     #[test]
-    fn a_carried_remainder_pays_the_sixth_ore() {
+    fn an_absurd_rank_saturates_instead_of_wrapping() {
+        assert_eq!(amethyst_price(u32::MAX), u32::MAX);
+        assert!(amethyst_price(u32::MAX / 2) > amethyst_price(1_000));
+    }
+
+    /// The arithmetic the carry exists for, spelled out: at rank I a 1-drop block pays
+    /// 1 nine times and then 2 — eleven ore over ten swings, which is exactly `10 × 1.1`.
+    /// Truncating would pay ten and the multiplier would be worth nothing.
+    ///
+    /// Ten swings and not five because the rank-I multiplier is now `×1.10`: the carry
+    /// takes ten swings to fill rather than five, which is precisely the case that makes
+    /// truncation worse and the carry more necessary, not less.
+    #[test]
+    fn a_carried_remainder_pays_the_eleventh_ore() {
         let permille = multiplier_permille(1);
         let mut carry = 0;
-        let paid: Vec<u32> = (0..5)
+        let paid: Vec<u32> = (0..10)
             .map(|_| apply_with_carry(1, permille, &mut carry))
             .collect();
 
-        assert_eq!(paid, vec![1, 1, 1, 1, 2]);
-        assert_eq!(paid.iter().sum::<u32>(), 6);
+        assert_eq!(paid, vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
+        assert_eq!(paid.iter().sum::<u32>(), 11);
         assert_eq!(carry, 0);
     }
 

@@ -427,63 +427,102 @@ pub const BOOST_COST: u32 = 3 * COST_BASE;
 
 /// What one prestige rank adds to the permanent global multiplier, in permille.
 ///
-/// **Additive, not compounding**, and that is the whole content of the number: at
-/// `200` a rank-`n` player multiplies by `1 + 0.2 n`, so rank II is `×1.40` — the
-/// figure `docs/UI.md` §6.8 quotes beside `×1.60` for rank III. A geometric rank
-/// (`1.2ⁿ`) would give `×1.44` there and would make a rank-10 player six times a
-/// rank-5 one, which is a balance problem phase 10 would inherit rather than solve.
+/// **Additive, not compounding**, and that is half the content of the number: at `100`
+/// a rank-`n` player multiplies by `1 + 0.1 n`, so rank II is `×1.20` and rank III
+/// `×1.30` — the figures `docs/UI.md` §6.8 quotes. A geometric rank (`1.1ⁿ`) would make
+/// a rank-10 player fifty per cent stronger than a rank-5 one and keep widening, which
+/// is a balance problem a later phase would inherit rather than solve.
+///
+/// The other half is the **size**, and it is what phase 10 re-cut. This dial is the only
+/// lever on the *climb* — the stretch where a reset player walks six pickaxe tiers back
+/// up to Amethyst — because nothing else in the game is keyed by rank. The climb does
+/// not shrink in proportion to the multiplier but to roughly its **square**, since the
+/// same number scales ore yield and experience and the two compound: more ore buys the
+/// next tier sooner, more experience opens the next world sooner. The harness measured
+/// the climb at `mult^-2.35`. At the old `200` that made a rank-10 climb **eleven times**
+/// quicker than a rank-1 one — 38 minutes down to 3½ — which deleted the game's whole
+/// content from the loop it was supposed to reward. At `100` the same climb is 2.1 times
+/// quicker, which is an acceleration the player feels without it swallowing the run.
 ///
 /// Permille, and an integer, because the multiplier has to survive being applied to
-/// **integer** yields. A drop of one ore times `1.2` truncates to one, forever; the
+/// **integer** yields. A drop of one ore times `1.1` truncates to one, forever; the
 /// same product in permille leaves a remainder the run carries to the next swing (see
-/// [`prestige::multiplier_permille`](crate::prestige::multiplier_permille)). The
-/// mining-speed path is the only one that reads it as an `f32`, because the power it
-/// multiplies is already one.
+/// [`prestige::multiplier_permille`](crate::prestige::multiplier_permille)).
 ///
-/// Measured by the phase-10 prestige ladder and guarded by
-/// `the_prestige_loop_accelerates_then_turns_back_up`: successive runs take 1.00, 0.68,
-/// 0.52, 0.41, 0.29, 0.22 h, then climb again to 3.48 h by rank 10 — an acceleration
-/// the player feels, and a wall after it. Must stay above zero, or a
-/// rank would cost Amethyst and grant nothing.
-pub const PRESTIGE_MULT_PER_RANK_PERMILLE: u32 = 200;
+/// Read against [`PRESTIGE_SURCHARGE_PER_RANK_PERMILLE`], which is the *price* slope and
+/// is compared to this one directly — the pair, not either alone, is what fixes how the
+/// Amethyst phase behaves across the ladder. Must stay above zero, or a rank would cost
+/// Amethyst and grant nothing.
+pub const PRESTIGE_MULT_PER_RANK_PERMILLE: u32 = 100;
 
-/// Base term of the **prestige** cost curve: what the *first* rank costs, in raw
-/// Amethyst.
+/// Raw Amethyst a full climb banks on its way to the level cap — **measured, not chosen**.
 ///
-/// Read off `docs/UI.md` §6.8 together with [`PRESTIGE_COST_GROWTH`]: the mock quotes
-/// `512 Amethyst` for the rank II → III step, and `128 × 2²` is exactly that. Adopting
-/// both numbers is what makes the mock *true* rather than illustrative.
+/// The floor under every prestige price, and the reason the price is written as a sum
+/// rather than as a curve. Between the End opening at [`END_UNLOCK_LEVEL`] and the
+/// [`LEVEL_CAP`] the player mines Amethyst for the experience, and banks this much
+/// whether or not they were trying to. **A price below this figure therefore costs zero
+/// time**: the run arrives at the gates already holding it. That is not a hypothetical —
+/// it is what the old geometric curve did for its first six ranks, so the price was a
+/// number on a screen and nothing else until rank 7, when it overtook this figure and
+/// became the entire run inside two ranks.
 ///
-/// Quoted raw and split into denominations by
-/// [`Cost::single`](crate::economy::Cost::single) like every other price, so 512 shows
-/// as `5 Compressed Amethyst + 12 Amethyst` — the game's one rule about how a price is
-/// paid, applied to the one price that is not an upgrade.
+/// It is **invariant in the rank**, which is what makes it usable as a constant at all:
+/// the multiplier scales experience and ore yield by the same factor, so the ore mined
+/// per level gained does not move. The harness measures 5 167 down to 5 109 across ten
+/// ranks for the speedrunner and exactly 4 916 at every rank for the completionist —
+/// two strategies, ten multipliers, one number.
 ///
-/// Measured by the phase-10 prestige ladder and guarded by
-/// `the_prestige_loop_accelerates_then_turns_back_up`: successive runs take 1.00, 0.68,
-/// 0.52, 0.41, 0.29, 0.22 h, then climb again to 3.48 h by rank 10 — an acceleration
-/// the player feels, and a wall after it. Must stay above zero.
-pub const PRESTIGE_COST_BASE: u32 = 128;
+/// **Measured means it can drift.** Retuning the experience curve, Amethyst's yield, or
+/// the End's richness moves it, and a price aimed at a stale figure misses silently in
+/// the one direction that is invisible: downward, into costing nothing.
+/// `one_climb_still_banks_about_what_the_price_is_aimed_at` is the guard, and it reads
+/// the same ladder harness this number came from.
+pub const AMETHYST_PER_CLIMB: u32 = 5_000;
 
-/// Growth factor of the **prestige** cost curve — the steepest in the game, and the
-/// only one that is a round number.
+/// What rank 1 costs **on top of** [`AMETHYST_PER_CLIMB`], in raw Amethyst.
 ///
-/// **Steeper than the size track** ([`SIZE_COST_GROWTH`]) because it is the only
-/// track priced against a *whole run* rather than against one upgrade's production
-/// gain: each rank is bought with the Amethyst of a fresh climb to the End, and that
-/// climb is itself faster by the multiplier the previous rank granted. A slope below
-/// the pace at which the run accelerates would make each prestige cheaper than the
-/// last in real time.
+/// The dial that sets how long the Amethyst phase lasts, and it sets it in minutes
+/// rather than in ore: the player banks about `2 700 × multiplier` Amethyst per hour
+/// (measured, stable to within a percent across ranks and across both slopes tried), so
+/// this figure divided by that rate *is* the phase. At `1 100` the harness measures 20
+/// minutes at rank 1 rising to 34 at rank 10.
 ///
-/// A doubling is legible in a way `1.55` is not — the player can hold "the next one
-/// costs twice this one" in their head — and the prestige price is the one number in
-/// the game shown to them at a decision point they cannot undo.
+/// **A surcharge and not a total**, because the total is the wrong thing to turn. Since
+/// the climb hands over [`AMETHYST_PER_CLIMB`] for free, the part of a price that costs
+/// time is `price − 5 000`, and that difference moves far faster than the price does — a
+/// price rising ×2.8 across the ladder moves the difference ×10 and the phase ×5. Tuning
+/// the total means tuning a small number through a large one, where every rounding of the
+/// dial lands somewhere else. Naming the surcharge puts the dial on the quantity the
+/// design actually has an opinion about.
 ///
-/// Measured by the phase-10 prestige ladder and guarded by
-/// `the_prestige_loop_accelerates_then_turns_back_up`: successive runs take 1.00, 0.68,
-/// 0.52, 0.41, 0.29, 0.22 h, then climb again to 3.48 h by rank 10 — an acceleration
-/// the player feels, and a wall after it. Must stay strictly above `1.0`.
-pub const PRESTIGE_COST_GROWTH: f64 = 2.0;
+/// Must stay above zero: at `0` the price is exactly what the climb already banked, the
+/// Amethyst phase vanishes, and prestige becomes a thing that happens *to* the player on
+/// reaching the cap rather than a purchase they make.
+pub const PRESTIGE_SURCHARGE_BASE: u32 = 1_100;
+
+/// How much the surcharge grows per rank, in permille — **read against
+/// [`PRESTIGE_MULT_PER_RANK_PERMILLE`]**.
+///
+/// The comparison is the whole dial, and it needs no arithmetic to use. The player's
+/// Amethyst income rises with the loot multiplier; the surcharge rises with this. So:
+///
+/// | this slope vs the loot slope | the Amethyst phase |
+/// | --- | --- |
+/// | below | shortens each rank |
+/// | equal | lasts exactly the same every rank |
+/// | above | lengthens, and by the ratio of the two |
+///
+/// At `200` against the loot's `100` the phase runs 20 minutes at rank 1 and 34 at rank
+/// 10 — the "a little longer each time" the design asks for. The two being *linear* is
+/// what keeps that promise finite: two straight lines diverge towards a fixed ratio
+/// (here `200 / 100`), where a geometric price over a linear multiplier diverges without
+/// bound and produced the wall this dial replaced.
+///
+/// Must stay at or above the loot slope
+/// (`the_surcharge_keeps_pace_with_the_multiplier_it_is_priced_against`): below it, each
+/// rank is *quicker* to buy than the last in real time, which is the endless free loop a
+/// price exists to prevent.
+pub const PRESTIGE_SURCHARGE_PER_RANK_PERMILLE: u32 = 200;
 
 #[cfg(test)]
 mod tests {
@@ -552,16 +591,25 @@ mod tests {
         }
     }
 
-    /// Prestige is the one track priced against a whole run rather than against one
-    /// upgrade's production gain, and it has to out-climb the run's own acceleration
-    /// — every rank granted makes the next climb to the End faster. A slope at or
-    /// below the size track's would make each prestige cheaper than the last in real
-    /// time, which is the endless free loop the cost exists to prevent.
+    /// Prestige is the one track that is **not** on the shared geometric curve, and the
+    /// invariant that replaces "steepest slope in the game" is a comparison between its
+    /// two own dials: the surcharge must climb at least as fast as the multiplier it is
+    /// priced against.
+    ///
+    /// Below that, the player's Amethyst income outruns the price and each rank takes
+    /// *less* real time to buy than the last — the endless free loop a price exists to
+    /// prevent. The old assertion could not state this: it compared the prestige slope to
+    /// the **size** track's, two numbers with no player-facing relationship, and it was
+    /// satisfied by the very curve whose price cost zero time for six ranks running.
+    ///
+    /// Equality is allowed and is a real setting — it makes the Amethyst phase last the
+    /// same every rank. Only *below* is refused.
     #[test]
-    fn the_prestige_track_out_climbs_every_upgrade_track() {
+    fn the_surcharge_keeps_pace_with_the_multiplier_it_is_priced_against() {
         const {
-            assert!(PRESTIGE_COST_BASE > 0);
-            assert!(PRESTIGE_COST_GROWTH > SIZE_COST_GROWTH);
+            assert!(PRESTIGE_SURCHARGE_BASE > 0);
+            assert!(AMETHYST_PER_CLIMB > 0);
+            assert!(PRESTIGE_SURCHARGE_PER_RANK_PERMILLE >= PRESTIGE_MULT_PER_RANK_PERMILLE);
         }
     }
 

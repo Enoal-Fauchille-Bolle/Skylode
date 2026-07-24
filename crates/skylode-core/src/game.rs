@@ -598,9 +598,7 @@ impl GameState {
     /// readability; they touch disjoint state. Steps 1, 2 and 5 are not
     /// interchangeable at all.
     fn resolve_swing(&mut self, events: &mut Vec<GameEvent>) {
-        let power = self.player.get_pickaxe().mining_power()
-            * self.boost_multiplier()
-            * prestige::multiplier(self.player.get_prestige());
+        let power = self.player.get_pickaxe().mining_power() * self.boost_multiplier();
         let Some(dug) = self.mine.dig(power, &mut self.rng) else {
             return;
         };
@@ -823,7 +821,10 @@ impl GameState {
     /// owed the game. Everything the player has bought goes back to the start —
     /// pickaxe, enchants, inventory, every mine's size and richness, the mining level
     /// itself — and what survives is the rank and the permanent multiplier it grants
-    /// on ore yield, mining speed and experience ([`prestige`]).
+    /// on ore yield and experience ([`prestige`]). **Not on mining speed**, which phase
+    /// 10 took out of the multiplier: it paid nothing past instamine and compounded with
+    /// the other two over the climb, which is the stretch this reset exists to make the
+    /// player walk again.
     ///
     /// ## The order, and why nothing here is interchangeable
     ///
@@ -2379,14 +2380,18 @@ mod tests {
     fn a_prestige_without_the_amethyst_is_refused_and_takes_nothing() {
         let mut state = state();
         ready_to_prestige(&mut state);
-        // One raw Amethyst short of the price.
+        // One Amethyst short of the price, the long way round: the rank-0 price is a
+        // whole number of Compressed units and leaves no raw remainder, so there is no
+        // raw item to take. Swapping one Compressed unit for ninety-nine raw leaves the
+        // player exactly one Amethyst light — and light on the *Compressed* line, which
+        // is the denomination the till refuses on.
+        let inventory = state.player.inventory_mut();
         assert!(
-            state
-                .player
-                .inventory_mut()
-                .remove(Item::Raw(Material::Amethyst), 1)
+            inventory
+                .remove(Item::Compressed(Material::Amethyst), 1)
                 .is_ok()
         );
+        inventory.add(Item::Raw(Material::Amethyst), RAW_PER_COMPRESSED - 1);
         let held = state.player().get_inventory().raw_value(Material::Amethyst);
         let draws = next_draws(&state);
 
@@ -2473,23 +2478,30 @@ mod tests {
     }
 
     /// The loot multiplier, end to end and at the size it actually bites: a Stone cell
-    /// drops **one**, so at rank I five swings must pay six. Truncating each swing
-    /// would pay five, and the rank the player just spent a run on would be worth
+    /// drops **one**, so at rank I ten swings must pay eleven. Truncating each swing
+    /// would pay ten, and the rank the player just spent a run on would be worth
     /// nothing for the whole climb back.
+    ///
+    /// Ten swings and not five, since the rank-I multiplier is `×1.10` — the carry fills
+    /// half as fast as it did at `×1.20`, which makes this case *more* dependent on the
+    /// carry rather than less.
     #[test]
-    fn a_rank_pays_the_sixth_ore_five_swings_in() {
+    fn a_rank_pays_the_eleventh_ore_ten_swings_in() {
         let mut state = state();
         ready_to_prestige(&mut state);
         assert_eq!(state.prestige(), Ok(()));
         equip(&mut state, PickaxeTier::Netherite, instamining());
 
-        for _ in 0..5 {
+        for _ in 0..10 {
             state.tick(MINING);
         }
 
-        // Five swings, five cells, one ore each — and the auto-miner is far too slow
-        // to have added a sixth over five ticks.
-        assert_eq!(state.player().get_inventory().raw_value(Material::Stone), 6);
+        // Ten swings, ten cells, one ore each — and the auto-miner is far too slow
+        // to have added an eleventh over ten ticks.
+        assert_eq!(
+            state.player().get_inventory().raw_value(Material::Stone),
+            11
+        );
     }
 
     /// The rank reaches the auto-miner through its **rate**, exactly once. Twice — as
@@ -2604,7 +2616,7 @@ mod tests {
 
     use crate::material::ALL_MATERIALS;
     use crate::mine_kind::ALL_MINES;
-    use crate::tunables::{LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND};
+    use crate::tunables::{AMETHYST_PER_CLIMB, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND};
     use std::collections::BTreeMap;
 
     /// One thing the reference player can pour ore into. Each is priced on its
@@ -3232,27 +3244,58 @@ mod tests {
             .sum()
     }
 
-    /// Runs the reference player through `ranks` successive prestiges, returning the tick
-    /// each one fired at.
+    /// One rung of the prestige ladder, **split at the two moments that divide a run**.
+    ///
+    /// A rung's total duration is the wrong unit to balance against, and that is the whole
+    /// reason this is a struct and not a tick. A run is two jobs the dials pull on in
+    /// opposite directions — *climb the six tiers back to Amethyst*, which the multiplier
+    /// is meant to shorten, and *mine the Amethyst the rank costs*, which the price is
+    /// meant to lengthen. Their sum can hold still while both halves move, so a ladder
+    /// reported as ten durations cannot tell a well-balanced rung from a rung whose climb
+    /// collapsed into a price that ran away.
+    #[derive(Debug, Clone, Copy)]
+    struct LadderRung {
+        /// Tick the prestige fired.
+        fired: u64,
+        /// Tick Amethyst first became minable — Netherite in hand *and* the End open.
+        /// The boundary between the two jobs above.
+        amethyst_open: u64,
+        /// Tick every progression gate opened ([`prestige::lock`]): the level cap on top
+        /// of Netherite. Between this and [`fired`](Self::fired) nothing is left to do but
+        /// pay, so a rung whose two are equal is one where the price cost no time at all.
+        gates_open: u64,
+        /// Raw Amethyst already banked when the gates opened — what the climb paid for
+        /// on its way past. A price below this figure is invisible to the player.
+        banked_at_gates: u32,
+        /// The rank's price in raw Amethyst.
+        price: u32,
+    }
+
+    /// Runs the reference player through `ranks` successive prestiges, returning each
+    /// rung split into its climb and its Amethyst phase.
     ///
     /// [`run_reference`] returns at the *first* prestige, which is what the pacing band is
     /// stated against — but it means the prestige multiplier, the one dial that does
     /// nothing until rank 1, has never been exercised at all. This keeps going, so the
-    /// question "does re-walking the progression actually get faster, and does the
-    /// doubling price keep the loop from being free?" becomes a measurement instead of an
-    /// assumption.
+    /// question "does re-walking the progression actually get faster, and does the price
+    /// keep the loop from being free?" becomes a measurement instead of an assumption —
+    /// and, because the two halves are reported apart, one that can be answered
+    /// separately for each.
     ///
     /// The reset is the real work here and it is the game's, not the harness's: after
     /// `prestige` the strategy walks a level-1, Wooden-pickaxe run again because every
-    /// function it calls reads the state rather than remembering the last one.
+    /// function it calls reads the state rather than remembering the last one. The two
+    /// milestones are therefore re-armed on each rung, not tracked once.
     fn run_prestige_ladder(
         seed: u64,
         max_ticks: u64,
         style: ReferenceStyle,
         ranks: usize,
-    ) -> Vec<u64> {
+    ) -> Vec<LadderRung> {
         let mut state = GameState::new(seed, SystemTime::UNIX_EPOCH);
-        let mut fired = Vec::new();
+        let mut rungs: Vec<LadderRung> = Vec::new();
+        let mut amethyst_open: Option<u64> = None;
+        let mut gates: Option<(u64, u32)> = None;
 
         for tick in 0..max_ticks {
             state.tick(MINING);
@@ -3263,23 +3306,54 @@ mod tests {
             select_working_mine(&mut state, style);
             advance_progression(&mut state, style);
 
+            // Read after advancing and before the prestige attempt, which resets the very
+            // level and tier both milestones are read from.
+            if amethyst_open.is_none()
+                && current_tier(&mut state) == PickaxeTier::Netherite
+                && state.player().has_unlocked(World::End)
+            {
+                amethyst_open = Some(tick);
+            }
+            if gates.is_none()
+                && prestige::lock(state.player().get_level(), current_tier(&mut state)).is_open()
+            {
+                let banked = state.player().get_inventory().raw_value(Material::Amethyst);
+                gates = Some((tick, banked));
+            }
+
             let ready = match style {
                 ReferenceStyle::Speedrun => true,
                 ReferenceStyle::Completionist => fully_developed(&mut state),
             };
             if ready {
                 let cost = prestige::cost(state.player().get_prestige());
+                let price = cost
+                    .lines()
+                    .iter()
+                    .map(|line| line.compressed * RAW_PER_COMPRESSED + line.raw)
+                    .sum();
                 compress_for(&mut state, &cost);
                 if state.prestige().is_ok() {
-                    fired.push(tick);
-                    if fired.len() >= ranks {
-                        return fired;
+                    // `unwrap_or(tick)` and not `expect`: the crate's lints refuse the
+                    // panicking accessors in tests too, and a milestone that somehow went
+                    // unrecorded reads as a zero-length phase — visible in the report,
+                    // rather than a crash that hides the rest of the ladder.
+                    let (gates_open, banked_at_gates) = gates.take().unwrap_or((tick, 0));
+                    rungs.push(LadderRung {
+                        fired: tick,
+                        amethyst_open: amethyst_open.take().unwrap_or(tick),
+                        gates_open,
+                        banked_at_gates,
+                        price,
+                    });
+                    if rungs.len() >= ranks {
+                        return rungs;
                     }
                 }
             }
             develop(&mut state, style);
         }
-        fired
+        rungs
     }
 
     /// Runs the reference player for exactly `ticks` and hands back the state it
@@ -3393,53 +3467,113 @@ mod tests {
         );
     }
 
-    /// **The prestige loop has a floor and then a wall** — it accelerates for a few ranks
-    /// and then turns back up, rather than getting cheaper forever.
+    /// **The prestige loop settles instead of walling** — the climb quickens, the Amethyst
+    /// phase lengthens, and the run they add up to never grows past the first one.
     ///
-    /// This is the measured form of the claim `DECISIONS.md` makes for
-    /// [`PRESTIGE_COST_GROWTH`](crate::tunables::PRESTIGE_COST_GROWTH) being above the size
-    /// track's, and the reason that claim needed a test: the compile-time assertion only
-    /// checks that one slope out-climbs another, which is a statement about *numbers*. The
-    /// thing the design actually cares about is a statement about *time* — that a rank
-    /// eventually costs more real minutes than the last — and no comparison of two constants
-    /// can establish it, because the yield multiplier, the XP multiplier and the run's own
-    /// re-walk all sit between the price and the clock.
+    /// This test used to assert the opposite: that the ladder *turned back up*, which was
+    /// the shape a geometric price over an additive multiplier could only ever produce.
+    /// Phase 10 replaced that price, so the claim is inverted rather than retuned — and the
+    /// inversion is deliberate. The wall was content the player could not use: the harness
+    /// measured the rank-10 run spending 3.4 of its 3.5 hours banking, with the entire game
+    /// — twelve mines, six tiers, both progression axes — traversed in the remaining six
+    /// minutes. See `docs/DECISIONS.md`.
     ///
-    /// Asserted as a **shape, not as values**, for the same reason the pacing guard uses a
-    /// window: the design constraint is "accelerates, then turns", and pinning the ten
-    /// durations would break on any deliberate retune while saying nothing more. What it
-    /// catches is a prestige that became free forever, or one that never rewarded the
-    /// second run at all.
+    /// **Asserted per phase, and as a shape rather than as values.** Per phase because the
+    /// two are pulled in opposite directions on purpose and a total can hide both moving:
+    /// the old ladder's rank-6 and rank-7 runs differed by ten minutes while their
+    /// composition went from *all climb* to *mostly banking*. As a shape because pinning
+    /// eight durations would break on every legitimate retune while catching nothing the
+    /// four properties below miss — and because the measured ladder oscillates by a couple
+    /// of minutes around its settling point, as upgrade thresholds land on one side or the
+    /// other of a purchase, so "strictly decreasing" would be false of the very curve this
+    /// is meant to protect.
     #[test]
-    fn the_prestige_loop_accelerates_then_turns_back_up() {
-        // Eight ranks: the measured floor sits at rank 6, so this is the shortest ladder
-        // that contains both halves of the curve. ~0.5 s in debug.
-        let fired = run_prestige_ladder(1, 2_000_000, ReferenceStyle::Speedrun, 8);
-        assert_eq!(fired.len(), 8, "the ladder must reach eight prestiges");
+    fn the_prestige_loop_settles_instead_of_walling() {
+        // Eight ranks is enough for every property here to have somewhere to show, and the
+        // ladder costs ~10 h of game time — well inside the tick budget. ~0.5 s in debug.
+        let rungs = run_prestige_ladder(1, 2_000_000, ReferenceStyle::Speedrun, 8);
+        assert_eq!(rungs.len(), 8, "the ladder must reach eight prestiges");
 
-        let runs: Vec<u64> = fired
-            .iter()
-            .scan(0, |previous, &tick| {
-                let took = tick - *previous;
-                *previous = tick;
-                Some(took)
-            })
-            .collect();
+        let mut previous = 0;
+        let (mut climbs, mut amethyst, mut totals) = (Vec::new(), Vec::new(), Vec::new());
+        for rung in &rungs {
+            climbs.push(rung.gates_open - previous);
+            amethyst.push(rung.fired - rung.gates_open);
+            totals.push(rung.fired - previous);
+            previous = rung.fired;
+        }
+        let last = rungs.len() - 1;
 
-        let shortest = runs.iter().copied().min().unwrap_or(0);
+        // 1. The multiplier has to be felt where it is meant to be felt. A quarter off the
+        //    climb is far under the measured 52 %, so this fails on a multiplier that stopped
+        //    working rather than on one that was nudged.
         assert!(
-            runs[1] < runs[0],
-            "the second run must be quicker than the first, or the multiplier buys nothing: {runs:?}"
+            climbs[last] * 4 < climbs[0] * 3,
+            "the climb must get materially quicker, or the rank buys nothing: {climbs:?}"
         );
+
+        // 2. The price has to be felt too, and in the direction the surcharge slope sets.
         assert!(
-            shortest < runs[0],
-            "the ladder must have a real acceleration phase: {runs:?}"
+            amethyst[last] > amethyst[0],
+            "the Amethyst phase must lengthen across the ladder: {amethyst:?}"
         );
+
+        // 3. No rank may be paid for by the climb alone. A zero here is the failure that
+        //    hid for six ranks under the old curve: a price that exists on screen, is
+        //    already in the player's pocket on arrival, and costs nothing to meet.
         assert!(
-            runs[runs.len() - 1] > shortest,
-            "the ladder must turn back up — a loop that only ever gets cheaper is the \
-             endless free loop the prestige price exists to prevent: {runs:?}"
+            amethyst.iter().all(|&phase| phase > 0),
+            "some rank cost no Amethyst time at all: {amethyst:?}"
         );
+
+        // 4. And no wall. Ten per cent of headroom over the first run absorbs the threshold
+        //    oscillation without admitting a real turn — the old ladder's eighth run was
+        //    380 % of its first, so this is nowhere near a close call.
+        assert!(
+            totals.iter().all(|&run| run * 10 <= totals[0] * 11),
+            "a run outgrew the first by more than a tenth — the ladder walled: {totals:?}"
+        );
+    }
+
+    /// **The five thousand Amethyst a climb banks by itself is still what the price is
+    /// aimed at.**
+    ///
+    /// [`AMETHYST_PER_CLIMB`] is the one balance constant in this crate that was *measured*
+    /// rather than chosen: between the End opening and the level cap the player mines
+    /// Amethyst for the experience and banks that much whether or not they meant to, and
+    /// [`prestige::cost`] is written as that figure plus a surcharge precisely so the
+    /// surcharge can be tuned in minutes.
+    ///
+    /// Which makes it the one constant that can go stale **silently**. It is not read from
+    /// anywhere the game would notice: retune the experience curve, Amethyst's yield or the
+    /// End's richness and the real figure moves, while the price keeps quoting the old one.
+    /// Drift upward is the dangerous direction — it does not make prestige expensive, it
+    /// makes it *free*, by putting the whole price back inside what the climb already hands
+    /// over. That is the failure this crate has already shipped once.
+    ///
+    /// A fifth either way, and over both reference players rather than one: the two banked
+    /// 5 167 and 4 916 when the constant was set, which is the spread two opposite
+    /// strategies produce, and a tolerance narrower than the spread would fail on a
+    /// harness change rather than on a balance one.
+    #[test]
+    fn one_climb_still_banks_about_what_the_price_is_aimed_at() {
+        let (floor, ceiling) = (AMETHYST_PER_CLIMB * 4 / 5, AMETHYST_PER_CLIMB * 6 / 5);
+
+        for style in [ReferenceStyle::Speedrun, ReferenceStyle::Completionist] {
+            let rungs = run_prestige_ladder(1, 2_000_000, style, 3);
+            assert_eq!(rungs.len(), 3, "{style:?} must reach three prestiges");
+
+            for (rank, rung) in rungs.iter().enumerate() {
+                assert!(
+                    (floor..=ceiling).contains(&rung.banked_at_gates),
+                    "{style:?} rank {} banked {} on the climb, outside the {floor}–{ceiling} \
+                     band AMETHYST_PER_CLIMB claims — the prestige price is aimed at a \
+                     figure the game no longer produces",
+                    rank + 1,
+                    rung.banked_at_gates,
+                );
+            }
+        }
     }
 
     /// Prints how long each successive run takes across the prestige ladder.
@@ -3456,27 +3590,34 @@ mod tests {
         const MAX_TICKS: u64 = 20_000_000;
         const RANKS: usize = 10;
 
-        println!("\nrank | fired at | this run took");
-        println!("-----|----------|--------------");
-        for seed in [1_u64, 42] {
-            let fired = run_prestige_ladder(seed, MAX_TICKS, ReferenceStyle::Speedrun, RANKS);
-            println!("seed {seed}:");
-            let mut previous = 0;
-            for (rank, &tick) in fired.iter().enumerate() {
-                let took = tick - previous;
-                previous = tick;
-                println!(
-                    "{:>4} | {:>8.2} h | {:>10.2} h",
-                    rank + 1,
-                    tick as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
-                    took as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
-                );
-            }
-            if fired.len() < RANKS {
-                println!(
-                    "  (only {} of {RANKS} prestiges inside the budget)",
-                    fired.len()
-                );
+        let hours = |ticks: u64| ticks as f64 / (TICKS_PER_SECOND as f64 * 3600.0);
+
+        for style in [ReferenceStyle::Speedrun, ReferenceStyle::Completionist] {
+            for seed in [1_u64, 42] {
+                let rungs = run_prestige_ladder(seed, MAX_TICKS, style, RANKS);
+                println!("\n{style:?}, seed {seed}");
+                println!("rank |   climb | to gates |     pay |   total | banked@gates |   price");
+                println!("-----|---------|----------|---------|---------|--------------|--------");
+                let mut previous = 0;
+                for (rank, rung) in rungs.iter().enumerate() {
+                    println!(
+                        "{:>4} | {:>6.2}h | {:>7.2}h | {:>6.2}h | {:>6.2}h | {:>12} | {:>7}",
+                        rank + 1,
+                        hours(rung.amethyst_open - previous),
+                        hours(rung.gates_open - rung.amethyst_open),
+                        hours(rung.fired - rung.gates_open),
+                        hours(rung.fired - previous),
+                        rung.banked_at_gates,
+                        rung.price,
+                    );
+                    previous = rung.fired;
+                }
+                if rungs.len() < RANKS {
+                    println!(
+                        "  (only {} of {RANKS} prestiges inside the budget)",
+                        rungs.len()
+                    );
+                }
             }
         }
         println!();

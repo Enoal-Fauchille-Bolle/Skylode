@@ -842,29 +842,29 @@ mod tests {
         assert_eq!(player.xp_carry, 0);
     }
 
-    /// A rank scales the swing's total, not each block: 4 XP at rank I is 4.8, which
-    /// banks 4 and keeps 800 permille for the next swing.
+    /// A rank scales the swing's total, not each block: 4 XP at rank I is 4.4, which
+    /// banks 4 and keeps 400 permille for the next swing.
     #[test]
     fn a_rank_scales_the_experience_a_swing_is_worth() {
         let mut player = Player::new();
         player.prestige = 1;
         player.grant_break_experience(&[Block::IronOre, Block::Stone]);
         assert_eq!(player.experience, 4);
-        assert_eq!(player.xp_carry, 800);
+        assert_eq!(player.xp_carry, 400);
     }
 
-    /// The carry's whole reason, on the experience side: five swings worth 1 XP each
-    /// pay six at rank I. Truncating each swing would pay five and the rank would be
+    /// The carry's whole reason, on the experience side: ten swings worth 1 XP each
+    /// pay eleven at rank I. Truncating each swing would pay ten and the rank would be
     /// worth nothing to a player breaking Stone — which is every player who has just
     /// prestiged.
     #[test]
-    fn a_carried_remainder_pays_the_sixth_experience_point() {
+    fn a_carried_remainder_pays_the_eleventh_experience_point() {
         let mut player = Player::new();
         player.prestige = 1;
-        for _ in 0..5 {
+        for _ in 0..10 {
             player.grant_break_experience(&[Block::Stone]);
         }
-        assert_eq!(player.experience, 6);
+        assert_eq!(player.experience, 11);
         assert_eq!(player.xp_carry, 0);
     }
 
