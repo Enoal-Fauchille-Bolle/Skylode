@@ -18,6 +18,7 @@ mod app;
 mod event;
 mod keymap;
 mod overlay;
+mod palette;
 mod screen;
 mod toast;
 mod view;
