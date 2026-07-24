@@ -35,6 +35,11 @@ core is built in, see [PHASES.md](PHASES.md).
 
 ## Post-MVP (parked)
 
+- **Achievements.** A list of one-off markers, the last of which is *reach prestige rank
+  10* — the game's finish line, and deliberately a **marker rather than a gate**: it
+  states that a run is complete without ending the session or capping the ladder. This is
+  the answer the [win-condition question](#open-questions) was waiting on, so the two move
+  together.
 - Full auto-miner system (tiers, "managers").
 - Prestige meta-upgrade tree (spend a prestige currency on permanent perks).
 - Daily quests (not daily login rewards).
@@ -50,8 +55,17 @@ core is built in, see [PHASES.md](PHASES.md).
 
 ## Open questions
 
-- **Win condition:** endless prestige loop, or a defined end goal (for example,
-  reach instamine on Netherite, or a prestige rank)?
+- **Win condition:** **direction chosen, shape not yet implemented.** Neither a hard end
+  nor an unmarked loop: an **achievement at prestige rank 10** marks a finish line without
+  closing the game, and play continues past it. That choice has a consequence for the
+  prestige price, because the phase-10 ladder showed the current curve is a **U** — runs
+  shorten to ~0.22 h by rank 6, then climb to ~3.48 h by rank 10 — so a player who keeps
+  going past the marker walks into a wall with no content behind it. The intended fix is
+  to **key the price to the multiplier** rather than let the two run on independent curves
+  (a linear multiplier against a doubling price can only diverge): with
+  `cost(n) = base * multiplier(n)^k` the banking phase is constant-time at `k = 1`, and a
+  `k` slightly above 1 gives a soft brake instead of a wall. Still to settle: `k`, and the
+  total time to rank 10 that the achievement should represent (it is ~9.6 h today).
 - **Starting state:** confirm Wooden pickaxe mining Stone as the opening.
 - **End signature ore naming:** Amethyst carries the End's rich-ore role; confirm
   whether it needs a distinct name.
