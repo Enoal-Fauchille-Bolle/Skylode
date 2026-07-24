@@ -226,9 +226,6 @@ impl fmt::Display for CoreError {
                 if let Some(tier) = lock.missing_tier() {
                     needs.push(format!("a {tier:?} pickaxe"));
                 }
-                if let Some(efficiency) = lock.missing_efficiency() {
-                    needs.push(format!("Efficiency {efficiency}"));
-                }
                 write!(f, "prestige needs {}", needs.join(", "))
             }
         }
@@ -310,17 +307,16 @@ mod tests {
         );
     }
 
-    /// The preview `docs/UI.md` §6.8 draws is a run short on every axis — Lv 23,
-    /// Diamond, Efficiency 5 — so the message names all three gates, **level first**,
-    /// which is the order the preview leads with because Amethyst only drops past the
-    /// level gate.
+    /// The preview `docs/UI.md` §6.8 draws is a run short on both axes — Lv 23,
+    /// Diamond — so the message names both gates, **level first**, which is the order
+    /// the preview leads with because Amethyst only drops past the level gate.
     #[test]
     fn a_prestige_short_on_every_axis_names_them_level_first() {
-        let lock = crate::prestige::lock(23, PickaxeTier::Diamond, 5);
+        let lock = crate::prestige::lock(23, PickaxeTier::Diamond);
         let err = CoreError::PrestigeLocked { lock };
         assert_eq!(
             err.to_string(),
-            "prestige needs level 50, a Netherite pickaxe, Efficiency 15"
+            "prestige needs level 50, a Netherite pickaxe"
         );
     }
 

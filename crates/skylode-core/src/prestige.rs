@@ -116,13 +116,20 @@ pub fn cost(rank: u32) -> Cost {
 
 /// Why a run cannot prestige yet — or that it can.
 ///
-/// The condition `docs/DECISIONS.md` settles is a **fully realised run**: the mining
-/// level at [`LEVEL_CAP`], the pickaxe at [`Netherite`](PickaxeTier::Netherite), and
-/// its Efficiency at that tier's cap. Reaching the End (level 30) is no longer enough
-/// — it left the game's shortest path to prestige an XP race that never climbed a
-/// tier, which the balance harness measured at ~2.6 h. See `docs/DECISIONS.md`.
+/// The condition `docs/DECISIONS.md` settles is a **fully realised run**, and it is two
+/// progression gates: the mining level at [`LEVEL_CAP`] and the pickaxe at
+/// [`Netherite`](PickaxeTier::Netherite). Reaching the End (level 30) alone is not
+/// enough — that left the shortest path an XP race that never climbed a tier, which the
+/// balance harness measured at ~2.6 h; the Netherite gate is what closes it.
 ///
-/// A **struct of three [`Option`]s**, the shape [`MineLock`](crate::mine_kind::MineLock)
+/// **Efficiency 15 used to be a third gate and no longer is.** It was redundant with
+/// the Amethyst price below — which already forces a run to reach *and work* the End —
+/// and it was the single source of the mono-mine Obsidian grind that phase 10 exists to
+/// flatten. Dropping it leaves Netherite's Efficiency `6..=15` a pure optimisation: the
+/// speedrunner skips it and farms Amethyst, the completionist maxes it, and the two
+/// finally diverge. See `docs/DECISIONS.md`.
+///
+/// A **struct of two [`Option`]s**, the shape [`MineLock`](crate::mine_kind::MineLock)
 /// takes for the mine gate and for the same reason: `docs/UI.md` §6.8 prints each
 /// unmet requirement as its own line, so the preview needs the *why*, not a bare
 /// "not yet". The Amethyst price is deliberately **not** here — it is paid through the
@@ -133,14 +140,13 @@ pub fn cost(rank: u32) -> Cost {
 pub struct PrestigeLock {
     level: Option<u32>,
     tier: Option<PickaxeTier>,
-    efficiency: Option<u8>,
 }
 
 impl PrestigeLock {
     /// Whether every progression gate is open. The Amethyst price is still owed
     /// separately — an open lock is "you may pay", not "you have prestiged".
     pub fn is_open(self) -> bool {
-        self.level.is_none() && self.tier.is_none() && self.efficiency.is_none()
+        self.level.is_none() && self.tier.is_none()
     }
 
     /// The mining level still owed ([`LEVEL_CAP`]), or [`None`] if already there.
@@ -152,27 +158,17 @@ impl PrestigeLock {
     pub fn missing_tier(self) -> Option<PickaxeTier> {
         self.tier
     }
-
-    /// The Efficiency level still owed (Netherite's cap), or [`None`].
-    pub fn missing_efficiency(self) -> Option<u8> {
-        self.efficiency
-    }
 }
 
-/// The progression gate on prestige, as a pure function of the three numbers it reads.
+/// The progression gate on prestige, as a pure function of the two numbers it reads.
 ///
 /// Takes the values rather than a [`Player`](crate::player::Player) — like
 /// [`MineKind::lock`](crate::mine_kind::MineKind::lock) — so it is testable without
-/// building a run and the preview can ask it about a hypothetical. Efficiency is
-/// measured against **Netherite's** cap always: a player below Netherite is capped at
-/// 5 and so is reported short, which is honest — they owe the tier *and* the levels it
-/// unlocks.
-pub fn lock(level: u32, tier: PickaxeTier, efficiency: u8) -> PrestigeLock {
-    let efficiency_cap = PickaxeTier::Netherite.efficiency_cap();
+/// building a run and the preview can ask it about a hypothetical.
+pub fn lock(level: u32, tier: PickaxeTier) -> PrestigeLock {
     PrestigeLock {
         level: (level < LEVEL_CAP).then_some(LEVEL_CAP),
         tier: (tier < PickaxeTier::Netherite).then_some(PickaxeTier::Netherite),
-        efficiency: (efficiency < efficiency_cap).then_some(efficiency_cap),
     }
 }
 
@@ -333,44 +329,36 @@ mod tests {
         );
     }
 
-    /// The gate opens only for a fully realised run — the level cap, Netherite, its
-    /// Efficiency cap — and below any of them names exactly what is owed.
+    /// The gate opens only for a fully realised run — the level cap and Netherite —
+    /// and below either of them names exactly what is owed.
     #[test]
     fn the_gate_opens_only_for_a_fully_realised_run() {
-        let cap = PickaxeTier::Netherite.efficiency_cap();
-
-        let open = lock(LEVEL_CAP, PickaxeTier::Netherite, cap);
+        let open = lock(LEVEL_CAP, PickaxeTier::Netherite);
         assert!(open.is_open());
         assert_eq!(open.missing_level(), None);
         assert_eq!(open.missing_tier(), None);
-        assert_eq!(open.missing_efficiency(), None);
 
-        let fresh = lock(1, PickaxeTier::Wooden, 0);
+        let fresh = lock(1, PickaxeTier::Wooden);
         assert!(!fresh.is_open());
         assert_eq!(fresh.missing_level(), Some(LEVEL_CAP));
         assert_eq!(fresh.missing_tier(), Some(PickaxeTier::Netherite));
-        assert_eq!(fresh.missing_efficiency(), Some(cap));
     }
 
     /// The level boundary is the cap itself, not one past it: reaching [`LEVEL_CAP`]
     /// clears the gate, and `Diamond` — one tier below the top — is still short.
     #[test]
     fn the_gates_bite_at_their_exact_boundaries() {
-        let cap = PickaxeTier::Netherite.efficiency_cap();
-
         assert_eq!(
-            lock(LEVEL_CAP - 1, PickaxeTier::Netherite, cap).missing_level(),
+            lock(LEVEL_CAP - 1, PickaxeTier::Netherite).missing_level(),
             Some(LEVEL_CAP)
         );
         assert_eq!(
-            lock(LEVEL_CAP, PickaxeTier::Netherite, cap).missing_level(),
+            lock(LEVEL_CAP, PickaxeTier::Netherite).missing_level(),
             None
         );
 
-        // Diamond's own Efficiency cap (5) is below Netherite's (15), so a maxed
-        // Diamond is still short the tier *and* the levels it unlocks.
-        let diamond = lock(LEVEL_CAP, PickaxeTier::Diamond, 5);
+        // A maxed level on Diamond — one tier below the top — is still short the tier.
+        let diamond = lock(LEVEL_CAP, PickaxeTier::Diamond);
         assert_eq!(diamond.missing_tier(), Some(PickaxeTier::Netherite));
-        assert_eq!(diamond.missing_efficiency(), Some(cap));
     }
 }

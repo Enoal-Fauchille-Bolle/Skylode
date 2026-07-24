@@ -11,7 +11,6 @@
 
 use crate::{
     block::Block,
-    enchant::EnchantType,
     inventory::Inventory,
     mine_kind::{MineKind, MineLock},
     pickaxe::Pickaxe,
@@ -322,16 +321,13 @@ impl Player {
     ///
     /// The player-facing form of [`prestige::lock`], as
     /// [`mine_lock`](Player::mine_lock) is for [`MineKind::lock`]: it reads the run's
-    /// three progression gates — level, pickaxe tier, and Efficiency — and hands them
-    /// to the pure function. The Amethyst price is not its business;
+    /// two progression gates — level and pickaxe tier — and hands them to the pure
+    /// function. Efficiency is no longer a gate (see [`PrestigeLock`]); the Amethyst
+    /// price is not its business either;
     /// [`GameState::prestige`](crate::game::GameState::prestige) pays that through the
     /// till once this lock is open.
     pub fn prestige_lock(&self) -> PrestigeLock {
-        prestige::lock(
-            self.level,
-            self.pickaxe.get_tier(),
-            self.pickaxe.enchants().get_level(EnchantType::Efficiency),
-        )
+        prestige::lock(self.level, self.pickaxe.get_tier())
     }
 
     /// Whether this progression could have been produced by the rules.

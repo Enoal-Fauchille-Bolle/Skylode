@@ -2363,7 +2363,7 @@ mod tests {
         assert_eq!(
             state.prestige(),
             Err(CoreError::PrestigeLocked {
-                lock: prestige::lock(1, PickaxeTier::Wooden, 0),
+                lock: prestige::lock(1, PickaxeTier::Wooden),
             })
         );
 
