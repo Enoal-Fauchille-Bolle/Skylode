@@ -112,6 +112,18 @@ impl Block {
     /// come out 1:1 too and spares us re-deriving a balance pass Mojang already did.
     /// The *dense* forms are the exception, tougher than their ore counterparts —
     /// that toughness is what they cost you for the nine items they give back.
+    ///
+    /// **Two designed exceptions to the 1:1 rule (phase 10): End Stone `10` and
+    /// Amethyst `15`, well above Minecraft's `3` and `1.5`.** The End is already a
+    /// *designed* space rather than a ported one — its ore was moved here and gated
+    /// behind Netherite, both non-Minecraft choices — so its hardness is a balance
+    /// dial too. A soft Amethyst (`1.5`) breaks in two ticks even at Efficiency 5, so
+    /// the ten Efficiency levels above it bought nothing: the block was too soft for
+    /// speed to matter. Hardening it is what gives Netherite's Efficiency `6..=15` a
+    /// reason to exist — a maxed pickaxe farms the End several times faster than a bare
+    /// one — and gives the endgame the teeth the mono-mine grind used to supply. Both
+    /// stay far below Ancient Debris' `30` and Obsidian's `50`, so the instamine
+    /// threshold the Redstone boost guards is untouched. See `docs/DECISIONS.md`.
     pub fn hardness(self) -> f32 {
         match self {
             Self::Stone => 1.5,
@@ -136,8 +148,8 @@ impl Block {
             Self::NetheriteBlock => 50.0,
             Self::Obsidian => 50.0,
             Self::CryingObsidian => 50.0,
-            Self::Endstone => 3.0,
-            Self::Amethyst => 1.5,
+            Self::Endstone => 10.0,
+            Self::Amethyst => 15.0,
         }
     }
 
