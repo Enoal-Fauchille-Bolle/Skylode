@@ -351,12 +351,14 @@ three-way call on the scarcest resource in the game: cash out (prestige), power 
 **The dial also changes a mine's speed, and not always in the player's favour.** The
 two cells of a mine can differ in hardness, so shifting weight between them shifts how
 long a grid takes. Enriching the Quartz mine makes it **2.4x slower** (Netherrack 0.4
-against Quartz Ore 3.0); enriching the End mine makes it **1.4x faster** (End Stone
-3.0 against Amethyst 1.5); the Obsidian mine is unaffected, both its cells being 50.
-This falls out of keeping Minecraft's hardness table 1:1 rather than being designed,
-but it reads as design and is kept: the Quartz dial is a genuine trade — rarer ore,
-slower grid — while the End, which yields the fewest items per grid in the game, is
-paid a speed bonus for enriching.
+against Quartz Ore 3.0); enriching the End mine makes it **1.5x slower** (End Stone 10
+against Amethyst 15, phase 10 — see [pickaxe progression](#pickaxe-progression) on why
+the End is hardened); the Obsidian mine is unaffected, both its cells being 50. For the
+Quartz mine this falls out of keeping Minecraft's hardness table 1:1; for the End it is
+now designed. Either way it reads as a genuine trade — rarer ore, slower grid — so
+enriching the End is a real cost, not the free speed bonus its soft-Amethyst version
+used to hand out. It also puts the prestige currency behind the *slowest* cells, which
+is what makes Netherite's Efficiency worth buying to farm it.
 
 **The dial, not a weight cap, is what keeps a run from stranding.** An earlier
 version of this design capped the valuable cell's weight strictly below 100% and
@@ -496,18 +498,25 @@ Amethyst) each own a distinct function, so no two ores are redundant.
 - Within a tier, Efficiency goes from 0 to 5. Jumping to the next tier resets
   Efficiency and temporarily lowers mining speed (the "dip"). Tune the dip so it
   stays short and clearly worth taking.
-- The top tier keeps climbing: **Netherite Efficiency goes 0 to 15** without a
-  reset (15 is Pika's instamine point). Past Efficiency 15, the Haste enchant and
-  Redstone boosts push the last blocks to instamine.
-- That climb is **priced in two halves**. Efficiency 1→5 is the ordinary tier
-  upgrade, paid in Ancient Debris like the tier itself. Efficiency **6→15 is the
-  post-Netherite enhancement**, and it *is paid* — in Obsidian **and** Crying
-  Obsidian both, the two materials of the Obsidian mine. It is mostly the common
-  Obsidian with a minority Crying share, so the enhancement consumes both and the
-  Obsidian mine's [richness](#mine-richness) dial has an *optimum* ratio to farm
-  toward rather than a maximum (see [upgrade costs](#upgrade-costs)). The
-  enhancement is thus folded into the Efficiency climb, not a separate track past
-  it.
+- The top tier keeps climbing: **Netherite Efficiency goes 0 to 15** (15 is Pika's
+  instamine point). Past Efficiency 15, the Haste enchant and Redstone boosts push
+  the last blocks to instamine.
+- That climb is **priced in two halves, each on its own reset of the curve**.
+  Efficiency 1→5 is the ordinary tier upgrade, paid in Ancient Debris like the tier
+  itself, on curve steps 0→4. Efficiency **6→15 is the post-Netherite enhancement**,
+  and it *is paid* — in Obsidian **and** Crying Obsidian both, the two materials of
+  the Obsidian mine — on its **own** curve steps 0→9, restarted from zero the way a
+  tier jump restarts Efficiency for every other tier. Without that reset the
+  fifteenth level read curve step 14, an Obsidian wall roughly six times its
+  neighbours (phase 10 measured a reference speedrun spending ~37 h of a 39 h run on
+  it alone); with it, the enhancement climbs its own short ladder. The one-off dip in
+  *price* at Eff 5→6 is the same kind a tier jump already makes. It is mostly the
+  common Obsidian with a Crying share climbing from a quarter to the dial's own
+  ceiling, so the enhancement consumes both and the Obsidian mine's
+  [richness](#mine-richness) dial has a *moving* optimum ratio to farm toward (see
+  [upgrade costs](#upgrade-costs)). The enhancement is folded into the Efficiency
+  climb, not a separate track — **but it no longer gates prestige** (see
+  [Prestige](#prestige)), so buying it is now optimisation, not obligation.
 - Beyond the upgrade ceiling: prestige.
 
 ### Mine gating table
@@ -835,15 +844,20 @@ source.
 - **Currency:** Amethyst, the rare ore of the End. The player farms the End, then
   spends Amethyst to prestige. Amethyst is dual-use (push the End enchant cap or
   prestige), which creates a real spending choice.
-- **Condition:** a **fully realised run** — the mining level at its cap (50), a
-  Netherite pickaxe with Efficiency maxed — plus enough Amethyst to pay. Reaching the
-  End (level 30) is no longer sufficient: with the End's ore [gated behind
-  Netherite](#mine-gating-table), the old condition left the shortest path to prestige
-  an XP race to level 30 that never climbed a pickaxe tier (the balance harness
-  measured that floor at ~2.6 h). Requiring the full climb puts the two-axis gate back
-  on the prestige itself. The progression gates are checked **before** the price, since
-  Amethyst only drops past the level gate; `Player::prestige_lock` reports which are
-  still shut, the shape `MineLock` takes for the mine gate.
+- **Condition:** a **fully realised run** — the mining level at its cap (50) and a
+  Netherite pickaxe — plus enough Amethyst to pay. Reaching the End (level 30) is no
+  longer sufficient: with the End's ore [gated behind Netherite](#mine-gating-table),
+  the old condition left the shortest path to prestige an XP race to level 30 that
+  never climbed a pickaxe tier (the balance harness measured that floor at ~2.6 h).
+  Requiring the full climb puts the two-axis gate back on the prestige itself.
+  **Efficiency 15 is deliberately *not* a condition** (phase 10): it was redundant
+  with the Amethyst price, which already forces reaching and working the End, and it
+  was the sole source of the mono-mine Obsidian grind — a reference speedrun spent
+  ~37 h of a 39 h run on it. Dropping it makes Netherite's Efficiency 6→15 pure
+  optimisation, and lets the speedrunner (skip it, farm Amethyst) and the
+  completionist (max it) diverge. The progression gates are checked **before** the
+  price, since Amethyst only drops past the level gate; `Player::prestige_lock`
+  reports which are still shut, the shape `MineLock` takes for the mine gate.
 - **Deep reset:** pickaxe (back to Wooden), Efficiency, Fortune, ore inventory,
   mine sizes, **mine richness**, enchant levels, and the mining level (XP) all reset
   to the start. Richness goes with size because it is the second track of the same
