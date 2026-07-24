@@ -330,6 +330,22 @@ mod tests {
     }
 
     #[test]
+    fn the_mine_tab_paints_coloured_cells() {
+        // The grid is the one thing on screen that carries information in its
+        // *background*, so "did anything get painted" is a real assertion here and
+        // not a tautology: every other widget leaves `bg` at `Reset`.
+        use ratatui::style::Color;
+
+        let buffer = render_to_buffer(&App::new());
+        let painted = buffer.content().iter().any(|cell| cell.bg != Color::Reset);
+        assert!(
+            painted,
+            "the mine screen drew no swatch:\n{}",
+            whole_frame(&buffer)
+        );
+    }
+
+    #[test]
     fn a_cramped_terminal_shows_the_filter_instead_of_the_open_screen() {
         // Sitting on a non-default tab, under the budget: the filter must win over
         // whatever was up, drawing its message and none of the tab bar.
