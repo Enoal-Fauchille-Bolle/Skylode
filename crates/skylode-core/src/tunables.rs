@@ -290,7 +290,9 @@ pub const RAW_PER_COMPRESSED: u32 = 100;
 /// Also the unit the boost is quoted in ([`BOOST_COST`]), so a re-balance moves the
 /// consumable with the ladders instead of leaving it behind.
 ///
-/// Provisional; phase 10 balance sets the final value. Must stay above zero, or the
+/// Set by the phase-10 pacing pass and guarded by
+/// `the_first_prestige_lands_inside_the_pacing_window`: changing it moves a measured band
+/// and fails that test. Must stay above zero, or the
 /// whole curve collapses to zero and nothing ever costs anything.
 pub const COST_BASE: u32 = 100;
 
@@ -303,7 +305,9 @@ pub const COST_BASE: u32 = 100;
 /// should bite. At `1.55` the price climbs by 33 across the track, which keeps every
 /// step costing between one and two and a half full grids instead of a fifth of one.
 ///
-/// Provisional; phase 10 balance sets the final value. Must stay strictly above
+/// Set by the phase-10 pacing pass and guarded by
+/// `the_first_prestige_lands_inside_the_pacing_window`: changing it moves a measured band
+/// and fails that test. Must stay strictly above
 /// `1.0`, or successive upgrades would cost the same or *less*.
 pub const SIZE_COST_GROWTH: f64 = 1.55;
 
@@ -315,7 +319,9 @@ pub const SIZE_COST_GROWTH: f64 = 1.55;
 /// whichever of them was mis-matched either free or unbuyable — the reason this crate
 /// carries a slope per track rather than the single `COST_GROWTH` it once had.
 ///
-/// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`.
+/// Set by the phase-10 pacing pass and guarded by
+/// `the_first_prestige_lands_inside_the_pacing_window`: changing it moves a measured band
+/// and fails that test. Must stay strictly above `1.0`.
 pub const RICHNESS_COST_GROWTH: f64 = 1.35;
 
 /// Growth factor shared by the two **ordinary pickaxe** tracks: Efficiency `1..=5`
@@ -328,7 +334,9 @@ pub const RICHNESS_COST_GROWTH: f64 = 1.35;
 /// own [`NETHERITE_ENHANCEMENT_COST_GROWTH`] so this one no longer has to survive a long
 /// completionist-only climb *and* the short climbs every run makes.
 ///
-/// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`.
+/// Set by the phase-10 pacing pass and guarded by
+/// `the_first_prestige_lands_inside_the_pacing_window`: changing it moves a measured band
+/// and fails that test. Must stay strictly above `1.0`.
 pub const UPGRADE_COST_GROWTH: f64 = 1.45;
 
 /// Growth factor of the **Netherite Efficiency enhancement** (`6..=15`), the pickaxe's
@@ -346,7 +354,9 @@ pub const UPGRADE_COST_GROWTH: f64 = 1.45;
 /// cost roughly 3.7 h of the completionist's run; the flatter slope trims the top rungs,
 /// where the scarce Crying Obsidian bites hardest.
 ///
-/// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`, and
+/// Set by the phase-10 pacing pass and guarded by
+/// `the_first_prestige_lands_inside_the_pacing_window`: changing it moves a measured band
+/// and fails that test. Must stay strictly above `1.0`, and
 /// below [`SIZE_COST_GROWTH`] so size stays the steepest track in the game.
 pub const NETHERITE_ENHANCEMENT_COST_GROWTH: f64 = 1.10;
 
@@ -362,13 +372,17 @@ pub const NETHERITE_ENHANCEMENT_COST_GROWTH: f64 = 1.10;
 /// without making the End's levels cheap in absolute terms. This is the whole reason
 /// the enchant ladder does not read off [`COST_BASE`] like everything else.
 ///
-/// Provisional; phase 10 balance sets the final value. Must stay above zero.
+/// Set by the phase-10 pacing pass and guarded by
+/// `the_first_prestige_lands_inside_the_pacing_window`: changing it moves a measured band
+/// and fails that test. Must stay above zero.
 pub const ENCHANT_COST_BASE: u32 = 1_000;
 
 /// Growth factor of the **enchant** ladder's cost curve — the gentlest in the game,
 /// for the reason [`ENCHANT_COST_BASE`] is the highest.
 ///
-/// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`.
+/// Set by the phase-10 pacing pass and guarded by
+/// `the_first_prestige_lands_inside_the_pacing_window`: changing it moves a measured band
+/// and fails that test. Must stay strictly above `1.0`.
 pub const ENCHANT_COST_GROWTH: f64 = 1.25;
 
 // --- Boosts (phase 5) ---

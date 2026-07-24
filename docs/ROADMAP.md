@@ -62,10 +62,18 @@ core is built in, see [PHASES.md](PHASES.md).
   gates how much may be invested; each enchant's own scaling decides what that buys.
   Lives in `World::enchant_cap`. The values stay open to balance, but their *order*
   does not. See [DECISIONS.md](DECISIONS.md).
+- ~~**Cost-curve constants and mine-size upgrade costs**~~ — **settled by the phase-10
+  pacing pass**: a per-track slope (size 1.55, richness 1.35, tier jumps and Efficiency
+  1.45, the Netherite enhancement 1.10, enchants 1.25 on a base ten times the others),
+  chosen against a measured target rather than by feel. A first prestige now lands in a
+  **~1 h to ~2.3 h** band, measured by two reference players and guarded in the test gate
+  by `the_first_prestige_lands_inside_the_pacing_window`. See [DECISIONS.md](DECISIONS.md).
+  The values remain open to a *deliberate* retune — what is settled is that changing them
+  now fails a test instead of passing unnoticed.
 - **Tunables (decided at implementation time):** XP curve and world-unlock levels
-  (15, 30), offline cap (7 days), dip magnitude, cost-curve constants, compression
+  (15, 30), offline cap (7 days), dip magnitude, compression
   ratio (100), autosave interval (10 seconds),
-  enchant proc rates and cooldowns, mine-size upgrade costs, prestige multiplier
+  enchant proc rates and cooldowns, prestige multiplier
   scale, batch-reset threshold (0), `HOLD_WINDOW` (1100 ms — revisit only if
   playtest finds the stop latency perceptible) and the accessibility toggle's
   inactivity cutoff (15 s), and for richness: the number of levels, the
