@@ -782,8 +782,8 @@ a deliberate decision point, so the frame states the trade and offers the deal, 
     │ Every mine's size and richness                                       │
     │ Your entire inventory                                                │
     │                                                                      │
-    │ You are Lv 23 of 50, a Diamond pickaxe short of Netherite, and       │
-    │ Efficiency IV of the XV — and Amethyst drops past the level.         │
+    │ You are Lv 23 of 50 and a Diamond pickaxe short of Netherite —       │
+    │ and Amethyst only drops past the level.                              │
     │                                                                      │
     └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -793,9 +793,12 @@ brutal: the deep reset exists because re-walking the progression is the point, a
 preview that soft-pedals it sets up the one complaint that cannot be undone.
 
 **Drawn unaffordable, which is the common case** — the condition is a fully realised
-run (level cap, Netherite, Efficiency maxed), so the honest last line names the
-progression still owed, not "you need 6 540 more Amethyst": that ore only drops past
-those gates, and quoting a price to a player short of them answers the wrong question.
+run (level cap and Netherite; Efficiency 15 was dropped as a third gate in phase 10),
+so the honest last line names the progression still owed, not "you need 6 540 more
+Amethyst": that ore only drops past those gates, and quoting a price to a player short
+of them answers the wrong question. **Two gates, so two clauses** — the line is built
+from `PrestigeLock`'s two `Option`s, and a third sentence would have to come from
+somewhere the lock no longer reports.
 
 ### 6.9 Prestige confirm
 
