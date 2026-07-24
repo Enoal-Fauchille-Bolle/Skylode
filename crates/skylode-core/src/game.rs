@@ -2331,10 +2331,10 @@ mod tests {
     /// and that is the better test anyway: the gate this exercises is the one a real
     /// run walks through.
     fn ready_to_prestige(state: &mut GameState) {
-        // Every progression gate open: a Netherite pickaxe with Efficiency maxed, and
-        // the mining level driven to its cap. The XP is granted in slugs until the
-        // level gate closes, so the fixture survives whatever shape phase 10 gives the
-        // XP curve rather than pinning a block count to one of them.
+        // Both progression gates open: a Netherite pickaxe (Efficiency no longer
+        // gates prestige) and the mining level driven to its cap. The XP is granted in
+        // slugs until the level gate closes, so the fixture survives whatever shape
+        // phase 10 gives the XP curve rather than pinning a block count to one of them.
         equip(state, PickaxeTier::Netherite, instamining());
         while state.player.prestige_lock().missing_level().is_some() {
             state
@@ -2602,8 +2602,10 @@ mod tests {
     // else it needs is already `pub`.
     // =====================================================================
 
+    use crate::material::ALL_MATERIALS;
     use crate::mine_kind::ALL_MINES;
     use crate::tunables::{LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND};
+    use std::collections::BTreeMap;
 
     /// One thing the reference player can pour ore into. Each is priced on its
     /// own curve, which is the whole point of the greedy: it compares them.
@@ -2787,14 +2789,17 @@ mod tests {
     /// Spends greedily by price until nothing affordable remains: pick the
     /// cheapest wealth-affordable track that does not touch the prestige currency,
     /// compress for it, buy it, repeat.
-    fn develop(state: &mut GameState) {
+    fn develop(state: &mut GameState, style: ReferenceStyle) {
         loop {
             let mut best: Option<(Track, u64, economy::Cost)> = None;
             for track in all_tracks() {
                 let Some(cost) = track_cost(state, track) else {
                     continue;
                 };
-                if spends_prestige_currency(&cost) {
+                // Only the speedrunner hoards the prestige currency untouched. The
+                // completionist spends it — it has an Amethyst mine to max — and banks
+                // for the prestige only once nothing else is left to buy.
+                if matches!(style, ReferenceStyle::Speedrun) && spends_prestige_currency(&cost) {
                     continue;
                 }
                 if !affordable_by_wealth(state, &cost) {
@@ -2818,18 +2823,58 @@ mod tests {
         }
     }
 
-    /// The next step toward a maxed pickaxe: Efficiency up to the current tier's cap,
-    /// then the tier jump, then nothing — the pickaxe is done and the remaining gates
-    /// (level 50, the banked Amethyst) come from mining, not a purchase.
+    /// Which of the two reference players a run models — the two ends of the pacing
+    /// band phase 10 tunes between.
+    ///
+    /// They share every mechanic and differ in three deliberate places: how far the
+    /// Netherite Efficiency climbs ([`progression_target`]), whether the greedy spends
+    /// the prestige currency ([`develop`]), and when the prestige is allowed to fire
+    /// ([`run_reference`]). Everything else — the greedy, the swing, the RNG — is one
+    /// code path, so a difference in the numbers is a difference in *strategy*, not in
+    /// two separate simulators drifting apart.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum ReferenceStyle {
+        /// Rushes the first prestige: Netherite Efficiency stops at the cheap base 5,
+        /// mines are only ever partially developed, and the prestige fires the instant
+        /// its gates open. The lower edge of the band — the ~1 h 30 target.
+        Speedrun,
+        /// Leaves nothing on the table: Netherite Efficiency to the full 15, every
+        /// enchant at its cap, every reachable mine maxed, and only *then* the prestige.
+        /// The upper edge of the band — the ~3 h target.
+        Completionist,
+    }
+
+    /// The Efficiency the speedrunner climbs on Netherite: the cheap base run (`1..=5`,
+    /// paid in Ancient Debris), but **not** the Obsidian enhancement (`6..=15`). Since
+    /// phase 10 dropped Efficiency 15 as a prestige gate, the enhancement is pure
+    /// optimisation — the completionist buys it, the speedrunner skips it to rush the
+    /// Amethyst — so forcing it on the speedrunner would grind an Obsidian wall the run
+    /// no longer owes.
+    const SPEEDRUN_NETHERITE_EFFICIENCY: u8 = 5;
+
+    /// The next step toward the reference pickaxe: Efficiency up to the tier's cap,
+    /// then the tier jump — climbing the ladder — and on Netherite the style's Efficiency
+    /// ceiling, then nothing. The remaining gates (level 50, the banked Amethyst) come
+    /// from mining, not a purchase.
     ///
     /// This is the *progression* half of the hybrid reference player. The greedy in
     /// [`develop`] would never prioritise the tier jump over the cheaper upgrades
-    /// around it, and a player that never climbs a tier never reaches the Netherite
-    /// the endgame ore — and so the prestige — now needs.
-    fn progression_target(state: &mut GameState) -> Option<Track> {
+    /// around it, and a player that never climbs a tier never reaches the Netherite the
+    /// endgame ore — and so the prestige — now needs.
+    ///
+    /// The two styles part ways only on Netherite: the speedrunner stops at the cheap
+    /// base [`SPEEDRUN_NETHERITE_EFFICIENCY`] and turns toward the End to farm Amethyst,
+    /// while the completionist climbs the full Obsidian enhancement to the tier cap.
+    fn progression_target(state: &mut GameState, style: ReferenceStyle) -> Option<Track> {
         let tier = current_tier(state);
+        // The speedrunner climbs only Netherite's cheap base 5; the completionist takes
+        // the full cap. Every earlier tier's jump gate enforces the same cap for both.
+        let efficiency_target = match (tier, style) {
+            (PickaxeTier::Netherite, ReferenceStyle::Speedrun) => SPEEDRUN_NETHERITE_EFFICIENCY,
+            _ => tier.efficiency_cap(),
+        };
         let efficiency = enchant_level(state, EnchantType::Efficiency);
-        if efficiency < tier.efficiency_cap() {
+        if efficiency < efficiency_target {
             Some(Track::Efficiency)
         } else if tier != PickaxeTier::Netherite {
             Some(Track::Tier)
@@ -2859,16 +2904,99 @@ mod tests {
             .rfind(|&kind| state.player().mine_lock(kind).is_open())
     }
 
-    /// Puts the player in the mine that funds the progression target, or — when the
-    /// pickaxe is done — the deepest open mine, to bank Amethyst and earn the last
-    /// levels. Sets the dial to the bought ceiling on arrival.
-    fn select_working_mine(state: &mut GameState) {
-        let target_material = progression_target(state)
-            .and_then(|track| track_cost(state, track))
-            .and_then(|cost| cost.lines().first().map(|line| line.material));
-        let kind = target_material
-            .and_then(|material| mine_for_material(state, material))
-            .or_else(|| deepest_open(state));
+    /// Whether a mine has been visited *and* has both its size and richness maxed.
+    ///
+    /// An open mine the run has never entered is [`None`] here — [`GameState::mine`]
+    /// only holds visited grids — and so counts as *not* developed, which is exactly
+    /// what makes the completionist's sweep enter it.
+    fn mine_fully_developed(state: &GameState, kind: MineKind) -> bool {
+        state
+            .mine(kind)
+            .is_some_and(|mine| mine.is_size_maxed() && mine.is_richness_maxed())
+    }
+
+    /// The shallowest reachable mine the completionist has not yet fully developed, or
+    /// [`None`] once every open mine is maxed. `ALL_MINES` runs shallow → deep, so
+    /// `find` yields the shallowest, and the sweep back-fills the ladder in order.
+    fn next_undeveloped_mine(state: &GameState) -> Option<MineKind> {
+        ALL_MINES.iter().copied().find(|&kind| {
+            state.player().mine_lock(kind).is_open() && !mine_fully_developed(state, kind)
+        })
+    }
+
+    /// Once the pickaxe and every mine are maxed, the only purchases left are enchants —
+    /// and each spatial level is priced in three ores from three different worlds, a bill
+    /// the greedy could never pay parked in one mine (it spends each ore the instant a
+    /// cheaper buy exists). This returns the mine producing the ore the completionist is
+    /// **most short of** for the *cheapest* uncapped enchant, so successive cadences farm
+    /// the fuel pair the greedy would otherwise never hold at once — the deliberate
+    /// hoarding a real completionist does, expressed as a route rather than a reserve
+    /// (there is nothing else to spend on now, so the ore banks itself).
+    ///
+    /// [`None`] when no uncapped enchant has an affordable-by-mining deficit — either all
+    /// are capped, or the missing ore has no open mine, which cannot happen once every
+    /// world is unlocked.
+    fn completionist_enchant_mine(state: &mut GameState) -> Option<MineKind> {
+        let world = state.player().highest_unlocked_world();
+        let tier = current_tier(state);
+        // The cheapest uncapped enchant, by the raw-equivalent of its next level.
+        let target = REFERENCE_ENCHANTS
+            .iter()
+            .copied()
+            .filter_map(|kind| {
+                let level = enchant_level(state, kind);
+                (level < kind.max_level(tier, world))
+                    .then(|| economy::enchant_cost(kind, level, world))
+                    .flatten()
+                    .map(|cost| (raw_equiv(&cost), cost))
+            })
+            .min_by_key(|(price, _)| *price)
+            .map(|(_, cost)| cost)?;
+        // Among that enchant's lines, the ore with the largest shortfall whose mine is
+        // open — the one worth standing in a mine to earn.
+        let inventory = state.player().get_inventory();
+        target
+            .lines()
+            .iter()
+            .filter_map(|line| {
+                let need = u64::from(line.compressed) * u64::from(RAW_PER_COMPRESSED)
+                    + u64::from(line.raw);
+                let have = u64::from(inventory.raw_value(line.material));
+                let deficit = need.saturating_sub(have);
+                let kind = mine_for_material(state, line.material)?;
+                (deficit > 0).then_some((deficit, kind))
+            })
+            .max_by_key(|&(deficit, _)| deficit)
+            .map(|(_, kind)| kind)
+    }
+
+    /// Puts the player in the mine to work this cadence, and sets the dial to the bought
+    /// ceiling on arrival.
+    ///
+    /// While the pickaxe is still climbing, both styles chase the mine that *funds the
+    /// progression material* — the tier jump is paid in a specific ore the deepest mine
+    /// may not produce. Once the pickaxe is done they diverge: the speedrunner sits in
+    /// the deepest open mine to bank Amethyst and earn its last levels, while the
+    /// completionist sweeps the ladder shallow → deep, maxing each mine with the strong
+    /// pickaxe before moving on — a back-fill that would deadlock if attempted *during*
+    /// the climb, since the shallow mine and the next tier jump compete for one ore.
+    fn select_working_mine(state: &mut GameState, style: ReferenceStyle) {
+        let kind = if let Some(track) = progression_target(state, style) {
+            track_cost(state, track)
+                .and_then(|cost| cost.lines().first().map(|line| line.material))
+                .and_then(|material| mine_for_material(state, material))
+                .or_else(|| deepest_open(state))
+        } else {
+            match style {
+                ReferenceStyle::Speedrun => deepest_open(state),
+                // Sweep any mine still short of maxed first; once they are all done, chase
+                // the fuel for the cheapest uncapped enchant; and only when nothing is left
+                // to earn, park in the deepest mine to bank Amethyst for the prestige.
+                ReferenceStyle::Completionist => next_undeveloped_mine(state)
+                    .or_else(|| completionist_enchant_mine(state))
+                    .or_else(|| deepest_open(state)),
+            }
+        };
         if let Some(kind) = kind
             && kind != state.current_mine().kind()
         {
@@ -2881,8 +3009,8 @@ mod tests {
     /// Buys the progression target to exhaustion — the priority the greedy lacks: the
     /// tier jump is taken the moment it is affordable, however many cheaper upgrades
     /// are also on offer. Each buy consumes wealth, so the loop terminates.
-    fn advance_progression(state: &mut GameState) {
-        while let Some(target) = progression_target(state) {
+    fn advance_progression(state: &mut GameState, style: ReferenceStyle) {
+        while let Some(target) = progression_target(state, style) {
             let Some(cost) = track_cost(state, target) else {
                 break;
             };
@@ -2894,6 +3022,35 @@ mod tests {
                 break;
             }
         }
+    }
+
+    /// Whether the completionist has nothing left to buy — the gate on its prestige.
+    ///
+    /// Three things must all be true: the pickaxe is maxed (Netherite, Efficiency 15),
+    /// every enchant sits at its cap for the highest reachable world, and every open
+    /// mine has been entered and had its size and richness maxed. Once this holds,
+    /// [`develop`] finds no affordable track, so the Amethyst it was spending starts to
+    /// bank instead, and the prestige fires when the bank clears the cost.
+    ///
+    /// It is reachable by construction — every cap is finite and mining income is
+    /// unbounded in time — so gating the prestige on it cannot livelock the run.
+    fn fully_developed(state: &mut GameState) -> bool {
+        if progression_target(state, ReferenceStyle::Completionist).is_some() {
+            return false;
+        }
+        let world = state.player().highest_unlocked_world();
+        let tier = current_tier(state);
+        if REFERENCE_ENCHANTS
+            .iter()
+            .any(|&kind| enchant_level(state, kind) < kind.max_level(tier, world))
+        {
+            return false;
+        }
+        ALL_MINES
+            .iter()
+            .copied()
+            .filter(|&kind| state.player().mine_lock(kind).is_open())
+            .all(|kind| mine_fully_developed(state, kind))
     }
 
     /// Fires a held charge if none is running, for the boost's whole reason to
@@ -2914,17 +3071,35 @@ mod tests {
         netherite: Option<u64>,
         pickaxe_maxed: Option<u64>,
         level_50: Option<u64>,
+        /// The tick the completionist had **everything** bought — pickaxe, enchants and
+        /// every mine maxed. The gap between this and [`first_prestige`] is the time it
+        /// then spent banking Amethyst for the prestige cost. Always [`None`] for the
+        /// speedrunner, which never waits to be fully developed.
+        fully_developed: Option<u64>,
         first_prestige: Option<u64>,
         final_level: u32,
         final_tier: PickaxeTier,
         final_mine: MineKind,
         banked_amethyst: u32,
+        /// The tick each pickaxe tier was first reached, in the order reached — the
+        /// per-tier timeline the milestone columns flatten away. `Wooden` is entered
+        /// at tick 0 by construction, so the list always opens with it.
+        tier_timeline: Vec<(PickaxeTier, u64)>,
+        /// How many ticks the reference player spent *standing in* each mine — the
+        /// real per-mine dwell time, counted every tick rather than sampled at the
+        /// milestones. A `BTreeMap` so the readout is stable across runs.
+        mine_ticks: BTreeMap<MineKind, u64>,
+        /// Gross raw-equivalent ore mined while at each tier — production *before* any
+        /// spending. Divided by the tier's dwell (from [`tier_timeline`]) it gives the
+        /// tier's production rate, the denominator the phase-10 cost calibration needs:
+        /// `time = cost / rate`, so a cost is only a target time once the rate is known.
+        production_per_tier: BTreeMap<PickaxeTier, u64>,
     }
 
-    /// Runs the reference player from a fresh seed for at most `max_ticks`,
-    /// stopping the instant the first prestige fires — that is the milestone the
-    /// 15–25 h target is stated against.
-    fn run_reference(seed: u64, max_ticks: u64) -> PacingReport {
+    /// Runs the chosen reference player from a fresh seed for at most `max_ticks`,
+    /// stopping the instant the first prestige fires — the milestone the pacing band
+    /// (~1 h 30 speedrun, ~3 h completionist) is stated against.
+    fn run_reference(seed: u64, max_ticks: u64, style: ReferenceStyle) -> PacingReport {
         let mut state = GameState::new(seed, SystemTime::UNIX_EPOCH);
         let mut report = PacingReport {
             seed,
@@ -2933,24 +3108,57 @@ mod tests {
             netherite: None,
             pickaxe_maxed: None,
             level_50: None,
+            fully_developed: None,
             first_prestige: None,
             final_level: 1,
             final_tier: PickaxeTier::Wooden,
             final_mine: MineKind::Stone,
             banked_amethyst: 0,
+            tier_timeline: vec![(PickaxeTier::Wooden, 0)],
+            mine_ticks: BTreeMap::new(),
+            production_per_tier: BTreeMap::new(),
         };
+
+        // The inventory's total raw value at the end of the previous iteration.
+        // Between two of these the only thing that adds value is mining, so a tick's
+        // rise is that tick's gross production — the decision block's spending is
+        // subtracted back out here, at the iteration's end.
+        let mut prev_wealth = inventory_raw_total(&state);
 
         for tick in 0..max_ticks {
             state.tick(MINING);
             report.final_level = report.final_level.max(state.player().get_level());
+            // Counted every tick: dwell time is where the run's *shape* lives, and a
+            // per-second sample would miss the mines the player passes through fast.
+            *report
+                .mine_ticks
+                .entry(state.current_mine().kind())
+                .or_insert(0) += 1;
+
+            // Gross production this tick, attributed to the tier that mined it — read
+            // before the decision block jumps the tier or spends the ore.
+            let wealth = inventory_raw_total(&state);
+            let mined = wealth.saturating_sub(prev_wealth);
+            *report
+                .production_per_tier
+                .entry(current_tier(&mut state))
+                .or_insert(0) += mined;
+            prev_wealth = wealth;
 
             if !tick.is_multiple_of(DECISION_CADENCE) {
                 continue;
             }
 
             fire_boost_if_idle(&mut state);
-            select_working_mine(&mut state);
-            advance_progression(&mut state);
+            select_working_mine(&mut state, style);
+            advance_progression(&mut state, style);
+
+            // The tier only ever climbs before the prestige (which returns), so a
+            // change against the last entry is always a fresh tier reached.
+            let tier_now = current_tier(&mut state);
+            if report.tier_timeline.last().map(|&(t, _)| t) != Some(tier_now) {
+                report.tier_timeline.push((tier_now, tick));
+            }
 
             // Milestones are read after advancing, before the prestige attempt that
             // resets the level and tier the two of them measure.
@@ -2964,35 +3172,71 @@ mod tests {
                 report.netherite = Some(tick);
             }
             // The pickaxe is fully maxed exactly when there is no progression step
-            // left — Netherite with its Efficiency at the cap.
-            if report.pickaxe_maxed.is_none() && progression_target(&mut state).is_none() {
+            // left — Netherite with its Efficiency at the style's cap.
+            if report.pickaxe_maxed.is_none() && progression_target(&mut state, style).is_none() {
                 report.pickaxe_maxed = Some(tick);
             }
             if report.level_50.is_none() && state.player().get_level() >= LEVEL_CAP {
                 report.level_50 = Some(tick);
             }
 
-            // Prestige first: the banked Amethyst is spent here or nowhere, since
-            // neither `develop` nor `advance_progression` touches it. Compress for the
-            // price the same way a purchase does — the payment wants Compressed too.
-            let prestige_cost = prestige::cost(state.player().get_prestige());
-            compress_for(&mut state, &prestige_cost);
-            if state.prestige().is_ok() {
-                report.first_prestige = Some(tick);
-                return report;
+            // The speedrunner prestiges the instant its gates open; the completionist
+            // waits until it has bought everything, recording *when* it became fully
+            // developed so the banking tail can be read off against the prestige tick.
+            let ready = match style {
+                ReferenceStyle::Speedrun => true,
+                ReferenceStyle::Completionist => {
+                    let done = fully_developed(&mut state);
+                    if done && report.fully_developed.is_none() {
+                        report.fully_developed = Some(tick);
+                    }
+                    done
+                }
+            };
+
+            // Prestige when ready: the banked Amethyst is spent here or nowhere, since
+            // `advance_progression` never touches it (nor `develop`, once nothing is left
+            // to buy). Compress for the price the same way a purchase does — the payment
+            // wants Compressed too.
+            if ready {
+                let prestige_cost = prestige::cost(state.player().get_prestige());
+                compress_for(&mut state, &prestige_cost);
+                if state.prestige().is_ok() {
+                    report.first_prestige = Some(tick);
+                    return report;
+                }
             }
 
-            develop(&mut state);
+            develop(&mut state, style);
 
             report.final_tier = current_tier(&mut state);
             report.final_mine = state.current_mine().kind();
             report.banked_amethyst = state.player().get_inventory().raw_value(Material::Amethyst);
+
+            // The decision block just spent: re-baseline so next tick's rise is mining
+            // alone, not mining minus this second's purchases.
+            prev_wealth = inventory_raw_total(&state);
         }
 
         report
     }
 
-    /// Prints the reference player's pacing across several seeds.
+    /// The inventory's total raw-equivalent value across every material — the meter
+    /// the production measure reads deltas off. Compressed units count at their raw
+    /// worth ([`Inventory::raw_value`]), so compression moves nothing here.
+    fn inventory_raw_total(state: &GameState) -> u64 {
+        let inventory = state.player().get_inventory();
+        ALL_MATERIALS
+            .iter()
+            .map(|&material| u64::from(inventory.raw_value(material)))
+            .sum()
+    }
+
+    /// Prints both reference players' pacing across several seeds.
+    ///
+    /// The speedrunner sets the band's lower edge (rush the first prestige) and the
+    /// completionist its upper edge (max everything first), so one run of this test
+    /// shows the whole spread the phase-10 costs have to fit inside.
     ///
     /// **Ignored by default**: a run long enough to reach the first prestige is
     /// several million ticks, far too slow for the commit gate. It is a
@@ -3002,13 +3246,14 @@ mod tests {
     /// cargo test -p skylode-core --release balance_pacing -- --ignored --nocapture
     /// ```
     ///
-    /// The target, decided with Enoal, is a first prestige in **~15–25 h** of
-    /// active play — `1_080_000` to `1_800_000` ticks at 20 tps.
+    /// The target, decided with Enoal, is a first prestige in **~1 h 30** speedrun and
+    /// **~3 h** completionist — roughly `108_000` to `216_000` ticks at 20 tps.
     #[test]
     #[ignore = "multi-million-tick measurement; run in release with --ignored --nocapture"]
     fn balance_pacing_report() {
         // ~70 h ceiling, so a slow seed still reaches the prestige it is timed to.
         const MAX_TICKS: u64 = 5_000_000;
+        const SEEDS: [u64; 5] = [1, 2, 3, 42, 100];
 
         fn hours(ticks: Option<u64>) -> String {
             match ticks {
@@ -3017,23 +3262,66 @@ mod tests {
             }
         }
 
-        // Phase breakdown, so a re-balance can see *where* the time goes: the tier
-        // climb (→ Netherite), the Netherite Efficiency climb (→ pickaxe maxed), the
-        // XP climb (→ level 50), and the Amethyst bank (→ prestige).
-        println!("\nseed | Netherite | Px maxed | Lv 50 | 1st prestige | end mine");
-        println!("-----|-----------|----------|-------|--------------|---------");
-        for seed in [1_u64, 2, 3, 42, 100] {
-            let r = run_reference(seed, MAX_TICKS);
-            println!(
-                "{:>4} | {:>9} | {:>8} | {:>5} | {:>12} | {:>8?}",
-                r.seed,
-                hours(r.netherite),
-                hours(r.pickaxe_maxed),
-                hours(r.level_50),
-                hours(r.first_prestige),
-                r.final_mine,
-            );
+        // One labelled block per reference player, same columns, so the two edges of the
+        // pacing band read side by side.
+        fn section(style: ReferenceStyle, label: &str) {
+            // Phase breakdown, so a re-balance can see *where* the time goes: the tier
+            // climb (→ Netherite), the Efficiency climb (→ pickaxe maxed), the XP climb
+            // (→ level 50), the full development (completionist only), and the Amethyst
+            // bank (→ prestige).
+            println!("\n=== {label} ===");
+            println!("seed | Netherite | Px maxed | Lv 50 | Full dev | 1st prestige | end mine");
+            println!("-----|-----------|----------|-------|----------|--------------|---------");
+            for seed in SEEDS {
+                let r = run_reference(seed, MAX_TICKS, style);
+                println!(
+                    "{:>4} | {:>9} | {:>8} | {:>5} | {:>8} | {:>12} | {:>8?}",
+                    r.seed,
+                    hours(r.netherite),
+                    hours(r.pickaxe_maxed),
+                    hours(r.level_50),
+                    hours(r.fully_developed),
+                    hours(r.first_prestige),
+                    r.final_mine,
+                );
+
+                // Per-tier dwell: the gap between reaching one tier and the next, and for
+                // the last tier the gap to the prestige that ends the run. This is the
+                // column the milestone table cannot show — where the time *inside* the
+                // climb actually goes.
+                let end = r.first_prestige.unwrap_or(MAX_TICKS);
+                print!("       tier :");
+                for (i, &(tier, entered)) in r.tier_timeline.iter().enumerate() {
+                    let left = r.tier_timeline.get(i + 1).map_or(end, |&(_, next)| next);
+                    let dwell = left - entered;
+                    // Production rate at this tier, in raw per second — the denominator
+                    // the cost calibration reads: `cost = target_time × rate`.
+                    let produced = r.production_per_tier.get(&tier).copied().unwrap_or(0);
+                    let rate = if dwell > 0 {
+                        produced as f64 * TICKS_PER_SECOND as f64 / dwell as f64
+                    } else {
+                        0.0
+                    };
+                    print!("  {tier:?} {}·{rate:.0}/s", hours(Some(dwell)));
+                }
+                println!();
+
+                // Per-mine dwell, longest first, dropping mines the player only passed
+                // through (< 0.05 h) so the readout names where the run really sat.
+                let mut mines: Vec<_> = r.mine_ticks.iter().collect();
+                mines.sort_by_key(|&(_, ticks)| std::cmp::Reverse(*ticks));
+                print!("       mine :");
+                for (mine, &ticks) in mines {
+                    if ticks as f64 / (TICKS_PER_SECOND as f64 * 3600.0) >= 0.05 {
+                        print!("  {mine:?} {}", hours(Some(ticks)));
+                    }
+                }
+                println!();
+            }
         }
+
+        section(ReferenceStyle::Speedrun, "SPEEDRUN");
+        section(ReferenceStyle::Completionist, "COMPLETIONIST");
         println!();
     }
 }
