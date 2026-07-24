@@ -91,11 +91,20 @@ core is built in, see [PHASES.md](PHASES.md).
   The values remain open to a *deliberate* retune — what is settled is that changing them
   now fails a test instead of passing unnoticed.
 - ~~**Prestige multiplier scale and cost curve**~~ — **settled by the phase-10 prestige
-  ladder**: `+20 %` per rank, additive, against a cost that doubles. Chosen against a
-  measured curve rather than a feel — successive runs take 1.00, 0.68, 0.52, 0.41, 0.29,
-  0.22 h and then climb back to 3.48 h by rank 10, so the loop rewards the first six
-  ranks and prices the rest. Guarded by
-  `the_prestige_loop_accelerates_then_turns_back_up`.
+  ladder, then re-settled by its second pass**: `+10 %` per rank on ore yield and XP (and
+  *not* on mining speed), against a price that is `one climb's Amethyst income + a
+  surcharge growing `+20 %` per rank`. Both halves moved together and neither makes sense
+  alone: the multiplier is the only lever on the climb, the surcharge the only lever on
+  the Amethyst phase, and the ladder's shape is what the two do to each other.
+  Measured rather than felt, and measured **per phase** — a total hides two halves moving
+  in opposite directions. The climb accelerates ×2.1 across ten ranks, the Amethyst phase
+  lengthens from ~20 to ~34 minutes, and the run they add up to goes 1.34 h → 1.03 h and
+  settles there. Guarded by `the_prestige_loop_settles_instead_of_walling` and
+  `one_climb_still_banks_about_what_the_price_is_aimed_at`.
+  The first pass' figures — `+20 %` against a doubling price, giving a **U** that bottomed
+  at 0.22 h by rank 6 and climbed to 3.48 h by rank 10 — are kept in
+  [DECISIONS.md](DECISIONS.md) as the record of why this shape was rejected, not as a
+  target that was missed.
 - **Tunables (decided at implementation time):** XP curve and world-unlock levels
   (15, 30), offline cap (7 days), dip magnitude, compression
   ratio (100), autosave interval (10 seconds),

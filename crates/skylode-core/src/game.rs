@@ -2505,8 +2505,14 @@ mod tests {
     }
 
     /// The rank reaches the auto-miner through its **rate**, exactly once. Twice — as
-    /// speed and again as yield — would compound to `×1.44` at rank I and make an
+    /// rate and again as yield — would compound to `×1.21` at rank I and make an
     /// absence the best use of a rank the player bought with a run.
+    ///
+    /// **The auto-miner's rate is now the only speed-like thing the multiplier touches**,
+    /// since phase 10 took the term off the player's mining power. That makes this the one
+    /// remaining place the double-application could happen, so the rule outlived the
+    /// symmetry that motivated it: the active path can no longer compound because it has
+    /// only one term left, while this path still has two and still needs the discipline.
     ///
     /// **Measured on the progress carries rather than on the inventory**, and that is
     /// the point rather than a convenience. A span long enough to credit whole cells
