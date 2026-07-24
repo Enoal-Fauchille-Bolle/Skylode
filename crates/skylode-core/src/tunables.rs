@@ -440,7 +440,10 @@ pub const BOOST_COST: u32 = 3 * COST_BASE;
 /// mining-speed path is the only one that reads it as an `f32`, because the power it
 /// multiplies is already one.
 ///
-/// Provisional; phase 10 balance sets the final value. Must stay above zero, or a
+/// Measured by the phase-10 prestige ladder and guarded by
+/// `the_prestige_loop_accelerates_then_turns_back_up`: successive runs take 1.00, 0.68,
+/// 0.52, 0.41, 0.29, 0.22 h, then climb again to 3.48 h by rank 10 — an acceleration
+/// the player feels, and a wall after it. Must stay above zero, or a
 /// rank would cost Amethyst and grant nothing.
 pub const PRESTIGE_MULT_PER_RANK_PERMILLE: u32 = 200;
 
@@ -456,7 +459,10 @@ pub const PRESTIGE_MULT_PER_RANK_PERMILLE: u32 = 200;
 /// as `5 Compressed Amethyst + 12 Amethyst` — the game's one rule about how a price is
 /// paid, applied to the one price that is not an upgrade.
 ///
-/// Provisional; phase 10 balance sets the final value. Must stay above zero.
+/// Measured by the phase-10 prestige ladder and guarded by
+/// `the_prestige_loop_accelerates_then_turns_back_up`: successive runs take 1.00, 0.68,
+/// 0.52, 0.41, 0.29, 0.22 h, then climb again to 3.48 h by rank 10 — an acceleration
+/// the player feels, and a wall after it. Must stay above zero.
 pub const PRESTIGE_COST_BASE: u32 = 128;
 
 /// Growth factor of the **prestige** cost curve — the steepest in the game, and the
@@ -473,7 +479,10 @@ pub const PRESTIGE_COST_BASE: u32 = 128;
 /// costs twice this one" in their head — and the prestige price is the one number in
 /// the game shown to them at a decision point they cannot undo.
 ///
-/// Provisional; phase 10 balance sets the final value. Must stay strictly above `1.0`.
+/// Measured by the phase-10 prestige ladder and guarded by
+/// `the_prestige_loop_accelerates_then_turns_back_up`: successive runs take 1.00, 0.68,
+/// 0.52, 0.41, 0.29, 0.22 h, then climb again to 3.48 h by rank 10 — an acceleration
+/// the player feels, and a wall after it. Must stay strictly above `1.0`.
 pub const PRESTIGE_COST_GROWTH: f64 = 2.0;
 
 #[cfg(test)]

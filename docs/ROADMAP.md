@@ -70,11 +70,17 @@ core is built in, see [PHASES.md](PHASES.md).
   by `the_first_prestige_lands_inside_the_pacing_window`. See [DECISIONS.md](DECISIONS.md).
   The values remain open to a *deliberate* retune — what is settled is that changing them
   now fails a test instead of passing unnoticed.
+- ~~**Prestige multiplier scale and cost curve**~~ — **settled by the phase-10 prestige
+  ladder**: `+20 %` per rank, additive, against a cost that doubles. Chosen against a
+  measured curve rather than a feel — successive runs take 1.00, 0.68, 0.52, 0.41, 0.29,
+  0.22 h and then climb back to 3.48 h by rank 10, so the loop rewards the first six
+  ranks and prices the rest. Guarded by
+  `the_prestige_loop_accelerates_then_turns_back_up`.
 - **Tunables (decided at implementation time):** XP curve and world-unlock levels
   (15, 30), offline cap (7 days), dip magnitude, compression
   ratio (100), autosave interval (10 seconds),
-  enchant proc rates and cooldowns, prestige multiplier
-  scale, batch-reset threshold (0), `HOLD_WINDOW` (1100 ms — revisit only if
+  enchant proc rates and cooldowns,
+  batch-reset threshold (0), `HOLD_WINDOW` (1100 ms — revisit only if
   playtest finds the stop latency perceptible) and the accessibility toggle's
   inactivity cutoff (15 s), and for richness: the number of levels, the
   weight curve `value_weight(level)` — with **no cap**, since
