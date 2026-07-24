@@ -506,10 +506,15 @@ Amethyst) each own a distinct function, so no two ores are redundant.
   itself, on curve steps 0→4. Efficiency **6→15 is the post-Netherite enhancement**,
   and it *is paid* — in Obsidian **and** Crying Obsidian both, the two materials of
   the Obsidian mine — on its **own** curve steps 0→9, restarted from zero the way a
-  tier jump restarts Efficiency for every other tier. Without that reset the
-  fifteenth level read curve step 14, an Obsidian wall roughly six times its
+  tier jump restarts Efficiency for every other tier, and on its **own gentler slope**
+  (`1.10`, not the `1.45` the tier jumps and Efficiency 1→5 share). Without that reset
+  the fifteenth level read curve step 14, an Obsidian wall roughly six times its
   neighbours (phase 10 measured a reference speedrun spending ~37 h of a 39 h run on
-  it alone); with it, the enhancement climbs its own short ladder. The one-off dip in
+  it alone); with it, the enhancement climbs its own short ladder. The separate slope
+  is the second half of the same fix: the enhancement is a ten-step track only a
+  completionist buys, so pricing it apart from the ≤5-step climbs every run makes is
+  what let the pacing pass shrink it without touching the speedrun — bringing a
+  max-everything run's ceiling from ~5.4 h down to ~2.3 h. The one-off dip in
   *price* at Eff 5→6 is the same kind a tier jump already makes. It is mostly the
   common Obsidian with a Crying share climbing from a quarter to the dial's own
   ceiling, so the enhancement consumes both and the Obsidian mine's
