@@ -3232,6 +3232,56 @@ mod tests {
             .sum()
     }
 
+    /// Runs the reference player through `ranks` successive prestiges, returning the tick
+    /// each one fired at.
+    ///
+    /// [`run_reference`] returns at the *first* prestige, which is what the pacing band is
+    /// stated against — but it means the prestige multiplier, the one dial that does
+    /// nothing until rank 1, has never been exercised at all. This keeps going, so the
+    /// question "does re-walking the progression actually get faster, and does the
+    /// doubling price keep the loop from being free?" becomes a measurement instead of an
+    /// assumption.
+    ///
+    /// The reset is the real work here and it is the game's, not the harness's: after
+    /// `prestige` the strategy walks a level-1, Wooden-pickaxe run again because every
+    /// function it calls reads the state rather than remembering the last one.
+    fn run_prestige_ladder(
+        seed: u64,
+        max_ticks: u64,
+        style: ReferenceStyle,
+        ranks: usize,
+    ) -> Vec<u64> {
+        let mut state = GameState::new(seed, SystemTime::UNIX_EPOCH);
+        let mut fired = Vec::new();
+
+        for tick in 0..max_ticks {
+            state.tick(MINING);
+            if !tick.is_multiple_of(DECISION_CADENCE) {
+                continue;
+            }
+            fire_boost_if_idle(&mut state);
+            select_working_mine(&mut state, style);
+            advance_progression(&mut state, style);
+
+            let ready = match style {
+                ReferenceStyle::Speedrun => true,
+                ReferenceStyle::Completionist => fully_developed(&mut state),
+            };
+            if ready {
+                let cost = prestige::cost(state.player().get_prestige());
+                compress_for(&mut state, &cost);
+                if state.prestige().is_ok() {
+                    fired.push(tick);
+                    if fired.len() >= ranks {
+                        return fired;
+                    }
+                }
+            }
+            develop(&mut state, style);
+        }
+        fired
+    }
+
     /// Runs the reference player for exactly `ticks` and hands back the state it
     /// reached — the **bounded** sibling of [`run_reference`].
     ///
@@ -3314,6 +3364,95 @@ mod tests {
             FLOOR as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
             CEILING as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
         );
+    }
+
+    /// **The prestige loop has a floor and then a wall** — it accelerates for a few ranks
+    /// and then turns back up, rather than getting cheaper forever.
+    ///
+    /// This is the measured form of the claim `DECISIONS.md` makes for
+    /// [`PRESTIGE_COST_GROWTH`](crate::tunables::PRESTIGE_COST_GROWTH) being above the size
+    /// track's, and the reason that claim needed a test: the compile-time assertion only
+    /// checks that one slope out-climbs another, which is a statement about *numbers*. The
+    /// thing the design actually cares about is a statement about *time* — that a rank
+    /// eventually costs more real minutes than the last — and no comparison of two constants
+    /// can establish it, because the yield multiplier, the XP multiplier and the run's own
+    /// re-walk all sit between the price and the clock.
+    ///
+    /// Asserted as a **shape, not as values**, for the same reason the pacing guard uses a
+    /// window: the design constraint is "accelerates, then turns", and pinning the ten
+    /// durations would break on any deliberate retune while saying nothing more. What it
+    /// catches is a prestige that became free forever, or one that never rewarded the
+    /// second run at all.
+    #[test]
+    fn the_prestige_loop_accelerates_then_turns_back_up() {
+        // Eight ranks: the measured floor sits at rank 6, so this is the shortest ladder
+        // that contains both halves of the curve. ~0.5 s in debug.
+        let fired = run_prestige_ladder(1, 2_000_000, ReferenceStyle::Speedrun, 8);
+        assert_eq!(fired.len(), 8, "the ladder must reach eight prestiges");
+
+        let runs: Vec<u64> = fired
+            .iter()
+            .scan(0, |previous, &tick| {
+                let took = tick - *previous;
+                *previous = tick;
+                Some(took)
+            })
+            .collect();
+
+        let shortest = runs.iter().copied().min().unwrap_or(0);
+        assert!(
+            runs[1] < runs[0],
+            "the second run must be quicker than the first, or the multiplier buys nothing: {runs:?}"
+        );
+        assert!(
+            shortest < runs[0],
+            "the ladder must have a real acceleration phase: {runs:?}"
+        );
+        assert!(
+            runs[runs.len() - 1] > shortest,
+            "the ladder must turn back up — a loop that only ever gets cheaper is the \
+             endless free loop the prestige price exists to prevent: {runs:?}"
+        );
+    }
+
+    /// Prints how long each successive run takes across the prestige ladder.
+    ///
+    /// **Ignored by default**, like [`balance_pacing_report`]: it is the measurement the
+    /// prestige dials are chosen against, not a gate.
+    ///
+    /// ```text
+    /// cargo test -p skylode-core --release prestige_ladder -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "multi-run measurement; run in release with --ignored --nocapture"]
+    fn prestige_ladder_report() {
+        const MAX_TICKS: u64 = 20_000_000;
+        const RANKS: usize = 10;
+
+        println!("\nrank | fired at | this run took");
+        println!("-----|----------|--------------");
+        for seed in [1_u64, 42] {
+            let fired = run_prestige_ladder(seed, MAX_TICKS, ReferenceStyle::Speedrun, RANKS);
+            println!("seed {seed}:");
+            let mut previous = 0;
+            for (rank, &tick) in fired.iter().enumerate() {
+                let took = tick - previous;
+                previous = tick;
+                println!(
+                    "{:>4} | {:>8.2} h | {:>10.2} h",
+                    rank + 1,
+                    tick as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
+                    took as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
+                );
+            }
+            if fired.len() < RANKS {
+                println!(
+                    "  (only {} of {RANKS} prestiges inside the budget)",
+                    fired.len()
+                );
+            }
+        }
+        println!();
     }
 
     /// Prints both reference players' pacing across several seeds.
