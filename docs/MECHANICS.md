@@ -873,12 +873,19 @@ source.
   **auto-miner's carries**, and the **mines left behind** — a run that kept its
   visited mines would hold a richness-9 End grid its level-1 player is no longer
   allowed to enter.
-- **Persists:** the prestige rank and its permanent global multiplier (ore yield,
-  mining speed, and XP gain). The multiplier scale per rank is a tunable. The
-  **seeded generator persists too**, and it is the one thing that must: its position
-  is run state, so rewinding it with the rest would deal the player back an identical
-  second run — same grids, same procs — which is the opposite of what re-walking the
-  progression is for.
+- **Persists:** the prestige rank and its permanent global multiplier — **ore yield
+  and XP gain, and deliberately not mining speed** (phase 10). Speed was a third term
+  and it was the wrong one twice over: past instamine a block falls in one tick and
+  no extra power buys anything, so it paid nothing through the endgame it was meant
+  to reward; and during the *climb* it compounded with the other two, shrinking that
+  stretch with the cube of the multiplier rather than its square. The climb is the
+  content the reset exists to make the player walk again, so a multiplier that
+  deleted it was buying the opposite of what it was sold for — the harness measured a
+  rank-10 climb at eleven times quicker than a rank-1 one, 38 minutes down to 3½. The
+  multiplier scale per rank is a tunable. The **seeded generator persists too**, and
+  it is the one thing that must: its position is run state, so rewinding it with the
+  rest would deal the player back an identical second run — same grids, same procs —
+  which is the opposite of what re-walking the progression is for.
 - **Shape of the multiplier:** additive per rank (`1 + k × rank`), quoted and applied
   as an **integer in permille**, never a float. Every yield in the game is a whole
   number, so a `×1.2` applied to a one-ore drop truncates to `×1.0` and the first rank
@@ -889,9 +896,29 @@ source.
   the *rate*, before the microblock split, where the carries that already exist absorb
   the fraction and the online and offline paths stay one multiplication rather than
   two.
+- **Shape of the price:** a **sum, not a curve** — `one climb's Amethyst income + a
+  surcharge that grows in a straight line` (phase 10). The first term is measured
+  rather than chosen: between the End opening at level 30 and the cap at 50 the player
+  mines Amethyst for the experience and banks ~5 000 whatever their rank and whatever
+  their strategy, because the multiplier scales experience and yield together and the
+  ore per level gained does not move. Any price under that figure therefore **costs no
+  time at all** — the run arrives holding it. The surcharge is the whole of what the
+  design controls, and since the income rate is known (~2 700 × multiplier per hour) it
+  is tuned in *minutes*: ~20 at rank 1, ~34 at rank 10.
+  This replaced a geometric curve that doubled per rank. A price that doubles against a
+  multiplier that only adds is a race the exponential always wins, and the harness
+  measured both ends of losing it: the price sat under the free 5 000 and cost nothing
+  for six ranks, then passed it and grew to swallow the run — 3.4 of a rank-10 run's
+  3.5 hours spent banking, with the entire game traversed in the remaining six minutes.
+  Two linear terms have a fixed relationship instead, and it reads as a comparison of
+  two slopes: the surcharge's against the multiplier's. Below → each rank is quicker to
+  buy than the last; equal → the Amethyst phase lasts the same every rank; above → it
+  lengthens, towards the ratio of the two and no further.
 - **Gate role:** the prestige rank may also gate late content, replacing paid
-  ranks. Whether prestige is a pure endless loop or leads to a defined win
-  condition is an open question (see [ROADMAP.md](ROADMAP.md)).
+  ranks. **The loop is endless by design** (phase 10): the price no longer outgrows the
+  income that pays it, so a player who keeps going past whatever the achievements mark
+  keeps meeting runs of much the same length rather than a wall. See
+  [ROADMAP.md](ROADMAP.md).
 
 A meta-upgrade tree spent from a prestige currency is possible but parked
 post-MVP; the MVP ships the flat global multiplier only.

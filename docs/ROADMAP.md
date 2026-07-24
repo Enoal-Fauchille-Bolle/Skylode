@@ -39,7 +39,10 @@ core is built in, see [PHASES.md](PHASES.md).
   10* — the game's finish line, and deliberately a **marker rather than a gate**: it
   states that a run is complete without ending the session or capping the ladder. This is
   the answer the [win-condition question](#open-questions) was waiting on, so the two move
-  together.
+  together — and phase 10 has since done the price work that makes "marker rather than
+  gate" mean something: the ladder no longer walls after rank 10, so continuing past the
+  marker keeps returning ~1 h runs of the whole game. The threshold is therefore a free
+  choice for whoever builds this list, not a constraint the curve imposes.
 - Full auto-miner system (tiers, "managers").
 - Prestige meta-upgrade tree (spend a prestige currency on permanent perks).
 - Daily quests (not daily login rewards).
@@ -55,17 +58,20 @@ core is built in, see [PHASES.md](PHASES.md).
 
 ## Open questions
 
-- **Win condition:** **direction chosen, shape not yet implemented.** Neither a hard end
-  nor an unmarked loop: an **achievement at prestige rank 10** marks a finish line without
-  closing the game, and play continues past it. That choice has a consequence for the
-  prestige price, because the phase-10 ladder showed the current curve is a **U** — runs
-  shorten to ~0.22 h by rank 6, then climb to ~3.48 h by rank 10 — so a player who keeps
-  going past the marker walks into a wall with no content behind it. The intended fix is
-  to **key the price to the multiplier** rather than let the two run on independent curves
-  (a linear multiplier against a doubling price can only diverge): with
-  `cost(n) = base * multiplier(n)^k` the banking phase is constant-time at `k = 1`, and a
-  `k` slightly above 1 gives a soft brake instead of a wall. Still to settle: `k`, and the
-  total time to rank 10 that the achievement should represent (it is ~9.6 h today).
+- **Win condition:** **settled and implemented** (phase 10, second pass); only the
+  achievement list that surfaces it is still post-MVP work. Neither a hard end nor an
+  unmarked loop: an **achievement at prestige rank 10** marks a finish line without closing
+  the game, and play continues past it. The prestige price was reshaped to make continuing
+  worth doing — it is now `one climb's Amethyst income + a surcharge growing in a straight
+  line`, where it was a curve that doubled per rank against a multiplier that only added.
+  The measured ladder settles instead of walling: the climb accelerates ×2.1 across ten
+  ranks, the Amethyst phase lengthens from ~20 to ~34 minutes, and the run they add up to
+  goes 1.34 h → 1.03 h and stays there. **Rank 10 lands at ~11.5 h** for the speedrunner
+  and ~15.9 h for the completionist, against ~9.6 h under the old curve — longer, but ten
+  full runs of the game rather than six runs and four stretches of watching a counter. The
+  threshold is now a free dial: past rank 10 each further rank costs about another hour,
+  predictably, where the old curve made rank 12 unreachable in any reasonable session. See
+  [DECISIONS.md](DECISIONS.md) and [MECHANICS.md](MECHANICS.md#prestige).
 - **Starting state:** confirm Wooden pickaxe mining Stone as the opening.
 - **End signature ore naming:** Amethyst carries the End's rich-ore role; confirm
   whether it needs a distinct name.

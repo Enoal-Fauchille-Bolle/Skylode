@@ -220,7 +220,7 @@ owns the timer.
 
 ```text
 0---------1---------2---------3---------4---------5---------6---------7---------
- 1 Mine │ [2 Mines] │ 3 Inventory │ 4 Upgrades │ 5 Stats       Prestige II  ×1.4
+ 1 Mine │ [2 Mines] │ 3 Inventory │ 4 Upgrades │ 5 Stats       Prestige II  ×1.2
 ┌─ Mines ────────────────────────────┐┌─ Obsidian Mine ────────────────────────┐
 │ Overworld                ✓         ││ Obsidian  +  Crying Obsidian           │
 │   Stone          20 x 10   R 9     ││                                        │
@@ -267,7 +267,7 @@ is already `pub`, which is exactly right for a cursor the UI moves.
 
 ```text
 0---------1---------2---------3---------4---------5---------6---------7---------
- 1 Mine │ 2 Mines │ [3 Inventory] │ 4 Upgrades │ 5 Stats       Prestige II  ×1.4
+ 1 Mine │ 2 Mines │ [3 Inventory] │ 4 Upgrades │ 5 Stats       Prestige II  ×1.2
 ┌─ Inventory ──────────────────────────────────┐┌─ Compress ───────────────────┐
 │   Material          Compressed         Raw   ││ Iron                         │
 │   Stone                     12       4 508   ││                              │
@@ -451,7 +451,7 @@ is a level, not a price, so the affordability mark has nothing to say.
 
 ```text
 0---------1---------2---------3---------4---------5---------6---------7---------
- 1 Mine │ 2 Mines │ 3 Inventory │ 4 Upgrades │ [5 Stats]       Prestige II  ×1.4
+ 1 Mine │ 2 Mines │ 3 Inventory │ 4 Upgrades │ [5 Stats]       Prestige II  ×1.2
 ┌─ Progression ──────────────┐┌─ This run ─────────────────────────────────────┐
 │ Mining level    23 / 50    ││ ✓  Break your first block                      │
 │ XP        1 240 / 2 300    ││ ✓  Reach the Nether             Lv 15          │
@@ -460,9 +460,9 @@ is a level, not a price, so the affordability mark has nothing to say.
 │ End        Lv 30      ✗    ││    Netherite pickaxe                           │
 │                            ││    Instamine Obsidian                          │
 │ Prestige   rank II         ││    Max out a mine       Stone 20x10 R9  ✓      │
-│ Multiplier ×1.40           ││    Reach mining level 50           23/50       │
-│ Next rank  ×1.60           │└────────────────────────────────────────────────┘
-│ Cost       512 Amethyst    │┌─ History ──────────────────────────────────────┐
+│ Multiplier ×1.20           ││    Reach mining level 50           23/50       │
+│ Next rank  ×1.30           │└────────────────────────────────────────────────┘
+│ Cost     6 540 Amethyst    │┌─ History ──────────────────────────────────────┐
 │ Held         0 Amethyst    ││ 20:14  Excavator!  +1 Compressed Iron          │
 │                            ││ 20:13  Explosive — 9 blocks cleared            │
 │ Blocks broken   418 297    ││ 20:13  Mine refilled                           │
@@ -769,8 +769,8 @@ a deliberate decision point, so the frame states the trade and offers the deal, 
 ```text
     ┌─ Prestige ───────────────────────────────────────────────────────────┐
     │                                                                      │
-    │ Rank  II  →  III            Multiplier  ×1.40  →  ×1.60              │
-    │ Cost  512 Amethyst          Held  0 Amethyst          ✗              │
+    │ Rank  II  →  III            Multiplier  ×1.20  →  ×1.30              │
+    │ Cost  6 540 Amethyst        Held  0 Amethyst          ✗              │
     │                                                                      │
     │ You lose                          You keep                           │
     │ ────────────────────────────      ────────────────────────           │
@@ -794,7 +794,7 @@ preview that soft-pedals it sets up the one complaint that cannot be undone.
 
 **Drawn unaffordable, which is the common case** — the condition is a fully realised
 run (level cap, Netherite, Efficiency maxed), so the honest last line names the
-progression still owed, not "you need 512 more Amethyst": that ore only drops past
+progression still owed, not "you need 6 540 more Amethyst": that ore only drops past
 those gates, and quoting a price to a player short of them answers the wrong question.
 
 ### 6.9 Prestige confirm
@@ -804,7 +804,7 @@ those gates, and quoting a price to a player short of them answers the wrong que
            │                                            │
            │  This cannot be undone.                    │
            │                                            │
-           │  512 Amethyst  →  rank III  (×1.60)        │
+           │  6 540 Amethyst  →  rank III  (×1.30)      │
            │  Everything else resets.                   │
            │                                            │
            │  Type  PRESTIGE  to confirm:               │
