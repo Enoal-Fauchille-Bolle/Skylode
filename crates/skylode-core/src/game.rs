@@ -3349,20 +3349,47 @@ mod tests {
     #[test]
     fn the_first_prestige_lands_inside_the_pacing_window() {
         // 0.5 h to 2 h at 20 tps. The measured run sits at ~1.0 h, near the middle.
-        const FLOOR: u64 = 36_000;
-        const CEILING: u64 = 144_000;
+        assert_prestige_window(ReferenceStyle::Speedrun, 36_000, 144_000);
+    }
 
-        let report = run_reference(1, CEILING * 2, ReferenceStyle::Speedrun);
+    /// **The band's other edge**, and the one that was left open: every gate test drove the
+    /// speedrunner, so the *ceiling* — the figure phase 10 actually moved, from ~5.4 h to
+    /// ~2.3 h — had no guard at all.
+    ///
+    /// That gap was not academic, it was the exact shape of the fix. The enhancement was
+    /// given its own slope *precisely so* that pricing it could not touch the floor, which
+    /// means the regression it protects against is invisible from the floor: restore
+    /// `NETHERITE_ENHANCEMENT_COST_GROWTH` to the shared `1.45` and the speedrunner still
+    /// prestiges at 1.0 h, dead on, while the completionist quietly goes back to 5.4 h. A
+    /// band described in `DECISIONS.md` was being held at one end.
+    #[test]
+    fn the_completionist_ceiling_stays_inside_its_window() {
+        // 1.5 h to 4 h at 20 tps. The measured run sits at ~2.3 h, and the upper bound is
+        // deliberately set below the ~5.4 h the ceiling stood at before the enhancement was
+        // split off, so that particular regression cannot return unnoticed.
+        assert_prestige_window(ReferenceStyle::Completionist, 108_000, 288_000);
+    }
+
+    /// Asserts that `style`'s first prestige lands inside `floor..=ceiling` ticks.
+    ///
+    /// Shared by the band's two edge guards rather than written twice, so they cannot drift
+    /// apart in how they measure or in what they say when they fail — the failure message
+    /// is most of a pacing test's value, since the number it prints is the thing the reader
+    /// then has to judge.
+    fn assert_prestige_window(style: ReferenceStyle, floor: u64, ceiling: u64) {
+        let report = run_reference(1, ceiling * 2, style);
         // `unwrap_or(0)` and not `expect`: the crate's lints refuse the panicking
         // accessors everywhere, tests included, and zero falls outside the window anyway
         // — so a run that never prestiged fails the same assertion, with the same message.
         let prestige = report.first_prestige.unwrap_or(0);
+        let hours = |ticks: u64| ticks as f64 / (TICKS_PER_SECOND as f64 * 3600.0);
         assert!(
-            (FLOOR..=CEILING).contains(&prestige),
-            "first prestige at {prestige} ticks ({:.2} h) is outside the {:.1}–{:.1} h window",
-            prestige as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
-            FLOOR as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
-            CEILING as f64 / (TICKS_PER_SECOND as f64 * 3600.0),
+            (floor..=ceiling).contains(&prestige),
+            "the {style:?} player's first prestige at {prestige} ticks ({:.2} h) is outside \
+             its {:.1}-{:.1} h window",
+            hours(prestige),
+            hours(floor),
+            hours(ceiling),
         );
     }
 
