@@ -239,6 +239,7 @@ mod tests {
     use super::*;
     use crate::material::Material;
     use crate::pickaxe::PickaxeTier;
+    use crate::tunables::{END_UNLOCK_LEVEL, NETHER_UNLOCK_LEVEL};
 
     /// The message names the denomination, because "need 6 Iron, have 650" would
     /// read as nonsense to a player holding 650 raw Iron. It is the *Compressed*
@@ -318,6 +319,47 @@ mod tests {
             err.to_string(),
             "prestige needs level 50, a Netherite pickaxe"
         );
+    }
+
+    /// Both axes owed at once, which is the only arm that has to *join* two clauses:
+    /// a fresh player looking at the Obsidian mine is short a whole dimension and
+    /// four pickaxe tiers. Naming one alone would send them off to buy something that
+    /// still leaves the door shut, so the sentence has to carry both — and the tier
+    /// prints through `Debug`, which this pins as much as the wording.
+    #[test]
+    fn a_mine_shut_on_both_axes_names_the_level_and_the_pickaxe() {
+        let kind = MineKind::Obsidian;
+        let lock = kind.lock(1, PickaxeTier::Wooden);
+
+        let err = CoreError::MineLocked { kind, lock };
+        assert_eq!(
+            err.to_string(),
+            "the Obsidian mine needs level 15 and a Diamond pickaxe"
+        );
+    }
+
+    /// The level axis alone, isolated by handing the player a pickaxe that already
+    /// clears the gate: one level short of the End, they are held by the *world* and
+    /// nothing else, so the message must not mention a pickaxe they already own.
+    #[test]
+    fn a_mine_in_a_shut_world_names_only_the_level() {
+        let kind = MineKind::Amethyst;
+        let lock = kind.lock(END_UNLOCK_LEVEL - 1, PickaxeTier::Netherite);
+
+        let err = CoreError::MineLocked { kind, lock };
+        assert_eq!(err.to_string(), "the End mine needs level 30");
+    }
+
+    /// The tier axis alone, the mirror of the case above: in the Nether with a
+    /// pickaxe too weak for Obsidian. The world is already open, so quoting a level
+    /// here would name a gate the player has passed.
+    #[test]
+    fn an_open_world_that_still_owes_a_pickaxe_names_only_the_tier() {
+        let kind = MineKind::Obsidian;
+        let lock = kind.lock(NETHER_UNLOCK_LEVEL, PickaxeTier::Stone);
+
+        let err = CoreError::MineLocked { kind, lock };
+        assert_eq!(err.to_string(), "the Obsidian mine needs a Diamond pickaxe");
     }
 
     /// The arm no gameplay path reaches: an *open* lock inside a `MineLocked`.
