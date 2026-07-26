@@ -32,6 +32,89 @@ pub struct LevelRow {
     pub xp: u32,
 }
 
+/// Which sub-tab of the Upgrades screen is showing (UI.md §5.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpgradeTab {
+    /// The pickaxe ladder — a single linear roadmap, no rung skippable.
+    Pickaxe,
+    /// The six enchant tracks, each at its frontier.
+    Enchants,
+    /// The twelve mines' size and richness tracks.
+    Mines,
+}
+
+/// One row of an Upgrades sub-tab's list (UI.md §5.4).
+///
+/// Two mark channels, because the Pickaxe ladder carries both: `cursor`/`current`
+/// are where you are and where the selection sits (`▸`/`●`), while `mark` is
+/// **cumulative reachability** — `✓`/`~`/`✗`, "reachable buying every rung from
+/// here". All fixture data; the real marks are a phase-6 core read, and the ladder
+/// invariant (the `✓` region is a contiguous prefix) is asserted on the fixture.
+#[derive(Clone, Debug)]
+pub struct UpgradeRow {
+    /// The row's own text — the rung label, or a track line already laid out.
+    pub text: String,
+    /// The reachability mark: `✓`, `~`, `✗`, `—`, or empty.
+    pub mark: String,
+    /// Whether the selection cursor sits here — drawn `▸`.
+    pub cursor: bool,
+    /// Whether this is the player's current position — drawn `●` (Pickaxe only).
+    pub current: bool,
+}
+
+/// One sub-tab of the Upgrades screen: a list on the left, a detail pane on the
+/// right (UI.md §5.4).
+///
+/// The detail pane is a **pre-formatted block of lines**, transcribed from the
+/// frame — the dip box, the costs and the affordability are all placeholder prose
+/// the core does not yet answer (phases 5–6), so there is nothing to derive and
+/// the box art travels as text. `scroll` is `Some((total, position))` on the two
+/// sub-tabs that overflow nineteen rows, `None` on Enchants, which fits.
+#[derive(Clone, Debug)]
+pub struct UpgradeSubtab {
+    /// Header rows printed above the list (the column titles), if any.
+    pub header: Vec<String>,
+    /// The list rows.
+    pub rows: Vec<UpgradeRow>,
+    /// `(total, position)` for the scrollbar, or `None` when the list fits.
+    pub scroll: Option<(usize, usize)>,
+    /// The detail pane, already laid out line by line.
+    pub detail: Vec<String>,
+    /// The screen-local footer for this sub-tab.
+    pub footer: String,
+}
+
+/// The Upgrades screen: the three sub-tabs and which one is showing (UI.md §5.4).
+///
+/// `active` is a front-end cursor, fixed here until sub-tab switching is wired; the
+/// data for all three is carried so each renders on its own for the frame tests.
+#[derive(Clone, Debug)]
+pub struct UpgradesView {
+    /// The sub-tab currently drawn.
+    pub active: UpgradeTab,
+    /// The pickaxe ladder.
+    pub pickaxe: UpgradeSubtab,
+    /// The six enchant tracks.
+    pub enchants: UpgradeSubtab,
+    /// The mines' size and richness tracks.
+    pub mines: UpgradeSubtab,
+}
+
+impl UpgradesView {
+    /// The sub-tab that `active` names.
+    ///
+    /// A total accessor, not a decision the view makes: the screen asks for the
+    /// showing sub-tab and gets it, rather than re-matching the enum at each of the
+    /// three places it draws from.
+    pub fn active_subtab(&self) -> &UpgradeSubtab {
+        match self.active {
+            UpgradeTab::Pickaxe => &self.pickaxe,
+            UpgradeTab::Enchants => &self.enchants,
+            UpgradeTab::Mines => &self.mines,
+        }
+    }
+}
+
 /// One mine's row in the Mines list (UI.md §5.2).
 ///
 /// The world grouping, the mine name and whether it is two-material are all read
@@ -298,6 +381,8 @@ pub struct View {
     pub inventory: InventoryView,
     /// The Mines list and the selected mine's detail pane (UI.md §5.2).
     pub mines: MinesView,
+    /// The Upgrades screen's three sub-tabs (UI.md §5.4).
+    pub upgrades: UpgradesView,
     /// How many colours to ask the terminal for — a player preference that lives
     /// in the save, and that the Settings screen will edit in phase 7.
     pub colour_mode: ColourMode,
@@ -343,8 +428,172 @@ impl View {
             stats: sample_stats(),
             inventory: sample_inventory(),
             mines: sample_mines(),
+            upgrades: sample_upgrades(),
             colour_mode: ColourMode::default(),
         }
+    }
+}
+
+/// The three Upgrades sub-tabs drawn in UI.md §5.4, transcribed from the frames.
+///
+/// Pickaxe is active. Every row's marks and every detail pane are fixture data:
+/// the reachability marks are a phase-6 core read, and the dip numbers, costs and
+/// affordability the panes quote are phases 5–6 too. The Pickaxe marks are laid
+/// out to honour the ladder invariant — the `✓` region is a contiguous prefix from
+/// the current rung — so the fixture is a legal ladder, not an arbitrary one.
+fn sample_upgrades() -> UpgradesView {
+    /// `(text, mark, cursor, current)` → one row.
+    fn r(text: &str, mark: &str, cursor: bool, current: bool) -> UpgradeRow {
+        UpgradeRow {
+            text: text.to_owned(),
+            mark: mark.to_owned(),
+            cursor,
+            current,
+        }
+    }
+    /// Turns a slice of `&str` into owned lines.
+    fn lines(raw: &[&str]) -> Vec<String> {
+        raw.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    let select_footer =
+        " ↑↓  select     Enter  buy one level     M  buy to cap     Tab  next screen";
+
+    let pickaxe = UpgradeSubtab {
+        header: Vec::new(),
+        rows: vec![
+            r("Diamond Eff III", "", false, false),
+            r("Diamond Eff IV", "", false, true),
+            r("Diamond Eff V", "✓", false, false),
+            r("Netherite Pickaxe", "✓", true, false),
+            r("Netherite Eff I", "~", false, false),
+            r("Netherite Eff II", "✗", false, false),
+            r("Netherite Eff III", "✗", false, false),
+            r("Netherite Eff IV", "✗", false, false),
+            r("Netherite Eff V", "✗", false, false),
+            r("Netherite Eff VI", "✗", false, false),
+            r("Netherite Eff VII", "✗", false, false),
+            r("Netherite Eff VIII", "✗", false, false),
+            r("Netherite Eff IX", "✗", false, false),
+            r("Netherite Eff X", "✗", false, false),
+            r("Netherite Eff XI", "✗", false, false),
+            r("Netherite Eff XII", "✗", false, false),
+            r("Netherite Eff XIII", "✗", false, false),
+            r("Netherite Eff XIV", "✗", false, false),
+            r("Netherite Eff XV", "✗", false, false),
+        ],
+        scroll: Some((46, 27)),
+        detail: lines(&[
+            " Netherite Pickaxe             tier jump",
+            "",
+            " Chain    Diamond Eff V + the jump      ✓",
+            " Cost     2 Compressed Diamond",
+            "          + 4 Compressed Ancient Debris",
+            "          + 60 Ancient Debris",
+            "",
+            " ┌──────────────────────────────────┐",
+            " │ Power  34.0 → 9.0                │",
+            " │ Ancient Debris  27 → 100 ticks   │",
+            " │ Repaid at Netherite Eff V (35.0) │",
+            " └──────────────────────────────────┘",
+            "",
+            " Unlocks  the End's Amethyst mine,",
+            "          gated behind Netherite",
+            "",
+            " Ceiling  Efficiency 5 → 15",
+            "",
+            " Enter  buy the chain   (confirms: dip)",
+        ]),
+        footer: " ↑↓  select     Enter  buy to here     M  buy max     Tab  next screen".to_owned(),
+    };
+
+    let enchants = UpgradeSubtab {
+        header: lines(&["   Enchant     Level     Cap", ""]),
+        rows: vec![
+            r("Fortune     III → IV  10", "✓", false, false),
+            r("Explosive   II → III  6", "✓", true, false),
+            r("Jackhammer  I → II    6", "~", false, false),
+            r("Nuke        0 → I     6", "✗", false, false),
+            r("Excavator   I → II    6", "✗", false, false),
+            r("Haste       0 → I     6", "✗", false, false),
+        ],
+        scroll: None,
+        detail: lines(&[
+            " Explosive                  level II",
+            "",
+            " Effect   clears a 3x3 square on a",
+            "          proc, centred on the cell",
+            "",
+            " Next     III — still 3x3. The square",
+            "          grows to 5x5 at IV, 7x7 at",
+            "          VII.",
+            "",
+            " Cost     3 Compressed Quartz",
+            "          + 40 Redstone            ✓",
+            "",
+            " Cap      6 — the Nether's, and one",
+            "          number for all five",
+            "          specials. Overworld 3,",
+            "          End 10.",
+            "",
+            " Every level also procs more often.",
+            " Enter  buy one level",
+        ]),
+        footer: select_footer.to_owned(),
+    };
+
+    let mines = UpgradeSubtab {
+        header: lines(&["   Mine           Track    Next"]),
+        rows: vec![
+            r("Gold           Size     12x7", "~", false, false),
+            r("Gold           Richness 3", "~", false, false),
+            r("Lapis          Size     10x6", "✗", false, false),
+            r("Lapis          Richness 2", "✗", false, false),
+            r("Redstone       Size     8x5", "✓", false, false),
+            r("Redstone       Richness 1", "✓", false, false),
+            r("Emerald        Size     8x5", "✗", false, false),
+            r("Emerald        Richness 1", "✗", false, false),
+            r("Diamond        Size     10x6", "✗", false, false),
+            r("Diamond        Richness 2", "✗", false, false),
+            r("Quartz         Size     10x6", "✗", false, false),
+            r("Quartz         Richness 4", "✗", false, false),
+            r("Ancient Debris Size     8x5", "✓", false, false),
+            r("Ancient Debris Richness 1", "✓", false, false),
+            r("Obsidian       Size     10x6", "✗", false, false),
+            r("Obsidian       Richness 7", "✗", true, false),
+            r("End            Size     Lv 30", "—", false, false),
+            r("End            Richness Lv 30", "—", false, false),
+        ],
+        scroll: Some((24, 6)),
+        detail: lines(&[
+            " Obsidian Mine — richness",
+            "",
+            " Ceiling   level 6 → 7",
+            " Dial      free, on the Mines screen",
+            "",
+            " At 7      Crying Obsidian 73%",
+            "           Obsidian 27%",
+            "",
+            " Cost      2 Compressed Obsidian",
+            "           + 40 Crying Obsidian",
+            "",
+            " You hold  0 Compressed Obsidian, 21",
+            "           raw · 2 Crying Obsidian  ✗",
+            "",
+            " This buys the ceiling only. The",
+            " dial slides anywhere at or below",
+            " it, free and reversible, on the",
+            " Mines screen.",
+            " Enter  buy the next level",
+        ]),
+        footer: select_footer.to_owned(),
+    };
+
+    UpgradesView {
+        active: UpgradeTab::Pickaxe,
+        pickaxe,
+        enchants,
+        mines,
     }
 }
 

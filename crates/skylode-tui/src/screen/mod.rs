@@ -21,7 +21,7 @@ use ratatui::{
     Frame,
     crossterm::event::KeyEvent,
     layout::Rect,
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
 use crate::{action::Action, view::View};
@@ -40,13 +40,21 @@ pub(super) fn panel(title: &str) -> Block<'static> {
         .border_type(BorderType::Rounded)
 }
 
-/// Draws a bordered panel with a title and a few lines of text.
+/// Draws a vertical scrollbar of `content_length` items with the thumb at
+/// `position`, using the design's `░` track and `█` thumb (UI.md §5.6).
 ///
-/// Every remaining stub screen should look alike while it waits its turn: a shared
-/// helper means the placeholders cannot drift apart, and replacing one with a real
-/// screen is a local edit rather than an untangling.
-fn placeholder(frame: &mut Frame, area: Rect, title: &str, lines: &[String]) {
-    frame.render_widget(Paragraph::new(lines.join("\n")).block(panel(title)), area);
+/// Shared because both the Levels roadmap and the two scrolling Upgrades sub-tabs
+/// draw the same bar. `content_length` is the whole list's length — the *ladder*,
+/// not the window — so the thumb's size reflects how much of it is off-screen; a
+/// zero length renders nothing, which is ratatui's own guard, not ours.
+pub(super) fn scrollbar(frame: &mut Frame, area: Rect, content_length: usize, position: usize) {
+    let mut state = ScrollbarState::new(content_length).position(position);
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("░"))
+        .thumb_symbol("█");
+    frame.render_stateful_widget(bar, area, &mut state);
 }
 
 /// One tab of the ring.

@@ -17,14 +17,14 @@ use ratatui::{
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
     text::Line,
-    widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::Paragraph,
 };
 use skylode_core::tunables::LEVEL_CAP;
 
 use crate::{
     action::Action,
     format::{grouped, justified},
-    screen::panel,
+    screen::{panel, scrollbar},
     view::View,
 };
 
@@ -82,7 +82,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
 
-    scrollbar(frame, bar_area, view);
+    roadmap_scrollbar(frame, bar_area, view);
 
     let footer =
         format!(" ↑↓  scroll     Home  jump to Lv {current}     Tab  next screen     ?  help");
@@ -106,19 +106,12 @@ fn mark(level: u32, current: u32, selected: u32) -> &'static str {
 }
 
 /// Draws the roadmap scrollbar, its thumb sized against the whole 1..50 ladder.
-fn scrollbar(frame: &mut Frame, area: Rect, view: &View) {
+fn roadmap_scrollbar(frame: &mut Frame, area: Rect, view: &View) {
     // Position is the first visible level's index into the full ladder, so the
     // thumb sits where the window is — not where the fixture's own first row is.
     let first_visible = view.levels.first().map_or(1, |row| row.level);
     let position = first_visible.saturating_sub(1) as usize;
-
-    let mut state = ScrollbarState::new(LEVEL_CAP as usize).position(position);
-    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(None)
-        .end_symbol(None)
-        .track_symbol(Some("░"))
-        .thumb_symbol("█");
-    frame.render_stateful_widget(bar, area, &mut state);
+    scrollbar(frame, area, LEVEL_CAP as usize, position);
 }
 
 /// No contextual bindings yet; `↑↓` scrolls, `Home` jumps to the current level.
