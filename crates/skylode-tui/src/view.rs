@@ -32,6 +32,71 @@ pub struct LevelRow {
     pub xp: u32,
 }
 
+/// One mine's row in the Mines list (UI.md §5.2).
+///
+/// The world grouping, the mine name and whether it is two-material are all read
+/// from `kind` in the screen; only `detail` — the size and richness the run has
+/// bought, or a lock reason for a mine still closed — is fixture data. That lock
+/// reason is a **string here on purpose**: `MineLock` keeps its two axes private
+/// (the "nameable lock reason" is TODO-TUI phase 4's core gap), so phase 2 prints
+/// the frame's text rather than deriving it.
+#[derive(Clone, Debug)]
+pub struct MineListRow {
+    /// Which mine this row is — the source of its name and world.
+    pub kind: MineKind,
+    /// The right-hand column: `8 x 5   R 6`, or `locked   Netherite` when shut.
+    pub detail: String,
+}
+
+/// The detail pane of the selected mine (UI.md §5.2).
+///
+/// Placeholder numbers throughout — sizes, block counts and richness are run state
+/// the tick owns (phase 7). `value_percent` drives the richness **dial**, the free
+/// reversible cursor drawn only on the three two-material mines; `dial_split` is
+/// its readout (`Crying 64%   Obsidian 36%`). The two gate lines carry their own
+/// `✓` because the tick against the player's tier is not derivable from `View` yet.
+#[derive(Clone, Debug)]
+pub struct MineDetail {
+    /// The world row: `Nether        Lv 15  ✓`.
+    pub world_line: String,
+    /// The pickaxe-gate row: `Diamond pickaxe      ✓`.
+    pub gate_line: String,
+    /// Grid size, as `(width, height)`.
+    pub size: (u32, u32),
+    /// The purchased size level.
+    pub size_level: u32,
+    /// Standing blocks over total.
+    pub blocks_standing: u32,
+    /// Total blocks in the grid.
+    pub blocks_total: u32,
+    /// The purchased richness level.
+    pub richness_level: u32,
+    /// The richness ceiling (9 today).
+    pub richness_max: u32,
+    /// The dial's value-material weight, as a percent; the common weight is its
+    /// complement. Drives the bar fill on the two-material mines.
+    pub value_percent: u32,
+    /// The dial readout: `Crying 64%   Obsidian 36%`.
+    pub dial_split: String,
+    /// The mine-specific note under the dial (Obsidian's optimum-not-maximum).
+    pub note: Vec<String>,
+}
+
+/// The Mines screen: the world-grouped list and the selected mine's detail pane
+/// (UI.md §5.2).
+///
+/// `selected` is the mine the detail pane describes and the list marks `▸`; it is a
+/// front-end cursor, fixed here until `↑↓` is wired (phase 4).
+#[derive(Clone, Debug)]
+pub struct MinesView {
+    /// The twelve mines, in display order; the screen groups them by world.
+    pub rows: Vec<MineListRow>,
+    /// The mine under the cursor.
+    pub selected: MineKind,
+    /// The selected mine's detail pane.
+    pub detail: MineDetail,
+}
+
 /// One material's row in the Inventory table (UI.md §5.3).
 ///
 /// Held in both denominations, exactly as the player carries them: the raw count
@@ -231,6 +296,8 @@ pub struct View {
     pub stats: StatsView,
     /// The Inventory table and its compress panel (UI.md §5.3).
     pub inventory: InventoryView,
+    /// The Mines list and the selected mine's detail pane (UI.md §5.2).
+    pub mines: MinesView,
     /// How many colours to ask the terminal for — a player preference that lives
     /// in the save, and that the Settings screen will edit in phase 7.
     pub colour_mode: ColourMode,
@@ -275,8 +342,67 @@ impl View {
             levels: sample_levels(),
             stats: sample_stats(),
             inventory: sample_inventory(),
+            mines: sample_mines(),
             colour_mode: ColourMode::default(),
         }
+    }
+}
+
+/// The Mines list and detail pane drawn in UI.md §5.2, from the frame.
+///
+/// Obsidian is selected — a two-material mine, so the detail pane shows the
+/// richness dial. The list's sizes and richness levels are fixture data; the End
+/// mine is drawn locked, its lock reason (`Netherite`) a string, since the core
+/// does not yet expose a nameable one.
+fn sample_mines() -> MinesView {
+    // `(kind, detail)` in display order — Overworld, then Nether, then the locked
+    // End mine. `MineKind::Amethyst` is the End mine, named "End".
+    let rows = [
+        (MineKind::Stone, "20 x 10   R 9"),
+        (MineKind::Coal, "18 x 9   R 7"),
+        (MineKind::Iron, "12 x 7   R 0"),
+        (MineKind::Gold, "10 x 6   R 2"),
+        (MineKind::Lapis, "8 x 5   R 1"),
+        (MineKind::Redstone, "6 x 4   R 0"),
+        (MineKind::Emerald, "6 x 4   R 0"),
+        (MineKind::Diamond, "8 x 5   R 1"),
+        (MineKind::Quartz, "8 x 5   R 3"),
+        (MineKind::AncientDebris, "6 x 4   R 0"),
+        (MineKind::Obsidian, "8 x 5   R 6"),
+        (MineKind::Amethyst, "locked   Netherite"),
+    ]
+    .into_iter()
+    .map(|(kind, detail)| MineListRow {
+        kind,
+        detail: detail.to_owned(),
+    })
+    .collect();
+
+    let note = [
+        "The enhancement past Netherite eats",
+        "both of them, so this dial has an",
+        "optimum, not a maximum.",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+
+    MinesView {
+        rows,
+        selected: MineKind::Obsidian,
+        detail: MineDetail {
+            world_line: "Nether        Lv 15  ✓".to_owned(),
+            gate_line: "Diamond pickaxe      ✓".to_owned(),
+            size: (8, 5),
+            size_level: 3,
+            blocks_standing: 31,
+            blocks_total: 40,
+            richness_level: 6,
+            richness_max: 9,
+            value_percent: 64,
+            dial_split: "Crying 64%   Obsidian 36%".to_owned(),
+            note,
+        },
     }
 }
 
