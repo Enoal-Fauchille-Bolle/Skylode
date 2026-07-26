@@ -16,7 +16,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
         area,
         " Upgrades ",
         &[
-            format!("Pickaxe   {}", view.pickaxe),
+            format!("Pickaxe   {}", view.pickaxe.summary),
             "Sub-tabs: Pickaxe / Enchants / Mines.".to_owned(),
         ],
     );

@@ -14,6 +14,64 @@ use skylode_core::{block::Block, mine_kind::MineKind};
 
 use crate::palette::ColourMode;
 
+/// The Pickaxe panel of the Mine screen (UI.md §5.1).
+///
+/// **Provisional, and partly pre-formatted.** `summary` and the enchant lines are
+/// strings the core does not yet compute — the tick owns the boost timer and the
+/// enchant roster (phase 3/7). `power` is carried as a number because the screen
+/// multiplies it by the boost to show the product, and a formatted string could
+/// not be multiplied. When phase 3 wires `Pickaxe`, the strings become derivations
+/// and this struct is where that lands, changing nothing under `screen/`.
+#[derive(Clone, Debug)]
+pub struct PickaxeView {
+    /// Name plus the Efficiency level, as one line: `Diamond Pickaxe  Efficiency IV`.
+    pub summary: String,
+    /// Base mining power, before the boost — the screen shows `power × boost`.
+    pub power: f64,
+    /// The Fortune line, pre-formatted: `Fortune III   drops ×4` (placeholder).
+    pub fortune: String,
+    /// The special-enchant roster, pre-formatted: `Exp II   Jck I   Exc I`
+    /// (placeholder — the roster arrives with the tick, phase 7).
+    pub enchants: String,
+}
+
+/// The temporary Redstone boost, shown as the third status gauge (UI.md §5.1).
+///
+/// The permanent Haste enchant has no countdown and is deliberately absent here;
+/// this is the one with a timer. `ratio` is a placeholder until the tick owns the
+/// countdown (phase 7) — there is no clock in the core to derive it from yet.
+#[derive(Clone, Debug)]
+pub struct BoostView {
+    /// Seconds left on the boost.
+    pub seconds: u32,
+    /// The multiplier it applies to mining power, e.g. `1.5`.
+    pub multiplier: f64,
+    /// How full the countdown gauge is, in `0.0..=1.0` (placeholder; phase 7).
+    pub ratio: f32,
+}
+
+/// The Mine panel of the Mine screen — the standing mine's own figures (UI.md §5.1).
+///
+/// The world, the block counts and the grid size are **derived from the grid** in
+/// the screen, so they are not fields here. What is left are the three numbers the
+/// core does not yet expose: the size level, the richness level, and the value
+/// weight. `value_percent` is `Mine::value_weight_percent()`'s answer, which is a
+/// phase-3 core read; `richness_max` is carried rather than hardcoded because the
+/// core's `MAX_RICHNESS_LEVEL` is `pub(crate)` and this crate cannot see it.
+#[derive(Clone, Debug)]
+pub struct MinePanelView {
+    /// The mine's purchased size level, e.g. `5`.
+    pub size_level: u32,
+    /// The richness level the player has bought, `0..=richness_max`.
+    pub richness_level: u32,
+    /// The richness ceiling — 9 in today's rules, carried so the tui need not
+    /// mirror the core's `pub(crate)` constant.
+    pub richness_max: u32,
+    /// The value cells' weight, as a percentage (placeholder; phase 3 derives it
+    /// from `Mine::value_weight_percent()`).
+    pub value_percent: u32,
+}
+
 /// A frame's worth of game state, already reduced to what the UI prints.
 #[derive(Clone, Debug)]
 pub struct View {
@@ -25,8 +83,12 @@ pub struct View {
     pub xp_to_next: u32,
     /// Display name of the mine the player is standing in.
     pub mine_name: String,
-    /// Pickaxe name plus its enchant summary, as one printable line.
-    pub pickaxe: String,
+    /// The Pickaxe panel's figures.
+    pub pickaxe: PickaxeView,
+    /// The Mine panel's figures.
+    pub mine_panel: MinePanelView,
+    /// The Redstone boost gauge.
+    pub boost: BoostView,
     /// Raw units of the current mine's material that the player holds.
     pub raw_held: u32,
     /// Compressed units of the same material.
@@ -46,6 +108,12 @@ pub struct View {
     pub target: Option<(u8, u8)>,
     /// How far that cell is from breaking, in `0.0..=1.0`.
     pub break_ratio: f32,
+    /// The name of the block being dug, for the Break gauge label: `Iron Block`.
+    ///
+    /// A placeholder string, because `Block` exposes its `material` but not a
+    /// display name of its own — "Iron Block" is not derivable from the grid cell
+    /// without a table the core does not yet own.
+    pub target_name: String,
     /// How many colours to ask the terminal for — a player preference that lives
     /// in the save, and that the Settings screen will edit in phase 7.
     pub colour_mode: ColourMode,
@@ -61,15 +129,32 @@ impl View {
         Self {
             player_level: 23,
             xp: 1_240,
-            xp_to_next: 3_200,
+            xp_to_next: 2_300,
             mine_name: "Iron Mine".to_owned(),
-            pickaxe: "Diamond Pickaxe  Efficiency IV".to_owned(),
+            pickaxe: PickaxeView {
+                summary: "Diamond Pickaxe  Efficiency IV".to_owned(),
+                power: 25.0,
+                fortune: "Fortune III   drops ×4".to_owned(),
+                enchants: "Exp II   Jck I   Exc I".to_owned(),
+            },
+            mine_panel: MinePanelView {
+                size_level: 5,
+                richness_level: 0,
+                richness_max: 9,
+                value_percent: 10,
+            },
+            boost: BoostView {
+                seconds: 12,
+                multiplier: 1.5,
+                ratio: 0.68,
+            },
             raw_held: 480,
             compressed_held: 2,
             mine_kind: MineKind::Iron,
             grid: sample_grid(),
-            target: Some((3, 2)),
+            target: Some((7, 1)),
             break_ratio: 0.61,
+            target_name: "Iron Block".to_owned(),
             colour_mode: ColourMode::default(),
         }
     }
@@ -127,6 +212,10 @@ mod tests {
         // The nesting is the assertion: the outer `Some` means there *is* a
         // target and it is inside the grid, the inner one that a block stands
         // there. `None` and `Some(None)` are the two ways this can be wrong.
-        assert_eq!(cell, Some(Some(Block::IronOre)));
+        //
+        // It lands on the value block on purpose: the Break gauge prints
+        // `target_name` ("Iron Block"), and the sample's target must be the cell
+        // that name describes, or the label would contradict the crack it draws.
+        assert_eq!(cell, Some(Some(Block::IronBlock)));
     }
 }

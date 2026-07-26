@@ -16,6 +16,7 @@
 mod action;
 mod app;
 mod event;
+mod format;
 mod keymap;
 mod overlay;
 mod palette;
