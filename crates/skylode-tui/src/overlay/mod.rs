@@ -17,9 +17,20 @@
 //!
 //! [`Clear`]: ratatui::widgets::Clear
 
+pub mod compression;
+pub mod dip;
+pub mod offline;
+pub mod prestige;
+pub mod save_recovery;
+pub mod settings;
+pub mod splash;
 pub mod too_small;
 
-use ratatui::layout::Rect;
+use ratatui::{
+    Frame,
+    layout::Rect,
+    widgets::{Block, BorderType, Clear, Padding, Paragraph},
+};
 
 /// A modal overlay that captures input.
 ///
@@ -31,6 +42,32 @@ use ratatui::layout::Rect;
 /// compiler points at each place that must learn to draw and drive it.
 #[derive(Clone, Copy, Debug)]
 pub enum Modal {}
+
+/// Draws a centred modal box of `width × height`, titled, filled with `lines`.
+///
+/// The overlay convention in one call: [`Clear`] the region so the screen behind
+/// does not show through, then a **square-bordered** box — the boot-and-modal class
+/// is `┌┐└┘`, set apart from the screens' rounded `╭╮` — with a one-column inset so
+/// the text never touches the border. Every modal in the design goes through here,
+/// so the frame's chrome cannot drift between the compression dialog and the dip.
+///
+/// [`Clear`]: ratatui::widgets::Clear
+pub(super) fn modal(
+    frame: &mut Frame,
+    area: Rect,
+    width: u16,
+    height: u16,
+    title: &str,
+    lines: &[&str],
+) {
+    let rect = centered_rect(area, width, height);
+    frame.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .title(title.to_owned())
+        .padding(Padding::horizontal(1));
+    frame.render_widget(Paragraph::new(lines.join("\n")).block(block), rect);
+}
 
 /// Centres a `width × height` box inside `area`.
 ///
@@ -48,6 +85,34 @@ pub fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     }
+}
+
+/// Renders an overlay's `draw` into an 80×24 buffer and returns the whole frame
+/// as one string — the shared harness every overlay's snapshot test draws through,
+/// so each module asserts on content rather than re-spelling `TestBackend` setup.
+#[cfg(test)]
+pub(super) fn render_to_string(draw: impl FnOnce(&mut Frame, Rect)) -> String {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut terminal = match Terminal::new(TestBackend::new(80, 24)) {
+        Ok(terminal) => terminal,
+        Err(infallible) => match infallible {},
+    };
+    if let Err(infallible) = terminal.draw(|frame| {
+        let area = frame.area();
+        draw(frame, area);
+    }) {
+        match infallible {}
+    }
+    let buffer = terminal.backend().buffer().clone();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
