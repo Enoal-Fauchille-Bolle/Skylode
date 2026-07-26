@@ -17,9 +17,10 @@ use ratatui::{
 
 use crate::{
     action::Action,
+    config::Config,
     event::{Event, EventHandler},
     keymap,
-    overlay::{Modal, too_small},
+    overlay::{Modal, help, too_small},
     screen::Screen,
     toast::{TOAST_TTL, Toasts},
     view::View,
@@ -42,6 +43,8 @@ pub struct App {
     pub toasts: Toasts,
     /// What the screens render. Hand-filled until the core can produce it.
     pub view: View,
+    /// Front-end preferences — read while drawing, edited by Settings (phase 7).
+    pub config: Config,
 }
 
 impl App {
@@ -53,6 +56,7 @@ impl App {
             modal: None,
             toasts: Toasts::new(),
             view: View::sample(),
+            config: Config::default(),
         }
     }
 
@@ -100,6 +104,11 @@ impl App {
                 }
             }
             Action::ShowToast(text) => self.toasts.push(text, TOAST_TTL),
+            // `?` stacks Help over the current screen; `Esc`/`?` clear it. The
+            // keymap only emits `OpenHelp` when nothing is stacked, so this never
+            // buries one modal under another.
+            Action::OpenHelp => self.modal = Some(Modal::Help),
+            Action::CloseModal => self.modal = None,
         }
     }
 
@@ -134,11 +143,16 @@ impl App {
         self.render_tabs(frame, tabs_area);
         self.screen.render(frame, body_area, &self.view);
 
-        // Overlays, outermost last.
+        // Overlays, outermost last. A modal draws over the whole frame, including
+        // the toasts — it captured the input that would dismiss them, so it owns the
+        // surface until it closes.
         self.toasts.render(frame, area);
         if let Some(modal) = self.modal {
-            // Uninhabited: unreachable until the first modal variant exists.
-            match modal {}
+            match modal {
+                // Help reports the bindings of the screen it was opened over, so it
+                // is handed the current screen and the config the sub-tab line reads.
+                Modal::Help => help::render(frame, area, self.screen, &self.config),
+            }
         }
     }
 
@@ -357,6 +371,24 @@ mod tests {
             !frame.contains("2 Inventory"),
             "the tab bar leaked through: {frame}"
         );
+    }
+
+    #[test]
+    fn opening_and_closing_help_stacks_then_clears_the_modal() {
+        let mut app = App::new();
+        app.update(Action::OpenHelp);
+        assert_eq!(app.modal, Some(Modal::Help));
+        app.update(Action::CloseModal);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn help_draws_over_the_screen_it_was_opened_on() {
+        let mut app = App::new();
+        app.update(Action::OpenHelp);
+        let frame = whole_frame(&render_to_buffer(&app));
+        // The right pane's title is Help-only, so its presence is Help on top.
+        assert!(frame.contains("Reading the screen"), "{frame}");
     }
 
     #[test]

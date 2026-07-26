@@ -15,6 +15,7 @@
 // from *this* scope — where none of its items exist.
 mod action;
 mod app;
+mod config;
 mod event;
 mod format;
 mod keymap;

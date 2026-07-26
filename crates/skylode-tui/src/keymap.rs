@@ -16,7 +16,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::{action::Action, app::App};
+use crate::{action::Action, app::App, overlay::Modal};
 
 /// The digits that jump straight to a tab. Derived from the ring, so a seventh
 /// screen does not need this constant edited — only the ring.
@@ -33,17 +33,24 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
         return Some(Action::Quit);
     }
 
-    // 2. A modal captures the rest. `Modal` has no variants yet, so this never
-    //    fires — but the branch is where modal keymaps will hang, and having it
-    //    here now is what stops the globals below from being wired as if modals
-    //    did not exist.
+    // 2. A modal captures the rest: while one is up, it gets every key the globals
+    //    would otherwise claim, which is what "modal" means. Help closes on its own
+    //    key (`?`) or `Esc`, and swallows all others so nothing leaks to the screen
+    //    behind it.
     if let Some(modal) = app.modal {
-        match modal {}
+        return match modal {
+            Modal::Help => match key.code {
+                KeyCode::Char('?') | KeyCode::Esc => Some(Action::CloseModal),
+                _ => None,
+            },
+        };
     }
 
     // 3. The global ring bindings.
     match key.code {
         KeyCode::Char('q') => return Some(Action::Quit),
+        // `?` is global and printed in every footer, so it opens Help from anywhere.
+        KeyCode::Char('?') => return Some(Action::OpenHelp),
         KeyCode::Tab => return Some(Action::NextScreen),
         KeyCode::BackTab => return Some(Action::PrevScreen),
         // A temporary demo binding so the overlay path can be exercised before
@@ -127,5 +134,32 @@ mod tests {
     fn an_unbound_key_is_declined_rather_than_swallowed() {
         let app = App::new();
         assert_eq!(resolve(&app, press(KeyCode::Char('z'))), None);
+    }
+
+    #[test]
+    fn question_mark_opens_help_from_a_screen() {
+        let app = App::new();
+        assert_eq!(
+            resolve(&app, press(KeyCode::Char('?'))),
+            Some(Action::OpenHelp)
+        );
+    }
+
+    #[test]
+    fn while_help_is_up_it_captures_the_keys_and_closes_on_question_or_esc() {
+        let mut app = App::new();
+        app.modal = Some(Modal::Help);
+        // Its own key and `Esc` both close it.
+        assert_eq!(
+            resolve(&app, press(KeyCode::Char('?'))),
+            Some(Action::CloseModal)
+        );
+        assert_eq!(resolve(&app, press(KeyCode::Esc)), Some(Action::CloseModal));
+        // A ring key is swallowed while the modal is up, not acted on behind it.
+        assert_eq!(resolve(&app, press(KeyCode::Tab)), None);
+        assert_eq!(resolve(&app, press(KeyCode::Char('1'))), None);
+        // But `Ctrl-C` still outranks even a modal.
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(resolve(&app, ctrl_c), Some(Action::Quit));
     }
 }

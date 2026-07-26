@@ -27,4 +27,11 @@ pub enum Action {
     /// Raise an ephemeral toast. A stand-in until the tick returns real events
     /// (UI-EN.md §6.2); wired to a demo key so the overlay path can be exercised.
     ShowToast(String),
+    /// Open the Help overlay (`?` from any screen). It stacks over the current
+    /// screen, which is what Help then reports the bindings of.
+    OpenHelp,
+    /// Dismiss the stacked modal (`Esc`, or `?` while Help is up). Names the act,
+    /// not the modal, so a second modal reuses it rather than adding a close per
+    /// variant.
+    CloseModal,
 }

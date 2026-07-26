@@ -13,8 +13,10 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::Paragraph,
 };
+
+use super::square;
 
 /// Draws the Settings screen with placeholder values (real config is save state,
 /// phase 7).
@@ -58,15 +60,6 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Paragraph::new(" ↑↓  select     ← →  change     Esc  back"),
         footer_area,
     );
-}
-
-/// A square-bordered panel — the boot class's box, distinct from the screens'
-/// rounded [`crate::screen::panel`].
-fn square(title: &str) -> Block<'static> {
-    Block::default()
-        .title(title.to_owned())
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
 }
 
 #[cfg(test)]

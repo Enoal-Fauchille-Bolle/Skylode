@@ -19,6 +19,7 @@
 
 pub mod compression;
 pub mod dip;
+pub mod help;
 pub mod offline;
 pub mod prestige;
 pub mod save_recovery;
@@ -29,19 +30,26 @@ pub mod too_small;
 use ratatui::{
     Frame,
     layout::Rect,
-    widgets::{Block, BorderType, Clear, Padding, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
 };
 
 /// A modal overlay that captures input.
 ///
-/// **Uninhabited on purpose.** There are no modals yet, and an enum with zero
-/// variants says exactly that: the slot in [`crate::app::App`] exists and is
-/// wired through the keymap, but no value can ever be constructed, so
-/// `Option<Modal>` is provably always `None` and every `match` on it is empty.
-/// When the compression dialog arrives it becomes a variant here and the
-/// compiler points at each place that must learn to draw and drive it.
-#[derive(Clone, Copy, Debug)]
-pub enum Modal {}
+/// One variant so far — [`Help`](Modal::Help), the first pulled overlay to be
+/// reachable. The others ([`compression`], [`dip`], [`prestige`], [`settings`]) are
+/// drawn but not yet stacked: they arrive as variants here when the screens that
+/// open them are wired (phases 5–7), and the exhaustive `match` in [`crate::keymap`]
+/// and [`crate::app`] then refuses to compile until each learns to draw and drive.
+///
+/// [`compression`]: crate::overlay::compression
+/// [`dip`]: crate::overlay::dip
+/// [`prestige`]: crate::overlay::prestige
+/// [`settings`]: crate::overlay::settings
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Modal {
+    /// The full-screen key reference (UI.md §6.11), opened with `?` from any screen.
+    Help,
+}
 
 /// Draws a centred modal box of `width × height`, titled, filled with `lines`.
 ///
@@ -67,6 +75,17 @@ pub(super) fn modal(
         .title(title.to_owned())
         .padding(Padding::horizontal(1));
     frame.render_widget(Paragraph::new(lines.join("\n")).block(block), rect);
+}
+
+/// A square-bordered panel titled `title` — the boot-and-modal class's box, set
+/// apart from the screens' rounded [`crate::screen::panel`]. Shared by the two
+/// full-screen overlays (Settings, Help) that split into panels rather than centre
+/// one box.
+pub(super) fn square(title: &str) -> Block<'static> {
+    Block::default()
+        .title(title.to_owned())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
 }
 
 /// Centres a `width × height` box inside `area`.
