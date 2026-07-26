@@ -14,7 +14,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    widgets::Paragraph,
+    widgets::{Clear, Paragraph},
 };
 
 use super::square;
@@ -86,6 +86,7 @@ pub fn render(frame: &mut Frame, area: Rect, screen: Screen, config: &Config) {
     keys.push(String::new());
     keys.extend(MINING.iter().map(|line| (*line).to_owned()));
 
+    frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(keys.join("\n")).block(square(" Keys ")),
         left,
