@@ -32,6 +32,42 @@ pub struct LevelRow {
     pub xp: u32,
 }
 
+/// One material's row in the Inventory table (UI.md §5.3).
+///
+/// Held in both denominations, exactly as the player carries them: the raw count
+/// and the compressed count are separate numbers, never a single total, because
+/// costs are paid in the denomination they are quoted in and the screen must show
+/// which one the player is short of. `material` is a display string (fixture here;
+/// phase 5 fills the table from `Inventory`).
+#[derive(Clone, Debug)]
+pub struct InvRow {
+    /// The material's display name, e.g. `Ancient Debris`.
+    pub material: String,
+    /// Compressed units held.
+    pub compressed: u32,
+    /// Raw units held.
+    pub raw: u32,
+}
+
+/// The Inventory screen: the table, the cursor, and the compress-first context
+/// (UI.md §5.3).
+///
+/// `selected` is a **front-end cursor**, not game state — it moves to `App` when
+/// `↑↓` is wired (phase 5); here it is fixed on the row the frame highlights.
+/// `hint` is the compress-first refusal spelled out (`Efficiency V wants 6
+/// Compressed + 50`), a **placeholder** until the three-state affordability query
+/// lands (phase 5) — the frame is drawn mid-refusal on purpose, so the panel names
+/// the missing *denomination* rather than claiming the player cannot afford it.
+#[derive(Clone, Debug)]
+pub struct InventoryView {
+    /// The fifteen materials, in the fixed display order the frame lists.
+    pub rows: Vec<InvRow>,
+    /// Which row the cursor sits on, indexing `rows`.
+    pub selected: usize,
+    /// The compress-first context lines, already wrapped to the panel width.
+    pub hint: Vec<String>,
+}
+
 /// One run-progress row in the Stats "This run" panel (UI.md §5.5).
 ///
 /// **Run progress, not achievements** — every row is a predicate over the run that
@@ -193,6 +229,8 @@ pub struct View {
     pub levels: Vec<LevelRow>,
     /// The three panels of the Stats screen (UI.md §5.5).
     pub stats: StatsView,
+    /// The Inventory table and its compress panel (UI.md §5.3).
+    pub inventory: InventoryView,
     /// How many colours to ask the terminal for — a player preference that lives
     /// in the save, and that the Settings screen will edit in phase 7.
     pub colour_mode: ColourMode,
@@ -236,8 +274,60 @@ impl View {
             target_name: "Iron Block".to_owned(),
             levels: sample_levels(),
             stats: sample_stats(),
+            inventory: sample_inventory(),
             colour_mode: ColourMode::default(),
         }
+    }
+}
+
+/// The Inventory table and compress panel drawn in UI.md §5.3, from the frame.
+///
+/// The counts are fixture data; the compress panel's derived numbers (value,
+/// compressible-now) are computed in the screen, not stored here. The frame is
+/// drawn **mid-refusal** — Iron is selected, worth 680 but short the compressed
+/// denomination an upgrade wants — which is why `hint` names the denomination.
+fn sample_inventory() -> InventoryView {
+    // `(material, compressed, raw)`, in the fixed display order the frame lists.
+    let rows = [
+        ("Stone", 12, 4_508),
+        ("Coal", 3, 871),
+        ("Iron", 2, 480),
+        ("Gold", 0, 312),
+        ("Lapis", 1, 44),
+        ("Redstone", 0, 128),
+        ("Emerald", 0, 17),
+        ("Diamond", 0, 9),
+        ("Netherrack", 2, 340),
+        ("Quartz", 0, 73),
+        ("Ancient Debris", 4, 60),
+        ("Obsidian", 0, 21),
+        ("Crying Obsidian", 0, 2),
+        ("End Stone", 0, 0),
+        ("Amethyst", 0, 38),
+    ]
+    .into_iter()
+    .map(|(material, compressed, raw)| InvRow {
+        material: material.to_owned(),
+        compressed,
+        raw,
+    })
+    .collect();
+
+    let hint = [
+        "Efficiency V wants",
+        "6 Compressed + 50.",
+        "You hold the value, not",
+        "the denomination.",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+
+    InventoryView {
+        rows,
+        // Iron: the row the frame highlights and the compress panel details.
+        selected: 2,
+        hint,
     }
 }
 
