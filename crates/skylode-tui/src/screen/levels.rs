@@ -17,13 +17,16 @@ use ratatui::{
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
     text::Line,
-    widgets::{
-        Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    },
+    widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use skylode_core::tunables::LEVEL_CAP;
 
-use crate::{action::Action, format::grouped, view::View};
+use crate::{
+    action::Action,
+    format::{grouped, justified},
+    screen::panel,
+    view::View,
+};
 
 /// Draws the roadmap and its footer.
 pub fn render(frame: &mut Frame, area: Rect, view: &View) {
@@ -40,10 +43,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
         grouped(view.xp_to_next),
         view.player_level + 1,
     );
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
+    let block = panel(&title);
     let inner = block.inner(roadmap_area);
     frame.render_widget(block, roadmap_area);
 
@@ -119,25 +119,6 @@ fn scrollbar(frame: &mut Frame, area: Rect, view: &View) {
         .track_symbol(Some("░"))
         .thumb_symbol("█");
     frame.render_stateful_widget(bar, area, &mut state);
-}
-
-/// A line of exactly `width` columns with `left` at the start and `right` flush to
-/// the end — the pattern the header and every level row share to align their XP.
-///
-/// Counts columns in `chars`, not bytes: the marks and the `·` separator are
-/// multi-byte but one column wide, and byte lengths would over-pad every row that
-/// carries one. If `left` and `right` together already exceed `width`, the pad is
-/// zero rather than negative — the row overflows visibly instead of panicking.
-fn justified(left: &str, right: &str, width: usize) -> String {
-    let used = left.chars().count() + right.chars().count();
-    let pad = width.saturating_sub(used);
-    let mut out = String::with_capacity(left.len() + pad + right.len());
-    out.push_str(left);
-    for _ in 0..pad {
-        out.push(' ');
-    }
-    out.push_str(right);
-    out
 }
 
 /// No contextual bindings yet; `↑↓` scrolls, `Home` jumps to the current level.

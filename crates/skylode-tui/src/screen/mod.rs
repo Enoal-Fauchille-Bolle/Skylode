@@ -26,18 +26,27 @@ use ratatui::{
 
 use crate::{action::Action, view::View};
 
+/// A rounded, fully-bordered panel with the given title — the box shape every
+/// real screen shares, spelled once so a title style change lands everywhere.
+///
+/// Returns `Block<'static>`, not `Block<'_>`: the block **owns** its title (that
+/// `to_owned` is why), so tying the output's lifetime to the borrowed `title`
+/// would force callers to keep a temporary format string alive for nothing. It is
+/// `pub(super)` — the child screen modules reach it, nothing outside `screen` can.
+pub(super) fn panel(title: &str) -> Block<'static> {
+    Block::default()
+        .title(title.to_owned())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+}
+
 /// Draws a bordered panel with a title and a few lines of text.
 ///
-/// Every screen is a stub for now, and they should all look alike while they
-/// are: a shared helper means the six placeholders cannot drift apart, and
-/// replacing one with a real screen is a local edit rather than an untangling.
-/// It is private to `screen` — child modules can reach it, nothing else can.
+/// Every remaining stub screen should look alike while it waits its turn: a shared
+/// helper means the placeholders cannot drift apart, and replacing one with a real
+/// screen is a local edit rather than an untangling.
 fn placeholder(frame: &mut Frame, area: Rect, title: &str, lines: &[String]) {
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
-    frame.render_widget(Paragraph::new(lines.join("\n")).block(block), area);
+    frame.render_widget(Paragraph::new(lines.join("\n")).block(panel(title)), area);
 }
 
 /// One tab of the ring.

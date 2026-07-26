@@ -16,11 +16,11 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style},
     text::Line,
-    widgets::{Block, BorderType, Borders, LineGauge, Paragraph},
+    widgets::{LineGauge, Paragraph},
 };
 use skylode_core::tunables::RAW_PER_COMPRESSED;
 
-use crate::{action::Action, format::grouped, view::View, widget::MineGrid};
+use crate::{action::Action, format::grouped, screen::panel, view::View, widget::MineGrid};
 
 /// The grid panel's fixed width — 40 columns of content plus its two borders. A
 /// 12-wide mine is 24 columns and centres inside it; the largest mine still fits.
@@ -205,19 +205,6 @@ fn gauge(frame: &mut Frame, area: Rect, label: &str, ratio: f64) {
 fn footer(frame: &mut Frame, area: Rect) {
     let line = " Space  mine     Tab  next screen     ?  help";
     frame.render_widget(Paragraph::new(line), area);
-}
-
-/// A rounded, fully-bordered panel with the given title — the shape every boxed
-/// element on this screen shares, spelled once so they cannot drift apart.
-///
-/// Returns `Block<'static>`, not `Block<'_>`: the block **owns** its title (that
-/// `to_owned` is why), so tying the output's lifetime to the borrowed `title`
-/// would make callers keep a temporary format string alive for nothing.
-fn panel(title: &str) -> Block<'static> {
-    Block::default()
-        .title(title.to_owned())
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
 }
 
 /// A ratio clamped into the unit range that `LineGauge::ratio` demands.
