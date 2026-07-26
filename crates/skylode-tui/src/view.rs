@@ -14,6 +14,24 @@ use skylode_core::{block::Block, mine_kind::MineKind};
 
 use crate::palette::ColourMode;
 
+/// One row of the Levels roadmap (UI.md §5.6).
+///
+/// `grants` is a **placeholder string** — the core exposes `xp_for_level` but not
+/// yet a `loot_for_level`, so what each level pays is transcribed from the frame
+/// rather than derived; the tick wires the real bundles (phase 7). `xp` is the
+/// per-level requirement counted from zero (`level × 100` on today's curve), which
+/// is what the status bar's `1 240 / 2 300` also counts against.
+#[derive(Clone, Debug)]
+pub struct LevelRow {
+    /// The level this row is for.
+    pub level: u32,
+    /// What reaching it grants, pre-formatted: `+115 Quartz, +80 A. Debris, …`, or
+    /// a world line like `The Nether opens, +1 charge`.
+    pub grants: String,
+    /// The XP that level costs, counted from zero.
+    pub xp: u32,
+}
+
 /// The Pickaxe panel of the Mine screen (UI.md §5.1).
 ///
 /// **Provisional, and partly pre-formatted.** `summary` and the enchant lines are
@@ -114,6 +132,12 @@ pub struct View {
     /// display name of its own — "Iron Block" is not derivable from the grid cell
     /// without a table the core does not yet own.
     pub target_name: String,
+    /// The visible window of the Levels roadmap (UI.md §5.6).
+    ///
+    /// The **window**, not the whole 1..50 ladder: phase 2 has no scroll state to
+    /// pick a window with, so the fixture *is* the window the frame draws. The
+    /// scrollbar's total comes from the core's `LEVEL_CAP`, not from this length.
+    pub levels: Vec<LevelRow>,
     /// How many colours to ask the terminal for — a player preference that lives
     /// in the save, and that the Settings screen will edit in phase 7.
     pub colour_mode: ColourMode,
@@ -155,9 +179,73 @@ impl View {
             target: Some((7, 1)),
             break_ratio: 0.61,
             target_name: "Iron Block".to_owned(),
+            levels: sample_levels(),
             colour_mode: ColourMode::default(),
         }
     }
+}
+
+/// The Levels roadmap window drawn in UI.md §5.6, levels 13..=31.
+///
+/// Transcribed from the frame rather than generated: `xp` follows `level × 100`
+/// and could be computed, but the grants cannot — `loot_for_level` does not exist
+/// in the core yet — so the whole window is fixture data, kept together so the
+/// screen can be compared row for row against the document it implements. Levels
+/// 15 and 30 grant a world and no loot, which is why their lines look different.
+fn sample_levels() -> Vec<LevelRow> {
+    // `(level, grants, xp)` triples, verbatim from the wireframe.
+    [
+        (13, "+65 Lapis, +45 Gold, +19 Diamond", 1_300),
+        (14, "+70 Lapis, +49 Gold, +21 Diamond", 1_400),
+        (15, "The Nether opens, +1 charge", 1_500),
+        (16, "+80 Quartz, +56 Netherrack, +24 A. Debris", 1_600),
+        (17, "+85 Quartz, +59 Netherrack, +25 A. Debris", 1_700),
+        (
+            18,
+            "+90 Quartz, +63 Netherrack, +27 A. Debris, +45 Emerald",
+            1_800,
+        ),
+        (19, "+95 Quartz, +66 Netherrack, +28 A. Debris", 1_900),
+        (
+            20,
+            "+100 Quartz, +70 Netherrack, +30 A. Debris, +1 charge",
+            2_000,
+        ),
+        (
+            21,
+            "+105 Quartz, +73 A. Debris, +31 Obsidian, +52 Emerald",
+            2_100,
+        ),
+        (22, "+110 Quartz, +77 A. Debris, +33 Obsidian", 2_200),
+        (23, "+115 Quartz, +80 A. Debris, +34 Obsidian", 2_300),
+        (
+            24,
+            "+120 Quartz, +84 A. Debris, +36 Obsidian, +60 Emerald",
+            2_400,
+        ),
+        (
+            25,
+            "+125 Quartz, +87 A. Debris, +37 Obsidian, +1 charge",
+            2_500,
+        ),
+        (26, "+130 Quartz, +91 Obsidian, +39 Crying Obs.", 2_600),
+        (
+            27,
+            "+135 Quartz, +94 Obsidian, +40 Crying Obs., +67 Emerald",
+            2_700,
+        ),
+        (28, "+140 Quartz, +98 Obsidian, +42 Crying Obs.", 2_800),
+        (29, "+145 Quartz, +101 Obsidian, +43 Crying Obs.", 2_900),
+        (30, "The End opens, +1 charge", 3_000),
+        (31, "+233 End Stone, +77 Amethyst", 3_100),
+    ]
+    .into_iter()
+    .map(|(level, grants, xp)| LevelRow {
+        level,
+        grants: grants.to_owned(),
+        xp,
+    })
+    .collect()
 }
 
 /// The 12x7 grid drawn in UI.md §5.1, cell for cell.
