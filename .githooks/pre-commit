@@ -26,7 +26,7 @@ printf "${BLUE_BOLD}Running pre-commit checks...${RESET}\n"
 # Run cargo fmt
 printf "${WHITE_BOLD}[1/5] Running cargo fmt...${RESET}\n"
 if ! cargo fmt --all -- --check; then
-    printf "${RED_BOLD}cargo fmt failed. Please run 'cargo +nightly fmt' to fix formatting issues.${RESET}\n"
+    printf "${RED_BOLD}cargo fmt failed. Please run 'cargo fmt' to fix formatting issues.${RESET}\n"
     exit 1
 fi
 
