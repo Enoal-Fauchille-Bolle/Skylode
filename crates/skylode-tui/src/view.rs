@@ -32,6 +32,59 @@ pub struct LevelRow {
     pub xp: u32,
 }
 
+/// One run-progress row in the Stats "This run" panel (UI.md §5.5).
+///
+/// **Run progress, not achievements** — every row is a predicate over the run that
+/// resets with a prestige, which the tick will evaluate (phase 7); here it is
+/// fixture data. `detail` carries the frame's trailing text verbatim (`Lv 30`,
+/// `23/30`, `Stone 20x10 R9  ✓`), so a sub-mark inside it is just part of the
+/// string, distinct from the row's own leading `done`/`current` mark.
+#[derive(Clone, Debug)]
+pub struct Milestone {
+    /// Whether the run has cleared this goal — drawn `✓`.
+    pub done: bool,
+    /// The next goal in line, the one the run is working toward — drawn `▸`.
+    pub current: bool,
+    /// The goal itself, e.g. `Reach the End`.
+    pub text: String,
+    /// The frame's right-hand detail, or empty: `Lv 30    23/30`.
+    pub detail: String,
+}
+
+/// The three panels of the Stats screen (UI.md §5.5).
+///
+/// All **placeholder** data: the prestige figures, the lifetime counters, the run
+/// milestones and the history are what the tick and the save own (phase 7). The
+/// worlds table and the level cap are *not* here — the screen derives them from
+/// `World` and `LEVEL_CAP`, which already answer them. `blocks_broken` is a `u32`
+/// for now because `format::grouped` takes one and the fixture fits; the lifetime
+/// type is settled when `GameState` fills this in.
+#[derive(Clone, Debug)]
+pub struct StatsView {
+    /// Prestige rank, pre-formatted: `II` (placeholder — no roman helper yet).
+    pub prestige_rank: String,
+    /// The current global multiplier: `×1.20`.
+    pub multiplier: String,
+    /// What the next rank would grant: `×1.30`.
+    pub next_multiplier: String,
+    /// What the next prestige costs, in `prestige_material`.
+    pub prestige_cost: u32,
+    /// The material a prestige is paid in: `Amethyst`.
+    pub prestige_material: String,
+    /// How much of it the player holds.
+    pub prestige_held: u32,
+    /// Lifetime blocks broken — survives prestige.
+    pub blocks_broken: u32,
+    /// Lifetime playtime, pre-formatted: `14h 22m`.
+    pub playtime: String,
+    /// Time in the current run, pre-formatted: `3h 07m` — resets with a prestige.
+    pub this_run: String,
+    /// The run-progress rows of the "This run" panel.
+    pub milestones: Vec<Milestone>,
+    /// The event history, the toast log verbatim: `20:14  Excavator!  +1 …`.
+    pub history: Vec<String>,
+}
+
 /// The Pickaxe panel of the Mine screen (UI.md §5.1).
 ///
 /// **Provisional, and partly pre-formatted.** `summary` and the enchant lines are
@@ -138,6 +191,8 @@ pub struct View {
     /// pick a window with, so the fixture *is* the window the frame draws. The
     /// scrollbar's total comes from the core's `LEVEL_CAP`, not from this length.
     pub levels: Vec<LevelRow>,
+    /// The three panels of the Stats screen (UI.md §5.5).
+    pub stats: StatsView,
     /// How many colours to ask the terminal for — a player preference that lives
     /// in the save, and that the Settings screen will edit in phase 7.
     pub colour_mode: ColourMode,
@@ -180,8 +235,66 @@ impl View {
             break_ratio: 0.61,
             target_name: "Iron Block".to_owned(),
             levels: sample_levels(),
+            stats: sample_stats(),
             colour_mode: ColourMode::default(),
         }
+    }
+}
+
+/// The Stats panels drawn in UI.md §5.5, transcribed from the frame.
+///
+/// Placeholder throughout: the prestige numbers, the lifetime counters, the run
+/// milestones and the history are the tick's and the save's to fill (phase 7).
+/// Kept together so the three panels can be read against the one wireframe.
+fn sample_stats() -> StatsView {
+    // `(done, current, text, detail)` for each "This run" row.
+    let milestones = [
+        (true, false, "Break your first block", ""),
+        (true, false, "Reach the Nether", "Lv 15"),
+        (true, false, "Diamond pickaxe", ""),
+        (false, true, "Reach the End", "Lv 30    23/30"),
+        (false, false, "Netherite pickaxe", ""),
+        (false, false, "Instamine Obsidian", ""),
+        (false, false, "Max out a mine", "Stone 20x10 R9  ✓"),
+        (false, false, "Reach mining level 50", "23/50"),
+    ]
+    .into_iter()
+    .map(|(done, current, text, detail)| Milestone {
+        done,
+        current,
+        text: text.to_owned(),
+        detail: detail.to_owned(),
+    })
+    .collect();
+
+    let history = [
+        "20:14  Excavator!  +1 Compressed Iron",
+        "20:13  Explosive — 9 blocks cleared",
+        "20:13  Mine refilled",
+        "20:11  Level 23 — +115 Quartz, +80 A. Debris",
+        "20:09  Compress first: need 6 Compressed Iron",
+        "20:04  Jackhammer — 8 blocks",
+        "20:02  Welcome back — 6h away, +12 480 Iron",
+        "19:58  Bought Diamond Pickaxe Efficiency IV",
+        "19:51  Richness dial: Obsidian 46% → 64%",
+        "19:44  Mine refilled",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+
+    StatsView {
+        prestige_rank: "II".to_owned(),
+        multiplier: "×1.20".to_owned(),
+        next_multiplier: "×1.30".to_owned(),
+        prestige_cost: 6_540,
+        prestige_material: "Amethyst".to_owned(),
+        prestige_held: 0,
+        blocks_broken: 418_297,
+        playtime: "14h 22m".to_owned(),
+        this_run: "3h 07m".to_owned(),
+        milestones,
+        history,
     }
 }
 
