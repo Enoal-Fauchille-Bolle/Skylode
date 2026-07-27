@@ -168,6 +168,49 @@ exists for; making it depend on a setting would make it optional. Always on, it 
 redundant at 256 colours and essential at 16 — which is what redundancy is supposed
 to look like.
 
+### 4.5 The chrome palette — a second, smaller table
+
+Everything above is about the mine cell. The **chrome** — panel borders and titles,
+the tab bar, gauges, scrollbars, footers, toasts, and the `✓ ✗ ~ ● ▸` marks — has a
+separate palette, and the separation is deliberate: §4.2 answers *"what colour is
+iron?"*, which has one right answer measurable against a gate, while this answers
+*"what does a refusal look like?"*, whose right answer depends on a terminal the
+game cannot see.
+
+**Named ANSI colours, not indexed ones** — the reverse of §4.2, for the reason that
+makes §4.2 right. There, a theme remapping a colour is a hazard, so the table names
+exact indices. Here it is the point: chrome is drawn on the terminal's own
+background — the same background a broken cell is — so the player's theme is the
+authority on what "grey" should be, and a pinned index is the thing that could come
+out illegible on a light terminal. Two things follow. The chrome needs **no
+16-colour fallback**, because it never asks for more than sixteen, so §4.3 remains a
+question about the grid alone. And **there is no contrast gate**, because a gate
+would have to measure against a background that is not knowable from inside the
+process.
+
+| Role | What it doubles | Colour |
+| --- | --- | --- |
+| Accent | the cursor `▸`, panel titles, the filled half of a gauge, the scrollbar thumb, the active sub-tab, the toast border | cyan |
+| Muted | borders, footers, table headers, the unfilled half of a gauge, the scrollbar track | dark grey |
+| Affordable | `✓` — you can buy it; on Levels and Stats, already yours | green |
+| Refused | `✗` — not enough ore, or a world still gated | red |
+| Compress first | `~` — the third state of §5.3 | yellow |
+| Current | `●` — where you are now on a roadmap | magenta |
+
+`●` is magenta rather than a second green because of one row on Levels: the cursor
+and the current level render adjacent as `▸●`, so it has to separate from the accent
+beside it *and* from the `✓` on the reached levels above it. Titles take the accent
+**plus bold**, so a title still reads as a title where the hue is dropped.
+
+**Every entry doubles a glyph that is already there.** §4.4's rule is not relaxed
+for chrome: the colour of a mark is *derived from* the mark, in one place, so it can
+neither contradict its glyph nor appear without one. Colour is never the only thing
+carrying an answer — remove it entirely and the screen still says everything it said.
+
+The **blast colour** for §5.9's proc flash is not in this table and remains open: it
+has to read as "not a material" against all 24 swatches, which is a judgement best
+made against a running grid.
+
 ## 5. The screens
 
 ### 5.1 Mine
