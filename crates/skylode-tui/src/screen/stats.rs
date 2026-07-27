@@ -183,7 +183,7 @@ pub fn map_key(_key: KeyEvent) -> Option<Action> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
     use super::*;
 
@@ -308,5 +308,26 @@ mod tests {
         assert!(last.contains("↑↓  scroll history"), "{last:?}");
         assert!(last.contains("p  prestige"), "{last:?}");
         assert!(last.contains("?  help"), "{last:?}");
+    }
+
+    /// The foreground of the first cell drawn with `glyph`. See the same helper on
+    /// the Mines screen for why the lookup goes through the glyph.
+    fn fg_of(buffer: &Buffer, glyph: &str) -> Option<Color> {
+        buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == glyph)
+            .map(|cell| cell.fg)
+    }
+
+    #[test]
+    fn the_marks_keep_their_glyph_and_take_their_colour() {
+        // `✓` reads "already yours" here rather than "you can buy it", and takes
+        // the same colour anyway: both readings agree that the row is settled in
+        // the player's favour, which is all the colour claims.
+        let buffer = render_screen();
+        assert_eq!(fg_of(&buffer, "✓"), Some(theme::AFFORDABLE));
+        assert_eq!(fg_of(&buffer, "✗"), Some(theme::REFUSED));
+        assert_eq!(fg_of(&buffer, "▸"), Some(theme::ACCENT));
     }
 }

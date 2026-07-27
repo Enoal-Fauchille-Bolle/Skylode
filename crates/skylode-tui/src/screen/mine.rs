@@ -240,7 +240,7 @@ pub fn map_key(_key: KeyEvent) -> Option<Action> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Modifier};
 
     use super::*;
 
@@ -369,5 +369,39 @@ mod tests {
         assert_eq!(ratio(-0.2), 0.0);
         assert_eq!(ratio(f64::INFINITY), 0.0);
         assert_eq!(ratio(f64::NAN), 0.0);
+    }
+
+    #[test]
+    fn the_gauges_are_drawn_in_the_accent_and_muted_pair() {
+        // Scanned row by row, and **only over the gauge band**, because `░` is also
+        // the value cell's stipple twelve rows above: a whole-buffer search for it
+        // would find a swatch's ink and assert the wrong thing about the wrong
+        // widget. The band is rows 15..18 — three rows under the 3-row Haul strip
+        // and the 12-row middle band.
+        let buffer = render_screen();
+        let cell = |glyph: &str| {
+            (15..18)
+                .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+                .map(|(x, y)| &buffer[(x, y)])
+                .find(|cell| cell.symbol() == glyph)
+                .map(|cell| cell.fg)
+        };
+        assert_eq!(cell("█"), Some(theme::ACCENT));
+        assert_eq!(cell("░"), Some(theme::MUTED));
+    }
+
+    #[test]
+    fn a_panel_title_is_bold_as_well_as_coloured() {
+        // The Haul strip's title sits on row 0. Both channels again: a terminal
+        // that drops the hue must still show a title as a title.
+        let buffer = render_screen();
+        let title = (0..buffer.area.width)
+            .map(|x| &buffer[(x, 0)])
+            .find(|cell| cell.symbol() == "H");
+        // Asserted through the `Option` rather than unwrapped: a missing title
+        // fails on the `None` instead of panicking, which this crate's lints ask
+        // for even in tests.
+        assert_eq!(title.map(|cell| cell.fg), Some(theme::ACCENT));
+        assert!(title.is_some_and(|cell| cell.modifier.contains(Modifier::BOLD)));
     }
 }

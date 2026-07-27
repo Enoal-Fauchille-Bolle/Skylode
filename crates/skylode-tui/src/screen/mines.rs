@@ -171,7 +171,7 @@ pub fn map_key(_key: KeyEvent) -> Option<Action> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
     use super::*;
 
@@ -315,5 +315,36 @@ mod tests {
         assert!(last.contains("↑↓  select"), "{last:?}");
         assert!(last.contains("Enter  mine it"), "{last:?}");
         assert!(last.contains("← →  richness dial"), "{last:?}");
+    }
+
+    /// The foreground of the first cell drawn with `glyph`, or `None` if no cell is.
+    ///
+    /// Looking the cell up **by its glyph** is what makes the assertions below test
+    /// both channels in one line: a build that dropped the mark fails on the `None`,
+    /// and a build that mis-coloured it fails on the colour. A helper that took a
+    /// coordinate would have tested only the second.
+    fn fg_of(buffer: &Buffer, glyph: &str) -> Option<Color> {
+        buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == glyph)
+            .map(|cell| cell.fg)
+    }
+
+    #[test]
+    fn the_marks_keep_their_glyph_and_take_their_colour() {
+        // UI.md §4.4: colour doubles a glyph, never replaces it. The sample has all
+        // three — the Overworld's `✓`, the End's `✗`, and the cursor on Obsidian.
+        let buffer = render_screen();
+        assert_eq!(fg_of(&buffer, "✓"), Some(theme::AFFORDABLE));
+        assert_eq!(fg_of(&buffer, "✗"), Some(theme::REFUSED));
+        assert_eq!(fg_of(&buffer, "▸"), Some(theme::ACCENT));
+    }
+
+    #[test]
+    fn the_dial_is_drawn_in_the_same_pair_as_every_other_progress_bar() {
+        let buffer = render_screen();
+        assert_eq!(fg_of(&buffer, "█"), Some(theme::ACCENT));
+        assert_eq!(fg_of(&buffer, "░"), Some(theme::MUTED));
     }
 }

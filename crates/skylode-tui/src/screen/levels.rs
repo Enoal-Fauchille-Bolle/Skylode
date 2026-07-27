@@ -130,7 +130,7 @@ pub fn map_key(_key: KeyEvent) -> Option<Action> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
     use super::*;
 
@@ -236,5 +236,27 @@ mod tests {
         assert_eq!(mark(24, 23, 23), "    ");
         assert_eq!(mark(23, 23, 20), "  ● ");
         assert_eq!(mark(20, 23, 20), "  ▸ ");
+    }
+
+    /// The foreground of the first cell drawn with `glyph`. See the same helper on
+    /// the Mines screen for why the lookup goes through the glyph.
+    fn fg_of(buffer: &Buffer, glyph: &str) -> Option<Color> {
+        buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == glyph)
+            .map(|cell| cell.fg)
+    }
+
+    #[test]
+    fn the_adjacent_cursor_and_position_marks_do_not_share_a_colour() {
+        // This screen is the reason `CURRENT` is magenta rather than a second
+        // green: `▸` and `●` render in touching cells on the current level, so a
+        // shared colour would merge them into one four-column smudge.
+        let buffer = render_screen();
+        assert_eq!(fg_of(&buffer, "▸"), Some(theme::ACCENT));
+        assert_eq!(fg_of(&buffer, "●"), Some(theme::CURRENT));
+        assert_eq!(fg_of(&buffer, "✓"), Some(theme::AFFORDABLE));
+        assert_ne!(theme::ACCENT, theme::CURRENT);
     }
 }

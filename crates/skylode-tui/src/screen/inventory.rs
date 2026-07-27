@@ -129,7 +129,7 @@ pub fn map_key(_key: KeyEvent) -> Option<Action> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
     use super::*;
 
@@ -237,5 +237,24 @@ mod tests {
         assert!(last.contains("↑↓  select"), "{last:?}");
         assert!(last.contains("c  compress"), "{last:?}");
         assert!(last.contains("C  decompress"), "{last:?}");
+    }
+
+    /// The foreground of the first cell drawn with `glyph`. See the same helper on
+    /// the Mines screen for why the lookup goes through the glyph.
+    fn fg_of(buffer: &Buffer, glyph: &str) -> Option<Color> {
+        buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == glyph)
+            .map(|cell| cell.fg)
+    }
+
+    #[test]
+    fn the_cursor_keeps_its_glyph_and_takes_the_accent() {
+        // The table's cursor is a mark and not a highlighted row, so it has to
+        // survive a colourless terminal — the glyph half of this assertion is what
+        // pins that it still does.
+        let buffer = render_screen();
+        assert_eq!(fg_of(&buffer, "▸"), Some(theme::ACCENT));
     }
 }
