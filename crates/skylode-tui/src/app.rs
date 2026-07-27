@@ -28,6 +28,22 @@ use crate::{
     view::View,
 };
 
+/// The widest the interface is ever drawn, whatever the terminal offers.
+///
+/// **Twice the counted frame**, and that is the whole justification: the wireframes
+/// in UI-EN.md §5 are 80 columns of *deliberately dense* text, so at 240 columns a
+/// detail pane would be a hundred columns of whitespace with a forty-column
+/// sentence adrift in it. Past this width the surplus becomes margin either side
+/// rather than more line to cross with the eye.
+const MAX_WIDTH: u16 = 2 * too_small::MIN_WIDTH;
+
+/// The tallest, for the same reason and by the same arithmetic.
+///
+/// This one bites less often — a list genuinely uses every row it is given — but
+/// the Mine screen's grid is a game constant, so a 90-row terminal would strand it
+/// in the middle of an enormous empty box.
+const MAX_HEIGHT: u16 = 2 * too_small::MIN_HEIGHT;
+
 /// The whole front-end state.
 #[derive(Debug)]
 pub struct App {
@@ -137,6 +153,17 @@ impl App {
             return;
         }
 
+        // Everything below draws into the *band*, not into the terminal. The filter
+        // above deliberately still reads the whole frame — "is the window big
+        // enough" is a question about the window — but from here on `area` is the
+        // interface, and a toast handed the terminal instead would centre itself
+        // over the margin rather than over the screen it is announcing about.
+        //
+        // Below the caps `Max` is satisfied by the whole width and `Flex::Center`
+        // has nothing to centre, so at 80×24 this is the identity and the counted
+        // frames are untouched.
+        let area = area.centered(Constraint::Max(MAX_WIDTH), Constraint::Max(MAX_HEIGHT));
+
         // The tab bar takes exactly one row and the screen takes the rest —
         // "the grid is fixed, the chrome flexes" starts here.
         let [tabs_area, body_area] =
@@ -242,6 +269,61 @@ mod tests {
             .map(|y| row(buffer, y))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The `(left, right)` columns of the first full-width bordered box drawn.
+    ///
+    /// The band's edges are read off a `panel`'s own corners rather than off "the
+    /// first non-blank cell": the tab bar pads its labels, so row 0's ink starts a
+    /// couple of columns in and would report a band narrower than it is. The Mine
+    /// screen's Haul strip spans the whole body, so its `╭` and `╮` *are* the two
+    /// edges — which is the measurement the assertions below actually want.
+    fn box_span(buffer: &Buffer) -> Option<(u16, u16)> {
+        let cells = |glyph: &'static str| {
+            (0..buffer.area.height)
+                .flat_map(move |y| (0..buffer.area.width).map(move |x| (x, y)))
+                .find(|position| buffer[*position].symbol() == glyph)
+                .map(|(x, _)| x)
+        };
+        Some((cells("╭")?, cells("╮")?))
+    }
+
+    #[test]
+    fn at_the_counted_size_the_band_is_the_whole_terminal() {
+        // The identity case, and the one that matters most: `Max` above the actual
+        // width leaves `Flex::Center` nothing to centre, so 80×24 is untouched and
+        // every counted wireframe in UI-EN.md §5 still describes what is drawn.
+        let buffer = render_to_buffer(&App::new());
+        assert_eq!(box_span(&buffer), Some((0, 79)));
+    }
+
+    #[test]
+    fn a_terminal_past_the_caps_is_a_centred_band_with_bare_margins() {
+        // 250×80, capped to 160×48: the interface is 160 wide however much room it
+        // is given, and the leftover 90 columns become equal margins.
+        let buffer = render_to_sized_buffer(&App::new(), 250, 80);
+        let margin = (250 - MAX_WIDTH) / 2;
+        assert_eq!(
+            box_span(&buffer),
+            Some((margin, margin + MAX_WIDTH - 1)),
+            "the band is not a centred {MAX_WIDTH} columns"
+        );
+
+        // The margin is genuinely untouched, not merely dark: a background painted
+        // out to the edges would look identical to a reader and would be no margin.
+        for y in 0..80 {
+            for x in 0..margin {
+                assert_eq!(buffer[(x, y)].symbol(), " ", "ink at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn between_the_minimum_and_the_caps_the_interface_takes_the_whole_terminal() {
+        // The band only bites past the caps. At 120×40 — a very ordinary window —
+        // nothing is centred and no column is wasted.
+        let buffer = render_to_sized_buffer(&App::new(), 120, 40);
+        assert_eq!(box_span(&buffer), Some((0, 119)));
     }
 
     #[test]
