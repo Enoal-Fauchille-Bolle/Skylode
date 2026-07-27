@@ -24,8 +24,12 @@ use skylode_core::world::World;
 
 use crate::{action::Action, format::justified, screen::panel, theme, view::View};
 
-/// The list panel's fixed width; the detail pane takes the rest of the row.
-const LIST_WIDTH: u16 = 38;
+/// The list panel's share of the row, against [`DETAIL_WEIGHT`] — and still the 38
+/// columns UI-EN.md §5.3 counted, per the module note on `screen`.
+const LIST_WEIGHT: u16 = 38;
+
+/// The detail pane's share — the other 42 of the counted 80.
+const DETAIL_WEIGHT: u16 = 42;
 
 /// How many cells the dial bar spans between its `◄` and `►` arrows.
 const DIAL_WIDTH: usize = 20;
@@ -39,8 +43,11 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     let [body, footer_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
-    let [list_area, detail_area] =
-        Layout::horizontal([Constraint::Length(LIST_WIDTH), Constraint::Min(0)]).areas(body);
+    let [list_area, detail_area] = Layout::horizontal([
+        Constraint::Fill(LIST_WEIGHT),
+        Constraint::Fill(DETAIL_WEIGHT),
+    ])
+    .areas(body);
     list(frame, list_area, view);
     detail(frame, detail_area, view);
 

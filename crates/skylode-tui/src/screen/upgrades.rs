@@ -7,8 +7,9 @@
 //!
 //! **The split is a single divider, not two abutting boxes.** Inventory and Mines
 //! sit two panels side by side (`││`); here the frame draws one box fenced by a
-//! `┬│┴` divider at column 36. Ratatui has no mid-box divider, so the outer box is
-//! drawn and the divider column is patched into the buffer by hand.
+//! `┬│┴` divider — at column 36 in the counted 80-column frame, and proportionally
+//! further along as the terminal widens. Ratatui has no mid-box divider, so the
+//! outer box is drawn and the divider's column is patched into the buffer by hand.
 
 use ratatui::{
     Frame,
@@ -27,8 +28,15 @@ use crate::{
     view::{UpgradeSubtab, UpgradeTab, UpgradesView, View},
 };
 
-/// The content width of the master (list) side; the divider sits just past it.
-const LEFT_WIDTH: u16 = 35;
+/// The master (list) side's share of the box, against [`DETAIL_WEIGHT`] — the
+/// counted widths doubling as `Fill` weights, per the module note on `screen`.
+///
+/// Here the two sum to 77 rather than 80, because the divider takes a column of its
+/// own and the box's two borders take the other two.
+const LIST_WEIGHT: u16 = 35;
+
+/// The detail pane's share of the box.
+const DETAIL_WEIGHT: u16 = 42;
 
 /// Draws the sub-tab bar, the master-detail box, and the footer.
 pub fn render(frame: &mut Frame, area: Rect, view: &View) {
@@ -129,14 +137,27 @@ fn tab_name(tab: UpgradeTab) -> &'static str {
 ///
 /// The divider is patched straight into the buffer because ratatui draws borders
 /// only around a `Block`, never through one: the outer box is rendered first, then
-/// its interior column at `LEFT_WIDTH` is overwritten with `│`, and the two border
-/// cells it meets become `┬` and `┴`.
+/// the divider's own column is overwritten with `│`, and the two border cells it
+/// meets become `┬` and `┴`.
+///
+/// **The divider is a `Rect` from the layout, not an offset added to `inner.x`.**
+/// Once the two sides became a ratio, "where is column 36" stopped being something
+/// this function could compute — the solver decides it. Asking the layout for a
+/// one-column strip and reading its `x` back is what keeps the patched glyphs on
+/// the boundary the two panes actually meet at, at every terminal width.
 fn master_detail(frame: &mut Frame, area: Rect) -> (Rect, Rect) {
     let block = panel("");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let divider_x = inner.x + LEFT_WIDTH;
+    let [list, divider, detail] = Layout::horizontal([
+        Constraint::Fill(LIST_WEIGHT),
+        Constraint::Length(1),
+        Constraint::Fill(DETAIL_WEIGHT),
+    ])
+    .areas(inner);
+
+    let divider_x = divider.x;
     let bottom = area.y + area.height.saturating_sub(1);
     // The divider is part of the box, so it has to be styled like the box. `panel`
     // colours its borders through `Block::border_style`, which never reaches these

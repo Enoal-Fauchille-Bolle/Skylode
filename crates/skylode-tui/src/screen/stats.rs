@@ -33,6 +33,13 @@ use crate::{
 /// not touch the border the way the frame keeps a margin (`418 297    │`).
 const RIGHT_MARGIN: usize = 3;
 
+/// The Progression panel's share of the row, against [`RIGHT_COLUMN_WEIGHT`] — the
+/// counted widths doubling as `Fill` weights, per the module note on `screen`.
+const PROGRESSION_WEIGHT: u16 = 30;
+
+/// The right column's share — the other 50 of the counted 80.
+const RIGHT_COLUMN_WEIGHT: u16 = 50;
+
 /// Draws the three panels and the footer.
 pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     let [body, footer_area] =

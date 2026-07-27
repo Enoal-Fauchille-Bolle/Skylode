@@ -25,16 +25,23 @@ use skylode_core::tunables::RAW_PER_COMPRESSED;
 
 use crate::{action::Action, format::grouped, screen::panel, theme, view::View};
 
-/// The Compress panel's fixed width; the table takes the rest of the row.
-const COMPRESS_WIDTH: u16 = 32;
+/// The table's share of the row, against [`COMPRESS_WEIGHT`] — the counted widths
+/// reused as `Fill` weights, per the module note on `screen`.
+const TABLE_WEIGHT: u16 = 48;
+
+/// The Compress panel's share — the 32 columns UI-EN.md §5.4 counted.
+const COMPRESS_WEIGHT: u16 = 32;
 
 /// Draws the table, the compress panel, and the footer.
 pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     let [body, footer_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
-    let [table_area, compress_area] =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(COMPRESS_WIDTH)]).areas(body);
+    let [table_area, compress_area] = Layout::horizontal([
+        Constraint::Fill(TABLE_WEIGHT),
+        Constraint::Fill(COMPRESS_WEIGHT),
+    ])
+    .areas(body);
     table(frame, table_area, view);
     compress(frame, compress_area, view);
 

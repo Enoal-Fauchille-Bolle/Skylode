@@ -24,8 +24,10 @@ use super::square;
 pub fn render(frame: &mut Frame, area: Rect) {
     let [body, footer_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    // `38 : 42`, the counted split, reused as the `Fill` ratio so the frame is
+    // unchanged at 80 columns and shares the surplus above it.
     let [left, right] =
-        Layout::horizontal([Constraint::Length(38), Constraint::Min(0)]).areas(body);
+        Layout::horizontal([Constraint::Fill(38), Constraint::Fill(42)]).areas(body);
 
     let fields = [
         " ▸ Colour            256",
