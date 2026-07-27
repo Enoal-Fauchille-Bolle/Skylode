@@ -1,10 +1,16 @@
 //! The Mine screen — active mining (UI.md §5.1).
 //!
-//! The layout is fixed, not proportional, and that is the screen's whole claim:
-//! a **Haul** strip of three rows on top, then a middle band holding the grid in a
-//! `Length(42)` panel beside a right column of two panels (Pickaxe, Mine), then
-//! three `LineGauge` status rows, and a footer. The grid never moves because the
-//! chrome around it is measured in rows and columns, never in percentages (§1).
+//! The **grid** is fixed, not the layout, and that distinction is the screen's whole
+//! claim: a **Haul** strip of three rows on top, then a middle band holding the grid
+//! in a `Length(42)` panel beside a right column of two panels (Pickaxe, Mine), then
+//! three `LineGauge` status rows, and a footer.
+//!
+//! The panel stays 42 columns wide at every terminal size because 42 is *already* the
+//! largest mine — 20 cells × 2 columns plus two borders — so widening it could only
+//! add margin. Its height is the opposite case: the band grows, and `MineGrid`
+//! centres the mine inside whatever it is given, so the reserved area breathes while
+//! the mine itself never changes size. Mine size is a game constant per mine, and the
+//! window must not be able to change balance (§1).
 //!
 //! `LineGauge` and not `Gauge` for the status rows: a `Gauge` needs its own
 //! `Block` and costs three rows, so three of them would eat nine rows the 24-row
@@ -30,15 +36,35 @@ const GRID_PANEL_WIDTH: u16 = 42;
 /// same column however long each label is (the longest, XP, is 26).
 const GAUGE_LABEL_WIDTH: usize = 28;
 
+/// Blank rows kept between the gauges and the footer.
+///
+/// Frozen rather than flexed, and it is what pins the counted frame: with the four
+/// fixed bands taking 11 of the 23 body rows, the middle band is left with the 12
+/// UI-EN.md §4.2 counted. It is also where a toast lands, which is why the gap is
+/// four rows and not zero — a three-row toast needs somewhere to sit that is not on
+/// top of a gauge.
+const SPACER_ROWS: u16 = 4;
+
 /// Draws the whole screen into `area`.
 pub fn render(frame: &mut Frame, area: Rect, view: &View) {
-    // Top to bottom: the strip, the panels, the gauges, a spacer that absorbs the
-    // slack, then the footer pinned to the last row. Only the spacer flexes.
+    // Top to bottom: the strip, the panels, the gauges, a spacer, then the footer.
+    // **The middle band is the one that flexes now**, and the spacer is frozen at the
+    // four rows it happened to have at 80×24.
+    //
+    // The two used to be the other way round, and that was wrong for a reason worth
+    // writing down: the Pickaxe and Mine panels live *inside* the middle band, so
+    // freezing the band at twelve rows froze them too — a taller terminal grew a
+    // hole between the gauges and the footer and gave the panels beside the grid not
+    // one row. The grid itself is still a game constant (`MineGrid` centres it in
+    // whatever it is handed), so what grows is the reserve around it, never the mine.
+    //
+    // At 23 body rows the four `Length`s take 11 and the `Fill` is left with exactly
+    // 12 — the counted band, by subtraction rather than by coincidence.
     let [haul_area, middle_area, gauges_area, _spacer, footer_area] = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Length(12),
+        Constraint::Fill(1),
         Constraint::Length(3),
-        Constraint::Min(0),
+        Constraint::Length(SPACER_ROWS),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -74,10 +100,12 @@ fn middle(frame: &mut Frame, area: Rect, view: &View) {
 
     grid_panel(frame, grid_area, view);
 
-    // The right column splits into the Pickaxe panel over the Mine panel; the
-    // Mine panel takes the slack so the two together fill the band exactly.
+    // The right column splits into the Pickaxe panel over the Mine panel, evenly.
+    // At the counted 12 rows that is 6 and 6 — the same split `Length(6) + Min(0)`
+    // produced — and above it the two grow together rather than the lower one
+    // absorbing every spare row and towering over the one above it.
     let [pickaxe_area, mine_area] =
-        Layout::vertical([Constraint::Length(6), Constraint::Min(0)]).areas(right_area);
+        Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]).areas(right_area);
     pickaxe_panel(frame, pickaxe_area, view);
     mine_panel(frame, mine_area, view);
 }
@@ -251,8 +279,13 @@ mod tests {
     /// counts from. Infallible `TestBackend` errors are discharged with an empty
     /// `match`, the same way `app.rs` does, rather than an `unwrap` the lints flag.
     fn render_screen() -> Buffer {
+        render_sized(80, 24)
+    }
+
+    /// The same, at an arbitrary size — for the responsive assertions.
+    fn render_sized(width: u16, height: u16) -> Buffer {
         let view = View::sample();
-        let mut terminal = match Terminal::new(TestBackend::new(80, 24)) {
+        let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
             Ok(terminal) => terminal,
             Err(infallible) => match infallible {},
         };
@@ -271,6 +304,58 @@ mod tests {
     }
 
     /// Every row joined into one string — for "is this text on screen anywhere".
+    /// The `(top, bottom)` rows of the grid panel's own box, found by its corners.
+    fn grid_box_rows(buffer: &Buffer) -> (u16, u16) {
+        // The Haul strip's `╭` is at row 0 too, so the grid panel's is the *second*
+        // one down column 0 — and its `╰` is the second from the top likewise.
+        let down_the_left = |glyph: &'static str| {
+            (0..buffer.area.height)
+                .filter(|y| sym(buffer, 0, *y) == glyph)
+                .nth(1)
+                .unwrap_or(0)
+        };
+        (down_the_left("╭"), down_the_left("╰"))
+    }
+
+    /// How many rows carry a painted swatch — the mine's own height on screen.
+    fn grid_rows_painted(buffer: &Buffer) -> usize {
+        (0..buffer.area.height)
+            .filter(|y| {
+                (0..buffer.area.width).any(|x| buffer[(x, *y)].bg != ratatui::style::Color::Reset)
+            })
+            .count()
+    }
+
+    #[test]
+    fn the_counted_band_is_twelve_rows_at_the_reference_size() {
+        // **23 rows, not 24**: that is what the app hands this screen once the tab
+        // bar has taken its own, and the twelve-row band UI-EN.md §4.2 counted is a
+        // fact about *that* area. The four fixed bands take 11 of the 23 and `Fill`
+        // is left with 12 — rows 3..=14, the Haul strip occupying 0..=2 above it.
+        let (top, bottom) = grid_box_rows(&render_sized(80, 23));
+        assert_eq!((top, bottom), (3, 14), "the counted middle band moved");
+    }
+
+    #[test]
+    fn a_taller_terminal_grows_the_panel_but_never_the_mine() {
+        // Enoal's rule, as two assertions: the reserved area breathes, the mine does
+        // not. Mine size is a game constant per mine (UI-EN.md §4.1), so a window
+        // that could change it could change balance.
+        let counted = render_screen();
+        let tall = render_sized(80, 48);
+
+        let (top, bottom) = grid_box_rows(&tall);
+        let (counted_top, counted_bottom) = grid_box_rows(&counted);
+        assert!(
+            bottom - top > counted_bottom - counted_top,
+            "the panel stayed {} rows tall on a 48-row terminal",
+            bottom - top
+        );
+        // The mine itself is the same ten rows of swatches either way.
+        assert_eq!(grid_rows_painted(&tall), grid_rows_painted(&counted));
+        assert_eq!(grid_rows_painted(&counted), 10);
+    }
+
     fn whole_frame(buffer: &Buffer) -> String {
         (0..buffer.area.height)
             .map(|y| {
@@ -305,11 +390,26 @@ mod tests {
 
     #[test]
     fn the_mine_panel_counts_blocks_from_the_grid() {
+        // The counts are **recomputed from the fixture** rather than written down,
+        // because the panel's whole claim is that it derives them: hardcoding
+        // `76 / 84` tested the fixture, and broke the day the fixture changed size
+        // without the derivation being wrong for a moment. Now swapping grid
+        // fixtures leaves this test true, and breaking the derivation fails it.
+        let view = View::sample();
+        let rows = view.grid.len();
+        let columns = view.grid.first().map_or(0, Vec::len);
+        let standing = view.grid.iter().flatten().filter(|c| c.is_some()).count();
+
         let frame = whole_frame(&render_screen());
-        // 12 × 7 = 84 cells, 8 of them holes in the sample grid, so 76 standing.
-        assert!(frame.contains("Blocks    76 / 84"), "{frame}");
-        assert!(frame.contains("Size      12 x 7"), "{frame}");
-        assert!(frame.contains("(level 5)"), "{frame}");
+        assert!(
+            frame.contains(&format!("Blocks    {standing} / {}", rows * columns)),
+            "{frame}"
+        );
+        assert!(
+            frame.contains(&format!("Size      {columns} x {rows}")),
+            "{frame}"
+        );
+        assert!(frame.contains("(level 9)"), "{frame}");
         assert!(frame.contains("Richness  level 0 / 9"), "{frame}");
         assert!(frame.contains("value 10%"), "{frame}");
         assert!(frame.contains("Overworld"), "{frame}");

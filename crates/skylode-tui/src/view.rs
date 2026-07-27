@@ -452,7 +452,11 @@ impl View {
                 enchants: "Exp II   Jck I   Exc I".to_owned(),
             },
             mine_panel: MinePanelView {
-                size_level: 5,
+                // The Mine panel derives `Size` and `Blocks n / total` from the grid
+                // itself, so those two follow the fixture. `size_level` cannot — it
+                // is the *purchased* level, which the core does not yet expose — so
+                // it is set to the ceiling here to stay consistent with a 20×10 mine.
+                size_level: 9,
                 richness_level: 0,
                 richness_max: 9,
                 value_percent: 10,
@@ -1006,20 +1010,96 @@ fn counted_levels() -> Vec<(u32, &'static str, u32)> {
     .to_vec()
 }
 
-/// The 12x7 grid drawn in UI.md §5.1, cell for cell.
+/// One cell of a grid fixture. `O` an ore cell, `B` an iron block, `X` a hole.
 ///
-/// Transcribed rather than generated: `Mine::new` would need a seed, and the
-/// figure the frame shows — five value cells, seven holes, a target three cells
-/// into row two — is what the counted wireframe asserts. A generated grid would
-/// make the screen impossible to compare against the document it implements.
-fn sample_grid() -> Vec<Vec<Option<Block>>> {
-    // One letter each, so the rows below line up as a picture of the frame:
-    // `O` an ore cell, `B` an iron block, `X` a hole.
-    const O: Option<Block> = Some(Block::IronOre);
-    const B: Option<Block> = Some(Block::IronBlock);
-    const X: Option<Block> = None;
+/// Spelled as one letter each so the fixtures below read as *pictures* of the
+/// screen rather than as lists of `Some(Block::IronOre)`.
+const O: Option<Block> = Some(Block::IronOre);
+/// The value block — the stippled cell, and the only legal target (see below).
+const B: Option<Block> = Some(Block::IronBlock);
+/// A broken cell: the absence of a block, drawn as the terminal's own background.
+const X: Option<Block> = None;
 
-    vec![
+/// A grid fixture and the cell being dug in it.
+///
+/// **Returned together, and that is the point.** They used to be two fields filled
+/// in side by side, which let a target name a cell outside the grid it belonged to —
+/// a state `the_sample_target_names_a_standing_cell` had to check for by hand. Now
+/// swapping fixtures moves both at once, so the pair cannot come apart. The target
+/// must land on a `B`: the Break gauge prints `target_name` ("Iron Block"), and a
+/// crack drawn on an ore cell would make the label contradict the picture.
+type GridFixture = (Vec<Vec<Option<Block>>>, (u8, u8));
+
+/// A **full-size** 20×10 mine — the reserve at capacity.
+///
+/// This is the live fixture, and it is not the one the wireframes drew. UI-EN.md
+/// §5.2 counted a 12×7 mine, which is honest about what a level-5 mine looks like
+/// and dishonest about what the *panel* has to hold: the grid area is sized for the
+/// largest mine in the game, 20 cells by 10, and a fixture that never fills it
+/// leaves the one thing worth eyeballing — does a maxed mine still fit — untested by
+/// eye. [`sample_grid_wireframe_12x7`] is one line away when the comparison against
+/// the document is what is wanted.
+fn sample_grid_full_20x10() -> GridFixture {
+    let grid = vec![
+        vec![O, O, O, B, O, O, X, O, O, O, O, O, O, B, O, O, O, O, X, O],
+        vec![O, X, O, O, O, O, O, B, O, O, X, O, O, O, O, B, O, O, O, O],
+        vec![O, O, O, O, O, O, O, O, O, O, O, O, B, O, O, O, O, O, O, O],
+        vec![O, O, X, O, B, O, O, O, O, X, O, O, O, O, O, O, B, O, O, O],
+        vec![O, O, O, O, O, O, B, O, O, O, O, O, O, X, O, O, O, O, O, O],
+        vec![X, O, O, B, O, O, O, O, O, O, O, O, O, O, B, O, O, O, O, X],
+        vec![O, O, O, O, B, O, X, O, O, O, O, O, O, O, O, O, O, B, O, O],
+        vec![O, O, B, O, O, O, O, O, X, O, O, B, O, O, O, O, O, O, O, O],
+        vec![O, X, O, O, O, O, B, O, O, O, O, O, O, O, X, O, O, B, O, O],
+        vec![O, O, O, O, O, B, O, O, O, X, O, O, B, O, O, O, O, O, O, O],
+    ];
+    (grid, (7, 1))
+}
+
+/// A **small** 5×5 mine — the worst case for centring in the reserve.
+///
+/// Twenty-five cells in an area sized for two hundred, so the margin around it is
+/// larger than the mine: this is what "a small mine does not grow its panel, it
+/// leaves the reserved area partly empty" (UI-EN.md §5.2) looks like taken to its
+/// limit. Swap it in to check that the grid still lands centred and that the panels
+/// beside it do not shift.
+// `cfg_attr(not(test), …)` rather than a bare `expect`: the tests *do* call this, so
+// under `cfg(test)` it is not dead at all and an unconditional expectation would go
+// unfulfilled — which `-D warnings` turns into a build error. Dead for the binary,
+// alive for the tests, is precisely the state a dormant fixture should be in.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the alternate grid fixture, swapped into View::sample by hand"
+    )
+)]
+fn sample_grid_small_5x5() -> GridFixture {
+    let grid = vec![
+        vec![O, O, B, O, O],
+        vec![O, X, B, O, O],
+        vec![O, O, O, O, X],
+        vec![B, O, O, O, O],
+        vec![O, O, X, O, B],
+    ];
+    (grid, (2, 1))
+}
+
+/// The 12×7 grid drawn in UI.md §5.2, cell for cell.
+///
+/// Transcribed rather than generated: `Mine::new` would need a seed, and the figure
+/// the frame shows — five value cells, seven holes, a target three cells into row
+/// two — is what the counted wireframe asserts. A generated grid would make the
+/// screen impossible to compare against the document it implements, which is exactly
+/// why this one is kept rather than replaced.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the wireframe grid fixture, swapped into View::sample by hand"
+    )
+)]
+fn sample_grid_wireframe_12x7() -> GridFixture {
+    let grid = vec![
         vec![O, O, O, B, O, O, X, O, O, O, O, O],
         vec![O, X, O, O, O, O, O, B, O, O, X, O],
         vec![O, O, O, O, O, O, O, O, O, O, O, O],
@@ -1027,41 +1107,106 @@ fn sample_grid() -> Vec<Vec<Option<Block>>> {
         vec![O, O, O, O, O, O, B, O, O, O, O, O],
         vec![X, O, O, B, O, O, O, O, O, O, O, X],
         vec![O, O, O, O, B, O, X, O, O, O, O, O],
-    ]
+    ];
+    (grid, (7, 1))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Every grid fixture, live or dormant, so the assertions below hold for
+    /// whichever one `View::sample` currently names.
+    ///
+    /// The dormant ones are `#[expect(dead_code)]` for the *renderer*, not for the
+    /// tests — a fixture nobody ever compiles is one that has silently rotted by the
+    /// time it is wanted, which is the whole failure mode commented-out code has.
+    fn every_grid_fixture() -> Vec<GridFixture> {
+        vec![
+            sample_grid_full_20x10(),
+            sample_grid_small_5x5(),
+            sample_grid_wireframe_12x7(),
+        ]
+    }
+
     #[test]
-    fn the_sample_grid_is_the_size_the_wireframe_counts() {
-        let view = View::sample();
-        assert_eq!(view.grid.len(), 7);
-        for row in &view.grid {
-            assert_eq!(row.len(), 12, "the grid is not rectangular");
+    fn every_grid_fixture_is_rectangular_and_fits_the_reserve() {
+        // 20×10 is the largest mine in the game and the size the Mine screen's panel
+        // is built around, so a fixture past it would draw outside the box it was
+        // handed — clipped by `MineGrid`, but wrong.
+        for (grid, _) in every_grid_fixture() {
+            let columns = grid.first().map_or(0, Vec::len);
+            assert!(grid.len() <= 10, "{} rows is past the reserve", grid.len());
+            assert!(columns <= 20, "{columns} columns is past the reserve");
+            for row in &grid {
+                assert_eq!(row.len(), columns, "the grid is not rectangular");
+            }
         }
     }
 
     #[test]
-    fn the_sample_target_names_a_standing_cell() {
-        // A target pointing at a hole would draw a crack on the terminal's own
-        // background, which is a state the rules cannot produce.
+    fn the_live_fixture_fills_the_reserve() {
+        // The live one is deliberately the *full* 20×10: see
+        // `sample_grid_full_20x10`'s own note for why the wireframe's 12×7 is no
+        // longer what the screen is developed against.
         let view = View::sample();
-        let cell = view.target.and_then(|(x, y)| {
-            view.grid
+        assert_eq!(view.grid.len(), 10);
+        assert_eq!(view.grid.first().map_or(0, Vec::len), 20);
+    }
+
+    #[test]
+    fn every_fixtures_target_names_a_standing_value_block() {
+        // A target pointing at a hole would draw a crack on the terminal's own
+        // background, which is a state the rules cannot produce; one pointing at an
+        // ore cell would contradict the Break gauge's "Iron Block" label. Checked on
+        // all three, because swapping fixtures is meant to be a one-line change and
+        // a fixture whose target had drifted would be a one-line bug.
+        for (grid, (x, y)) in every_grid_fixture() {
+            let cell = grid
                 .get(usize::from(y))
                 .and_then(|row| row.get(usize::from(x)))
-                .copied()
-        });
+                .copied();
 
-        // The nesting is the assertion: the outer `Some` means there *is* a
-        // target and it is inside the grid, the inner one that a block stands
-        // there. `None` and `Some(None)` are the two ways this can be wrong.
-        //
-        // It lands on the value block on purpose: the Break gauge prints
-        // `target_name` ("Iron Block"), and the sample's target must be the cell
-        // that name describes, or the label would contradict the crack it draws.
-        assert_eq!(cell, Some(Some(Block::IronBlock)));
+            // The nesting is the assertion: the outer `Some` means the target is
+            // inside the grid, the inner one that a block stands there. `None` and
+            // `Some(None)` are the two ways this can be wrong.
+            assert_eq!(cell, Some(Some(Block::IronBlock)), "target ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn the_pickaxe_ladder_is_the_whole_roadmap() {
+        // 5 × (a tier + Efficiency I..V) + Netherite + its fifteen — the count is
+        // the core's `efficiency_cap` talking, not a number written down here. If
+        // this moves, `PICKAXE_OFFSET` and the counted frame moved with it.
+        let ladder = pickaxe_ladder();
+        assert_eq!(ladder.len(), 46);
+        assert_eq!(
+            ladder.first().map(|row| row.text.as_str()),
+            Some("Wooden Pickaxe")
+        );
+        assert_eq!(
+            ladder.last().map(|row| row.text.as_str()),
+            Some("Netherite Eff XV")
+        );
+        assert_eq!(
+            ladder.get(PICKAXE_OFFSET).map(|row| row.text.as_str()),
+            Some("Diamond Eff III"),
+            "the counted window no longer starts where UI-EN.md §5.5 drew it"
+        );
+    }
+
+    #[test]
+    fn the_levels_roadmap_is_the_whole_ladder_and_keeps_its_counted_rows() {
+        // The full 1..=LEVEL_CAP, with the wireframe's own rows still verbatim
+        // inside it — that pairing is the reason `counted_levels` exists at all.
+        let levels = sample_levels();
+        assert_eq!(levels.len(), LEVEL_CAP as usize);
+        let level_23 = levels.iter().find(|row| row.level == 23);
+        assert_eq!(
+            level_23.map(|row| row.grants.as_str()),
+            Some("+115 Quartz, +80 A. Debris, +34 Obsidian")
+        );
+        assert_eq!(level_23.map(|row| row.xp), Some(2_300));
     }
 }
