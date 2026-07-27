@@ -22,6 +22,7 @@ mod keymap;
 mod overlay;
 mod palette;
 mod screen;
+mod theme;
 mod toast;
 mod view;
 mod widget;
