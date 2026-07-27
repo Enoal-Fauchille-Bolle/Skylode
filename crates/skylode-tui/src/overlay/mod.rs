@@ -30,8 +30,12 @@ pub mod too_small;
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Style,
+    text::Line,
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
 };
+
+use crate::theme;
 
 /// A modal overlay that captures input.
 ///
@@ -73,8 +77,14 @@ pub(super) fn modal(
     let block = Block::bordered()
         .border_type(BorderType::Plain)
         .title(title.to_owned())
-        .padding(Padding::horizontal(1));
-    frame.render_widget(Paragraph::new(lines.join("\n")).block(block), rect);
+        .padding(Padding::horizontal(1))
+        .border_style(Style::default().fg(theme::MUTED))
+        .title_style(theme::TITLE);
+    // The body goes through `marked` line by line: several modals quote an
+    // affordability (`Cost … Held … ✗`), and a mark must not change meaning by
+    // being drawn inside a box instead of in a list.
+    let body: Vec<Line<'static>> = lines.iter().map(|line| theme::marked(line)).collect();
+    frame.render_widget(Paragraph::new(body).block(block), rect);
 }
 
 /// A square-bordered panel titled `title` — the boot-and-modal class's box, set
@@ -86,6 +96,8 @@ pub(super) fn square(title: &str) -> Block<'static> {
         .title(title.to_owned())
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(theme::MUTED))
+        .title_style(theme::TITLE)
 }
 
 /// Centres a `width × height` box inside `area`.

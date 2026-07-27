@@ -21,13 +21,19 @@ use ratatui::{
     Frame,
     crossterm::event::KeyEvent,
     layout::Rect,
+    style::Style,
     widgets::{Block, BorderType, Borders, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
-use crate::{action::Action, view::View};
+use crate::{action::Action, theme, view::View};
 
 /// A rounded, fully-bordered panel with the given title — the box shape every
 /// real screen shares, spelled once so a title style change lands everywhere.
+///
+/// That last clause is now load-bearing rather than aspirational: the border and
+/// the title take their colours from [`crate::theme`] *here*, so every bordered box
+/// on all six screens is one edit away from a different look, and none of them can
+/// drift from the others by being styled at its own call site.
 ///
 /// Returns `Block<'static>`, not `Block<'_>`: the block **owns** its title (that
 /// `to_owned` is why), so tying the output's lifetime to the borrowed `title`
@@ -38,6 +44,8 @@ pub(super) fn panel(title: &str) -> Block<'static> {
         .title(title.to_owned())
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::MUTED))
+        .title_style(theme::TITLE)
 }
 
 /// Draws a vertical scrollbar of `content_length` items with the thumb at
@@ -47,13 +55,20 @@ pub(super) fn panel(title: &str) -> Block<'static> {
 /// draw the same bar. `content_length` is the whole list's length — the *ladder*,
 /// not the window — so the thumb's size reflects how much of it is off-screen; a
 /// zero length renders nothing, which is ratatui's own guard, not ours.
+///
+/// The thumb takes [`theme::ACCENT`] and the track [`theme::MUTED`], which is the
+/// same pairing the status gauges use for their filled and unfilled halves — a
+/// scrollbar and a gauge are both "how far along this are you", so they should not
+/// answer that in two different colours.
 pub(super) fn scrollbar(frame: &mut Frame, area: Rect, content_length: usize, position: usize) {
     let mut state = ScrollbarState::new(content_length).position(position);
     let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)
         .track_symbol(Some("░"))
-        .thumb_symbol("█");
+        .thumb_symbol("█")
+        .track_style(Style::default().fg(theme::MUTED))
+        .thumb_style(Style::default().fg(theme::ACCENT));
     frame.render_stateful_widget(bar, area, &mut state);
 }
 

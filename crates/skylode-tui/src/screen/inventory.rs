@@ -17,12 +17,13 @@ use ratatui::{
     Frame,
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
+    style::Style,
     text::Line,
     widgets::Paragraph,
 };
 use skylode_core::tunables::RAW_PER_COMPRESSED;
 
-use crate::{action::Action, format::grouped, screen::panel, view::View};
+use crate::{action::Action, format::grouped, screen::panel, theme, view::View};
 
 /// The Compress panel's fixed width; the table takes the rest of the row.
 const COMPRESS_WIDTH: u16 = 32;
@@ -38,7 +39,10 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     compress(frame, compress_area, view);
 
     let footer = " ↑↓  select     c  compress     C  decompress     Tab  next screen";
-    frame.render_widget(Paragraph::new(footer), footer_area);
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::default().fg(theme::MUTED)),
+        footer_area,
+    );
 }
 
 /// The material table: a header, then one row per material, the cursor marked `▸`.
@@ -47,16 +51,20 @@ fn table(frame: &mut Frame, area: Rect, view: &View) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines = vec![Line::from(row("   ", "Material", "Compressed", "Raw"))];
+    let mut lines = vec![
+        Line::from(row("   ", "Material", "Compressed", "Raw"))
+            .style(Style::default().fg(theme::MUTED)),
+    ];
     for (index, item) in view.inventory.rows.iter().enumerate() {
         // The cursor is a mark, not a highlight style, so it survives a colourless
-        // terminal and reads the same way the `▸` on Levels and Stats does.
+        // terminal and reads the same way the `▸` on Levels and Stats does. Its
+        // colour is derived from that same glyph, so the two cannot disagree.
         let mark = if index == view.inventory.selected {
             " ▸ "
         } else {
             "   "
         };
-        lines.push(Line::from(row(
+        lines.push(theme::marked(&row(
             mark,
             &item.material,
             &grouped(item.compressed),

@@ -14,7 +14,8 @@ use ratatui::{
     Frame,
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
-    text::Line,
+    style::Style,
+    text::{Line, Span},
     widgets::Paragraph,
 };
 
@@ -22,6 +23,7 @@ use crate::{
     action::Action,
     format::justified,
     screen::{panel, scrollbar},
+    theme,
     view::{UpgradeSubtab, UpgradeTab, UpgradesView, View},
 };
 
@@ -45,7 +47,10 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     list(frame, list_area, subtab);
     detail(frame, detail_area, subtab);
 
-    frame.render_widget(Paragraph::new(subtab.footer.as_str()), footer_area);
+    frame.render_widget(
+        Paragraph::new(subtab.footer.as_str()).style(Style::default().fg(theme::MUTED)),
+        footer_area,
+    );
 }
 
 /// The sub-tab bar: the three names with the active one bracketed, and the two
@@ -59,14 +64,56 @@ fn subtab_bar(frame: &mut Frame, area: Rect, upgrades: &UpgradesView) {
             format!(" {name} ")
         }
     };
-    let left = format!(
-        " {} {} {}",
-        label(UpgradeTab::Pickaxe),
-        label(UpgradeTab::Enchants),
-        label(UpgradeTab::Mines),
+    // Assembled in three plain pieces so the accented one can be located **by
+    // construction**. Searching the finished string for its `[` would work today and
+    // would be a trap the moment a label or a hint grew a bracket of its own.
+    let mut before = " ".to_owned();
+    let mut active = String::new();
+    let mut after = String::new();
+    for (index, tab) in [UpgradeTab::Pickaxe, UpgradeTab::Enchants, UpgradeTab::Mines]
+        .into_iter()
+        .enumerate()
+    {
+        let piece = if index == 0 {
+            label(tab)
+        } else {
+            format!(" {}", label(tab))
+        };
+        if tab == upgrades.active {
+            active = piece;
+        } else if active.is_empty() {
+            before.push_str(&piece);
+        } else {
+            after.push_str(&piece);
+        }
+    }
+
+    // Justified on the assembled plain text, exactly as before: the padding is a
+    // property of the whole row, so it is computed once, on the whole row.
+    let line = justified(
+        &format!("{before}{active}{after}"),
+        "⇧←→  sub-tab           M  max ",
+        area.width as usize,
     );
-    let line = justified(&left, "⇧←→  sub-tab           M  max ", area.width as usize);
-    frame.render_widget(Paragraph::new(line), area);
+    // The tail is whatever `justified` added — the pad and the right-hand hints. Its
+    // start is the column count of the three pieces, which is known rather than
+    // searched for. `chars`, not bytes: `⇧←→` is multi-byte and one column each.
+    let used = before.chars().count() + active.chars().count() + after.chars().count();
+    let tail: String = line.chars().skip(used).collect();
+
+    // Muted as a whole with the bracketed name lifted back out in the accent — the
+    // top tab bar's relationship, one level down. The brackets stay: they are what
+    // tells the active sub-tab apart once the hue is gone.
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(before),
+            Span::styled(active, Style::default().fg(theme::ACCENT)),
+            Span::raw(after),
+            Span::raw(tail),
+        ]))
+        .style(Style::default().fg(theme::MUTED)),
+        area,
+    );
 }
 
 /// The display name of a sub-tab.
@@ -91,17 +138,26 @@ fn master_detail(frame: &mut Frame, area: Rect) -> (Rect, Rect) {
 
     let divider_x = inner.x + LEFT_WIDTH;
     let bottom = area.y + area.height.saturating_sub(1);
+    // The divider is part of the box, so it has to be styled like the box. `panel`
+    // colours its borders through `Block::border_style`, which never reaches these
+    // hand-written cells — they are patched in *after* the block rendered — so the
+    // style is set here explicitly or the divider draws in the default colour and
+    // cuts a bright line through a muted frame.
+    let border = Style::default().fg(theme::MUTED);
     let buffer = frame.buffer_mut();
     for y in inner.y..inner.y + inner.height {
         if let Some(cell) = buffer.cell_mut((divider_x, y)) {
             cell.set_symbol("│");
+            cell.set_style(border);
         }
     }
     if let Some(cell) = buffer.cell_mut((divider_x, area.y)) {
         cell.set_symbol("┬");
+        cell.set_style(border);
     }
     if let Some(cell) = buffer.cell_mut((divider_x, bottom)) {
         cell.set_symbol("┴");
+        cell.set_style(border);
     }
 
     let list = Rect {
@@ -136,7 +192,7 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
     let mut lines: Vec<Line> = subtab
         .header
         .iter()
-        .map(|h| Line::from(h.clone()))
+        .map(|h| Line::from(h.clone()).style(Style::default().fg(theme::MUTED)))
         .collect();
     for row in &subtab.rows {
         // Two mark channels: the cursor/current mark leads the row, the reachability
@@ -150,8 +206,10 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
         };
         // Flush right, so the reachability marks line up as a column and a long
         // row's own text can never crowd into its mark.
+        // Both channels are coloured by the same pass, because both are marks: the
+        // lead takes accent or magenta, the trailing `✓ ~ ✗` its reachability hue.
         let line = justified(&format!("{lead}{}", row.text), &row.mark, width);
-        lines.push(Line::from(line));
+        lines.push(theme::marked(&line));
     }
     frame.render_widget(Paragraph::new(lines), rows_area);
 
@@ -170,11 +228,9 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
 
 /// The detail pane: the selected entry's block of text, laid out in the fixture.
 fn detail(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
-    let lines: Vec<Line> = subtab
-        .detail
-        .iter()
-        .map(|l| Line::from(l.clone()))
-        .collect();
+    // Through `marked` too: the dip block quotes the affordability of what is
+    // selected, so the same `✓ ~ ✗` appear here as in the list beside it.
+    let lines: Vec<Line> = subtab.detail.iter().map(|l| theme::marked(l)).collect();
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -185,7 +241,7 @@ pub fn map_key(_key: KeyEvent) -> Option<Action> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
     use super::*;
 
@@ -353,5 +409,57 @@ mod tests {
         assert!(footer(&render_tab(UpgradeTab::Pickaxe)).contains("buy max"));
         assert!(footer(&render_tab(UpgradeTab::Enchants)).contains("buy one level"));
         assert!(footer(&render_tab(UpgradeTab::Enchants)).contains("buy to cap"));
+    }
+
+    /// The foreground of the first cell drawn with `glyph`. See the same helper on
+    /// the Mines screen for why the lookup goes through the glyph.
+    fn fg_of(buffer: &Buffer, glyph: &str) -> Option<Color> {
+        buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == glyph)
+            .map(|cell| cell.fg)
+    }
+
+    #[test]
+    fn both_mark_channels_keep_their_glyph_and_take_their_colour() {
+        // The one screen with two mark columns at once: the lead mark on the left
+        // and the reachability mark flush right. One `marked` pass colours both,
+        // which is what keeps them from drifting apart.
+        let buffer = render_tab(UpgradeTab::Pickaxe);
+        assert_eq!(fg_of(&buffer, "●"), Some(theme::CURRENT));
+        assert_eq!(fg_of(&buffer, "✓"), Some(theme::AFFORDABLE));
+        assert_eq!(fg_of(&buffer, "✗"), Some(theme::REFUSED));
+    }
+
+    #[test]
+    fn the_active_sub_tab_keeps_its_accent_over_the_bars_own_style() {
+        // The bar sets a muted style on the whole `Paragraph` *and* an accent on one
+        // span inside it. Which wins is a ratatui merging rule, not something this
+        // screen controls — so it is asserted rather than assumed. Row 0, and the
+        // `[` of the bracketed name is the first cell of the accented span.
+        let buffer = render_tab(UpgradeTab::Enchants);
+        let bracket = (0..buffer.area.width)
+            .map(|x| &buffer[(x, 0)])
+            .find(|cell| cell.symbol() == "[");
+        assert_eq!(bracket.map(|cell| cell.fg), Some(theme::ACCENT));
+
+        // And the inactive names really did take the muted style, or the accent
+        // above would be distinguishing nothing.
+        let inactive = (0..buffer.area.width)
+            .map(|x| &buffer[(x, 0)])
+            .find(|cell| cell.symbol() == "P");
+        assert_eq!(inactive.map(|cell| cell.fg), Some(theme::MUTED));
+    }
+
+    #[test]
+    fn the_hand_patched_divider_matches_the_border_it_joins() {
+        // The divider is written straight into the buffer, so `Block::border_style`
+        // never reaches it. Left unstyled it would cut a bright line down a muted
+        // box — the one place in the crate where a colour can be forgotten silently.
+        let buffer = render_tab(UpgradeTab::Pickaxe);
+        assert_eq!(fg_of(&buffer, "┬"), Some(theme::MUTED));
+        assert_eq!(fg_of(&buffer, "┴"), Some(theme::MUTED));
+        assert_eq!(fg_of(&buffer, "╭"), Some(theme::MUTED), "the border moved");
     }
 }

@@ -14,11 +14,13 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
+    style::Style,
+    text::Line,
     widgets::{Clear, Paragraph},
 };
 
 use super::square;
-use crate::{config::Config, screen::Screen};
+use crate::{config::Config, screen::Screen, theme};
 
 /// The globals — the "Anywhere" block, shown whatever screen Help was opened from.
 const GLOBALS: [&str; 10] = [
@@ -91,11 +93,19 @@ pub fn render(frame: &mut Frame, area: Rect, screen: Screen, config: &Config) {
         Paragraph::new(keys.join("\n")).block(square(" Keys ")),
         left,
     );
+    // The legend through `marked`, which makes it demonstrate what it explains: the
+    // `✓` on the line reading "you can buy it" is drawn in the very colour the
+    // player will meet on the Upgrades list. A legend printing its marks in a
+    // different colour from the screens would be teaching the wrong thing.
+    let legend: Vec<Line<'static>> = LEGEND.iter().map(|line| theme::marked(line)).collect();
     frame.render_widget(
-        Paragraph::new(LEGEND.join("\n")).block(square(" Reading the screen ")),
+        Paragraph::new(legend).block(square(" Reading the screen ")),
         right,
     );
-    frame.render_widget(Paragraph::new(" Esc  or  ?   close"), footer_area);
+    frame.render_widget(
+        Paragraph::new(" Esc  or  ?   close").style(Style::default().fg(theme::MUTED)),
+        footer_area,
+    );
 }
 
 /// The bindings unique to `screen` — the "On this screen" block, empty on Mine,

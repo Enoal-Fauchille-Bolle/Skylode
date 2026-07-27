@@ -16,6 +16,7 @@ use ratatui::{
     Frame,
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
+    style::Style,
     text::Line,
     widgets::Paragraph,
 };
@@ -25,6 +26,7 @@ use crate::{
     action::Action,
     format::{grouped, justified},
     screen::{panel, scrollbar},
+    theme,
     view::View,
 };
 
@@ -59,7 +61,8 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     // way the frame keeps them apart (`1 300  ░`).
     let width = (rows_area.width as usize).saturating_sub(2);
     frame.render_widget(
-        Paragraph::new(justified("    Lv    Grants", "XP", width)),
+        Paragraph::new(justified("    Lv    Grants", "XP", width))
+            .style(Style::default().fg(theme::MUTED)),
         header_area,
     );
 
@@ -77,7 +80,10 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
                 row.level,
                 row.grants,
             );
-            Line::from(justified(&left, &grouped(row.xp), width))
+            // This is the row the whole mark palette was designed around: on the
+            // current level the cursor and the position render adjacent as `▸●`,
+            // so the two must not collapse into one colour.
+            theme::marked(&justified(&left, &grouped(row.xp), width))
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
@@ -86,7 +92,10 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
 
     let footer =
         format!(" ↑↓  scroll     Home  jump to Lv {current}     Tab  next screen     ?  help");
-    frame.render_widget(Paragraph::new(footer), footer_area);
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::default().fg(theme::MUTED)),
+        footer_area,
+    );
 }
 
 /// The four-column mark field: which of `✓ ● ▸` (or a pair) a level shows.

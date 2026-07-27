@@ -12,6 +12,7 @@ use color_eyre::Result;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Rect},
+    style::{Modifier, Style},
     widgets::Tabs,
 };
 
@@ -22,6 +23,7 @@ use crate::{
     keymap,
     overlay::{Modal, help, too_small},
     screen::Screen,
+    theme,
     toast::{TOAST_TTL, Toasts},
     view::View,
 };
@@ -162,12 +164,28 @@ impl App {
     /// discoverable without opening help — and the prestige readout that used to
     /// share this row was dropped precisely to keep six numbered tabs fitting in
     /// 80 columns (UI-EN.md §5.7.5).
+    ///
+    /// **Both styles are stated, though ratatui's default highlight is already
+    /// reversed.** UI.md §3 requires the selected tab to be reverse video rather
+    /// than bracketed, and relying on a library default to satisfy a documented
+    /// requirement means a future ratatui release could change the interface
+    /// without changing this crate. Adding [`theme::ACCENT`] on top is what makes
+    /// the reversed block read as the same "you are here" hue the list cursor and
+    /// the gauges use.
     fn render_tabs(&self, frame: &mut Frame, area: Rect) {
         let titles = Screen::ALL
             .iter()
             .enumerate()
             .map(|(position, screen)| format!(" {} {} ", position + 1, screen.title()));
-        let tabs = Tabs::new(titles).select(self.screen.index()).divider("│");
+        let tabs = Tabs::new(titles)
+            .select(self.screen.index())
+            .divider("│")
+            .style(Style::default().fg(theme::MUTED))
+            .highlight_style(
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::REVERSED),
+            );
         frame.render_widget(tabs, area);
     }
 }

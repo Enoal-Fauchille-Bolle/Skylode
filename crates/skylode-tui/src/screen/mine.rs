@@ -14,13 +14,13 @@ use ratatui::{
     Frame,
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::Line,
     widgets::{LineGauge, Paragraph},
 };
 use skylode_core::tunables::RAW_PER_COMPRESSED;
 
-use crate::{action::Action, format::grouped, screen::panel, view::View, widget::MineGrid};
+use crate::{action::Action, format::grouped, screen::panel, theme, view::View, widget::MineGrid};
 
 /// The grid panel's fixed width — 40 columns of content plus its two borders. A
 /// 12-wide mine is 24 columns and centres inside it; the largest mine still fits.
@@ -190,21 +190,33 @@ fn gauges(frame: &mut Frame, area: Rect, view: &View) {
 }
 
 /// Draws one `LineGauge` with a fixed-width label so its bar aligns with the rest.
+///
+/// The filled half takes [`theme::ACCENT`] and the empty half [`theme::MUTED`],
+/// which is the same pair `screen::scrollbar` uses: both widgets answer "how far
+/// along are you", and answering it in two colours would invent a distinction
+/// neither of them makes.
 fn gauge(frame: &mut Frame, area: Rect, label: &str, ratio: f64) {
     let gauge = LineGauge::default()
         .label(format!("{label:<GAUGE_LABEL_WIDTH$}"))
         .ratio(ratio)
         .filled_symbol("█")
         .unfilled_symbol("░")
-        .filled_style(Style::default().fg(Color::White))
-        .unfilled_style(Style::default().fg(Color::DarkGray));
+        .filled_style(Style::default().fg(theme::ACCENT))
+        .unfilled_style(Style::default().fg(theme::MUTED));
     frame.render_widget(gauge, area);
 }
 
 /// The footer line — the screen-local bindings; `q`/`s` stay off it by design.
+///
+/// Muted, like every other footer: a key hint is the least urgent thing on the
+/// screen, and the whole point of giving the chrome a de-emphasised colour is that
+/// the rows above it can then be read without competition.
 fn footer(frame: &mut Frame, area: Rect) {
     let line = " Space  mine     Tab  next screen     ?  help";
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().fg(theme::MUTED)),
+        area,
+    );
 }
 
 /// A ratio clamped into the unit range that `LineGauge::ratio` demands.

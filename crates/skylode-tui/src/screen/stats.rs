@@ -15,6 +15,7 @@ use ratatui::{
     Frame,
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
+    style::Style,
     text::Line,
     widgets::Paragraph,
 };
@@ -24,6 +25,7 @@ use crate::{
     action::Action,
     format::{grouped, justified},
     screen::panel,
+    theme,
     view::View,
 };
 
@@ -47,7 +49,10 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     history(frame, history_area, view);
 
     let footer = " ↑↓  scroll history     p  prestige     Tab  next screen     ?  help";
-    frame.render_widget(Paragraph::new(footer), footer_area);
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::default().fg(theme::MUTED)),
+        footer_area,
+    );
 }
 
 /// The Progression panel: level, XP, the worlds, prestige, and lifetime counters.
@@ -82,7 +87,7 @@ fn progression(frame: &mut Frame, area: Rect, view: &View) {
             "✗"
         };
         let left = format!(" {:<11}Lv {}", world.name(), world.unlock_level());
-        lines.push(Line::from(justified(
+        lines.push(theme::marked(&justified(
             &left,
             ok,
             width.saturating_sub(RIGHT_MARGIN),
@@ -131,7 +136,7 @@ fn this_run(frame: &mut Frame, area: Rect, view: &View) {
                 " "
             };
             let left = format!(" {mark}  {}", milestone.text);
-            Line::from(justified(
+            theme::marked(&justified(
                 &left,
                 &milestone.detail,
                 width.saturating_sub(RIGHT_MARGIN),

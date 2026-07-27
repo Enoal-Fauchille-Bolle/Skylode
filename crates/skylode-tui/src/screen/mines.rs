@@ -16,12 +16,13 @@ use ratatui::{
     Frame,
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
-    text::Line,
+    style::Style,
+    text::{Line, Span},
     widgets::Paragraph,
 };
 use skylode_core::world::World;
 
-use crate::{action::Action, format::justified, screen::panel, view::View};
+use crate::{action::Action, format::justified, screen::panel, theme, view::View};
 
 /// The list panel's fixed width; the detail pane takes the rest of the row.
 const LIST_WIDTH: u16 = 38;
@@ -44,7 +45,10 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     detail(frame, detail_area, view);
 
     let footer = " ↑↓  select     Enter  mine it     ← →  richness dial     Tab  next screen";
-    frame.render_widget(Paragraph::new(footer), footer_area);
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::default().fg(theme::MUTED)),
+        footer_area,
+    );
 }
 
 /// The mine list, grouped under three world headers, the cursor marked `▸`.
@@ -68,7 +72,9 @@ fn list(frame: &mut Frame, area: Rect, view: &View) {
             };
             format!("Lv {}  {tick}", world.unlock_level())
         };
-        lines.push(Line::from(justified(
+        // `marked` after `justified`, never before: the padding is computed across
+        // the whole row, so styling has to be the last thing that happens to it.
+        lines.push(theme::marked(&justified(
             &format!(" {}", world.name()),
             &status,
             width,
@@ -81,7 +87,7 @@ fn list(frame: &mut Frame, area: Rect, view: &View) {
                 "   "
             };
             let left = format!("{mark}{}", row.kind.name());
-            lines.push(Line::from(justified(&left, &row.detail, width)));
+            lines.push(theme::marked(&justified(&left, &row.detail, width)));
         }
     }
     frame.render_widget(Paragraph::new(lines), inner);
@@ -106,8 +112,9 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
             selected.value_material().name(),
         )),
         Line::from(""),
-        Line::from(format!(" World      {}", detail.world_line)),
-        Line::from(format!(" Gate       {}", detail.gate_line)),
+        // Both carry a `✓`/`✗` of their own, so both go through `marked`.
+        theme::marked(&format!(" World      {}", detail.world_line)),
+        theme::marked(&format!(" Gate       {}", detail.gate_line)),
         Line::from(format!(
             " Size       {width} x {height} = {}    level {}",
             width * height,
@@ -128,12 +135,19 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
     // pure gain and the block is a flat readout rather than a slider.
     if selected.common_material() != selected.value_material() {
         let filled = (detail.value_percent as usize * DIAL_WIDTH) / 100;
-        let bar = format!(
-            "{}{}",
-            "█".repeat(filled),
-            "░".repeat(DIAL_WIDTH.saturating_sub(filled)),
-        );
-        lines.push(Line::from(format!(" Dial   ◄ {bar} ►")));
+        // Spans rather than `marked` here: `█` and `░` are not marks, and this row
+        // is built by `format!` alone — no `justified` padding to preserve — so the
+        // two halves can be split safely. Same accent/muted pair as the gauges and
+        // the scrollbar, because the dial is one more "how far along" bar.
+        lines.push(Line::from(vec![
+            Span::raw(" Dial   ◄ "),
+            Span::styled("█".repeat(filled), Style::default().fg(theme::ACCENT)),
+            Span::styled(
+                "░".repeat(DIAL_WIDTH.saturating_sub(filled)),
+                Style::default().fg(theme::MUTED),
+            ),
+            Span::raw(" ►"),
+        ]));
         lines.push(Line::from(format!("        {}", detail.dial_split)));
         lines.push(Line::from(""));
         lines.push(Line::from("        free, reversible, any time"));

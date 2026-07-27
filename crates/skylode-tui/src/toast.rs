@@ -18,8 +18,11 @@ use std::time::{Duration, Instant};
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Style,
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
+
+use crate::theme;
 
 /// How long a toast stays up before [`Toasts::prune`] drops it.
 pub const TOAST_TTL: Duration = Duration::from_secs(3);
@@ -112,9 +115,14 @@ impl Toasts {
 
         // Clear first: without it the panel underneath bleeds through the gaps.
         frame.render_widget(Clear, rect);
+        // The accent on the border, not the muted grey every other box takes: a
+        // toast is the one overlay with no title to carry emphasis, and it is
+        // announcing something that just happened. Muting it would hide the only
+        // element on screen whose whole purpose is to be noticed within 3 seconds.
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded);
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme::ACCENT));
         frame.render_widget(
             Paragraph::new(toast.text.clone()).block(block).centered(),
             rect,
