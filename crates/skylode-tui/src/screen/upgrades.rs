@@ -23,7 +23,7 @@ use ratatui::{
 use crate::{
     action::Action,
     format::justified,
-    screen::{panel, scrollbar},
+    screen::{panel, scrollbar, window},
     theme,
     view::{UpgradeSubtab, UpgradeTab, UpgradesView, View},
 };
@@ -181,27 +181,23 @@ fn master_detail(frame: &mut Frame, area: Rect) -> (Rect, Rect) {
         cell.set_style(border);
     }
 
-    let list = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: LEFT_WIDTH,
-        height: inner.height,
-    };
-    let detail = Rect {
-        x: divider_x + 1,
-        y: inner.y,
-        width: inner.width.saturating_sub(LEFT_WIDTH + 1),
-        height: inner.height,
-    };
     (list, detail)
 }
 
 /// The master list: the header rows, then the entries, with a scrollbar on the two
 /// sub-tabs that overflow.
 fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
+    // How many rows fit, and therefore whether this list scrolls at all — both read
+    // off the `Rect` rather than off the view. Reserving the scrollbar column narrows
+    // the rows but not their number, so the count is taken first and stands.
+    let header_rows = u16::try_from(subtab.header.len()).unwrap_or(u16::MAX);
+    let visible = usize::from(area.height.saturating_sub(header_rows));
+    let range = window(subtab.rows.len(), subtab.cursor(), subtab.offset, visible);
+    let scrolls = subtab.rows.len() > visible;
+
     // Reserve the last column for a scrollbar only when the list scrolls; otherwise
     // the rows have the full width.
-    let (rows_area, bar_area) = if subtab.scroll.is_some() {
+    let (rows_area, bar_area) = if scrolls {
         let [rows, bar] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).areas(area);
         (rows, Some(bar))
@@ -215,7 +211,7 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
         .iter()
         .map(|h| Line::from(h.clone()).style(Style::default().fg(theme::MUTED)))
         .collect();
-    for row in &subtab.rows {
+    for row in &subtab.rows[range.clone()] {
         // Two mark channels: the cursor/current mark leads the row, the reachability
         // mark sits flush right where the eye scans a column of `✓ ~ ✗`.
         let lead = if row.cursor {
@@ -235,15 +231,17 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
     frame.render_widget(Paragraph::new(lines), rows_area);
 
     // The scrollbar aligns with the rows, so it starts below the header — the
-    // frame draws no thumb beside the column titles.
-    if let (Some(bar_area), Some((total, position))) = (bar_area, subtab.scroll) {
-        let offset = subtab.header.len() as u16;
+    // frame draws no thumb beside the column titles. Its position is the window's
+    // own start, not the view's stored offset: `window` may have moved it to keep
+    // the cursor on screen, and a thumb pointing at where the list *used* to be
+    // would be reporting a scroll that did not happen.
+    if let Some(bar_area) = bar_area {
         let bar = Rect {
-            y: bar_area.y + offset,
-            height: bar_area.height.saturating_sub(offset),
+            y: bar_area.y + header_rows,
+            height: bar_area.height.saturating_sub(header_rows),
             ..bar_area
         };
-        scrollbar(frame, bar, total, position);
+        scrollbar(frame, bar, subtab.rows.len(), range.start);
     }
 }
 
@@ -268,7 +266,12 @@ mod tests {
 
     /// Renders `view` through the Upgrades screen into an 80×24 buffer.
     fn render_view(view: &View) -> Buffer {
-        let mut terminal = match Terminal::new(TestBackend::new(80, 24)) {
+        render_view_sized(view, 80, 24)
+    }
+
+    /// The same, at an arbitrary size — for the responsive assertions.
+    fn render_view_sized(view: &View, width: u16, height: u16) -> Buffer {
+        let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
             Ok(terminal) => terminal,
             Err(infallible) => match infallible {},
         };
@@ -430,6 +433,72 @@ mod tests {
         assert!(footer(&render_tab(UpgradeTab::Pickaxe)).contains("buy max"));
         assert!(footer(&render_tab(UpgradeTab::Enchants)).contains("buy one level"));
         assert!(footer(&render_tab(UpgradeTab::Enchants)).contains("buy to cap"));
+    }
+
+    /// How many of the ladder's rungs the buffer actually shows.
+    ///
+    /// Counted **per row of the list panel**, not by searching the panel for each
+    /// rung's label: every rung label is a prefix of the next (`Netherite Eff I`
+    /// lives inside `Netherite Eff II`), so a `contains` per label overcounts. Every
+    /// rung says either `Pickaxe` or ` Eff `, so one match per drawn row is exact —
+    /// **once the rows outside the box are excluded**. The sub-tab bar's own
+    /// `[Pickaxe]` sits on row 0 and would otherwise count as a rung; a row of the
+    /// list is one that opens on the box's left border.
+    fn rungs_drawn(buffer: &Buffer) -> usize {
+        list_panel(buffer)
+            .lines()
+            .filter(|line| line.starts_with('│'))
+            .filter(|line| line.contains("Pickaxe") || line.contains(" Eff "))
+            .count()
+    }
+
+    #[test]
+    fn a_taller_terminal_shows_more_of_the_ladder() {
+        // The screenshot's complaint, as an assertion. The ladder is 46 rungs; at
+        // 80×24 twenty of them fit, and the rest of the box used to stay empty
+        // however much room the terminal had, because the view carried twenty rows
+        // and no more.
+        let view = View::sample();
+        let counted = rungs_drawn(&render_view_sized(&view, 80, 24));
+        let tall = rungs_drawn(&render_view_sized(&view, 80, 48));
+        assert_eq!(counted, 20, "the counted frame no longer shows 20 rungs");
+        assert!(
+            tall > counted,
+            "a 48-row terminal drew {tall} rungs, no more than the {counted} at 24"
+        );
+        // And never more than exist — a window past the end of the list would be a
+        // panic, so its absence is worth stating.
+        assert!(tall <= view.upgrades.pickaxe.rows.len());
+    }
+
+    #[test]
+    fn a_tall_enough_terminal_shows_the_whole_ladder_and_drops_the_scrollbar() {
+        // 46 rungs plus the chrome fit in 48 rows, so nothing is cut off — and the
+        // scrollbar goes away, because whether one is drawn is now `rows > visible`
+        // rather than a flag the fixture set once.
+        let view = View::sample();
+        let buffer = render_view_sized(&view, 80, 50);
+        assert_eq!(rungs_drawn(&buffer), view.upgrades.pickaxe.rows.len());
+        assert!(
+            !whole_frame(&buffer).contains('█'),
+            "a list that fits still drew a scrollbar"
+        );
+    }
+
+    #[test]
+    fn a_wider_terminal_widens_both_panes_and_moves_the_divider_with_them() {
+        // The other half of the screenshot: the list stayed 35 columns while the
+        // detail pane took every spare one. Now the divider sits proportionally,
+        // which is the visible proof that both sides grew.
+        let view = View::sample();
+        let divider = |width: u16| {
+            let buffer = render_view_sized(&view, width, 24);
+            (0..width).find(|x| buffer[(*x, 1)].symbol() == "┬")
+        };
+        assert_eq!(divider(80), Some(36), "the counted divider moved");
+        // 160 columns: 158 inside the box, less the divider, split 35 : 42 — so the
+        // list gets 71 and the divider lands at 72.
+        assert_eq!(divider(160), Some(72));
     }
 
     /// The foreground of the first cell drawn with `glyph`. See the same helper on

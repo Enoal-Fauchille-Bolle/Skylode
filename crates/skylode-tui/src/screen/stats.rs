@@ -24,7 +24,7 @@ use skylode_core::{tunables::LEVEL_CAP, world::World};
 use crate::{
     action::Action,
     format::{grouped, justified},
-    screen::panel,
+    screen::{panel, window},
     theme,
     view::View,
 };
@@ -46,8 +46,11 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
     // Progression fills the left; the right column stacks This run over History.
-    let [left, right] =
-        Layout::horizontal([Constraint::Length(30), Constraint::Min(0)]).areas(body);
+    let [left, right] = Layout::horizontal([
+        Constraint::Fill(PROGRESSION_WEIGHT),
+        Constraint::Fill(RIGHT_COLUMN_WEIGHT),
+    ])
+    .areas(body);
     progression(frame, left, view);
 
     let [this_run_area, history_area] =
@@ -159,9 +162,17 @@ fn history(frame: &mut Frame, area: Rect, view: &View) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let lines: Vec<Line> = view
-        .stats
-        .history
+    // The log is newest-first and has no selection of its own, so the cursor is
+    // pinned to its head: the window then only ever slides when the *player* scrolls
+    // it, never to chase a selection that does not exist.
+    let history = &view.stats.history;
+    let range = window(
+        history.len(),
+        view.stats.history_offset,
+        view.stats.history_offset,
+        usize::from(inner.height),
+    );
+    let lines: Vec<Line> = history[range]
         .iter()
         .map(|entry| Line::from(format!(" {entry}")))
         .collect();

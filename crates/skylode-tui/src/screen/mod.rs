@@ -27,6 +27,8 @@ mod mines;
 mod stats;
 mod upgrades;
 
+use std::ops::Range;
+
 use ratatui::{
     Frame,
     crossterm::event::KeyEvent,
@@ -80,6 +82,46 @@ pub(super) fn scrollbar(frame: &mut Frame, area: Rect, content_length: usize, po
         .track_style(Style::default().fg(theme::MUTED))
         .thumb_style(Style::default().fg(theme::ACCENT));
     frame.render_stateful_widget(bar, area, &mut state);
+}
+
+/// The slice of a `total`-long list that a `visible`-row viewport should draw,
+/// given the stored scroll `offset` and where the `cursor` sits.
+///
+/// **Why the offset is an argument and not a return value.** The obvious helper
+/// derives the window from the cursor alone — centre it, clamp to the ends — and
+/// that would be wrong twice over. It would jump the list under the player every
+/// time the selection moved by one, and, because the window would then be a
+/// function of the terminal's height, it would silently redraw the 80×24 frame the
+/// wireframes were counted against. Carrying the offset makes scrolling *minimal*:
+/// the window only moves when it has to, which is [`ratatui::widgets::ListState`]'s
+/// own contract and the reason this is not a novel design.
+///
+/// The three clamps, in the order they must apply:
+///
+/// 1. against `total - visible`, for a viewport that just grew or a list that shrank;
+/// 2. down to `cursor`, when the selection has scrolled off the **top**;
+/// 3. up to `cursor + 1 - visible`, when it has scrolled off the **bottom**.
+///
+/// Everything is `saturating_*` because all three are `usize` and every one of them
+/// underflows in a reachable case — an empty list, a viewport taller than the
+/// content, a cursor at row zero. A wrapped subtraction here would ask for a slice
+/// starting near `usize::MAX` and take the process down over a scroll position.
+///
+/// A `visible` of zero yields an empty range rather than a panic: a screen squeezed
+/// to no rows at all still has to render something, and "nothing" is the answer.
+/// The cursor is clamped into the list for the same reason — an out-of-range one
+/// would push the offset past the end and hand back an **inverted** range, which is
+/// the one shape that panics the moment a caller slices with it.
+pub(super) fn window(total: usize, cursor: usize, offset: usize, visible: usize) -> Range<usize> {
+    if visible == 0 || total == 0 {
+        return 0..0;
+    }
+    let cursor = cursor.min(total - 1);
+    let offset = offset
+        .min(total.saturating_sub(visible))
+        .min(cursor)
+        .max((cursor + 1).saturating_sub(visible));
+    offset..(offset + visible).min(total)
 }
 
 /// One tab of the ring.
@@ -217,6 +259,55 @@ mod tests {
     fn prev_wraps_from_the_first_screen_to_the_last() {
         assert_eq!(Screen::Mines.prev(), Screen::Mine);
         assert_eq!(Screen::Mine.prev(), Screen::Levels);
+    }
+
+    #[test]
+    fn a_list_that_fits_is_never_windowed() {
+        // The whole list, and the offset is ignored rather than obeyed: a stored
+        // offset outlives the resize that made it meaningless.
+        assert_eq!(window(6, 3, 4, 20), 0..6);
+        assert_eq!(window(6, 0, 0, 6), 0..6);
+    }
+
+    #[test]
+    fn a_stored_offset_survives_a_redraw_that_did_not_need_to_move_it() {
+        // The property the counted 80×24 frames depend on: with the cursor already
+        // inside the window, `window` hands back exactly the slice the view asked
+        // for. If this ever fails, every wireframe in UI-EN.md §5 has moved.
+        assert_eq!(window(46, 30, 27, 19), 27..46);
+    }
+
+    #[test]
+    fn a_taller_viewport_scrolls_back_rather_than_running_off_the_end() {
+        // 45 rows of room in a 46-row list: the offset cannot stay at 27 or the
+        // window would ask for rows 27..72. It gives ground to the *first* clamp.
+        assert_eq!(window(46, 30, 27, 45), 1..46);
+    }
+
+    #[test]
+    fn the_window_follows_the_cursor_off_either_edge_by_the_minimum() {
+        // Off the top: the offset drops to the cursor, not to zero and not to a
+        // recentred guess — one row of scroll for one row of movement.
+        assert_eq!(window(46, 26, 27, 19), 26..45);
+        // Off the bottom, from an offset that really is above it: the window slides
+        // just far enough for the cursor to land on the *last* visible row.
+        let range = window(46, 40, 5, 19);
+        assert_eq!(range, 22..41);
+        assert_eq!(range.end - 1, 40);
+        // And a cursor already inside the window moves nothing at all — the clamps
+        // are corrections, not a recentring.
+        assert_eq!(window(46, 40, 27, 19), 27..46);
+    }
+
+    #[test]
+    fn the_degenerate_inputs_yield_an_empty_range_rather_than_a_panic() {
+        // No rows to draw into, no rows to draw, and a cursor past the end — the
+        // last is the one that would invert the range and panic a slicing caller.
+        assert_eq!(window(46, 3, 0, 0), 0..0);
+        assert_eq!(window(0, 0, 0, 20), 0..0);
+        let range = window(46, 999, 0, 19);
+        assert!(range.start <= range.end, "an inverted range: {range:?}");
+        assert_eq!(range, 27..46);
     }
 
     #[test]

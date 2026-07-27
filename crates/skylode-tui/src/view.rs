@@ -10,7 +10,7 @@
 //! Keep it plain data: no methods that decide anything, no `Option`s standing in
 //! for rules. A computation that belongs to the game belongs to the core.
 
-use skylode_core::{block::Block, mine_kind::MineKind};
+use skylode_core::{block::Block, mine_kind::MineKind, pickaxe::PickaxeTier, tunables::LEVEL_CAP};
 
 use crate::palette::ColourMode;
 
@@ -68,20 +68,47 @@ pub struct UpgradeRow {
 /// The detail pane is a **pre-formatted block of lines**, transcribed from the
 /// frame — the dip box, the costs and the affordability are all placeholder prose
 /// the core does not yet answer (phases 5–6), so there is nothing to derive and
-/// the box art travels as text. `scroll` is `Some((total, position))` on the two
-/// sub-tabs that overflow nineteen rows, `None` on Enchants, which fits.
+/// the box art travels as text.
+///
+/// **`rows` is the whole ladder, not the visible slice.** It used to be the slice,
+/// with a `scroll: Option<(total, position)>` beside it saying how much had been cut
+/// off — which meant the view decided how many rows fit, and therefore that a taller
+/// terminal could not show more of them. How many fit is a property of the `Rect`,
+/// so it is now answered where the `Rect` is known: the screen windows this list at
+/// render time through [`crate::screen::window`]. Whether a scrollbar is drawn stops
+/// being data and becomes `rows.len() > visible`.
 #[derive(Clone, Debug)]
 pub struct UpgradeSubtab {
     /// Header rows printed above the list (the column titles), if any.
     pub header: Vec<String>,
-    /// The list rows.
+    /// Every row of the list, in ladder order.
     pub rows: Vec<UpgradeRow>,
-    /// `(total, position)` for the scrollbar, or `None` when the list fits.
-    pub scroll: Option<(usize, usize)>,
+    /// The index of the topmost drawn row — scroll position, not selection.
+    ///
+    /// Carried rather than derived from the cursor because scrolling has to be
+    /// *minimal*: a window recomputed from the selection alone would jump under the
+    /// player on every keypress. The screen adjusts it only when the cursor would
+    /// otherwise fall off an edge, which is what [`crate::screen::window`] does.
+    pub offset: usize,
     /// The detail pane, already laid out line by line.
     pub detail: Vec<String>,
     /// The screen-local footer for this sub-tab.
     pub footer: String,
+}
+
+impl UpgradeSubtab {
+    /// Where the selection sits, as an index into [`Self::rows`].
+    ///
+    /// Derived from the rows' own `cursor` flag rather than stored beside them: two
+    /// copies of "which row is selected" can disagree, and this way the marked row
+    /// and the scrolled-to row are the same fact read twice. The scan is 46 elements
+    /// at worst, once per redraw.
+    ///
+    /// Falls back to `0` when no row claims the cursor — a list has to draw
+    /// somewhere, and refusing would make an empty ladder unrenderable.
+    pub fn cursor(&self) -> usize {
+        self.rows.iter().position(|row| row.cursor).unwrap_or(0)
+    }
 }
 
 /// The Upgrades screen: the three sub-tabs and which one is showing (UI.md §5.4).
@@ -266,7 +293,14 @@ pub struct StatsView {
     /// The run-progress rows of the "This run" panel.
     pub milestones: Vec<Milestone>,
     /// The event history, the toast log verbatim: `20:14  Excavator!  +1 …`.
+    ///
+    /// The whole log, newest first — the panel shows as much of it as its box has
+    /// rows, which on a tall terminal is a good deal more than the ten UI.md §5.7
+    /// had room to draw.
     pub history: Vec<String>,
+    /// The topmost drawn history line. Zero in the fixture: a log read newest-first
+    /// is one nobody scrolls *up* in.
+    pub history_offset: usize,
 }
 
 /// The Pickaxe panel of the Mine screen (UI.md §5.1).
@@ -369,12 +403,17 @@ pub struct View {
     /// display name of its own — "Iron Block" is not derivable from the grid cell
     /// without a table the core does not yet own.
     pub target_name: String,
-    /// The visible window of the Levels roadmap (UI.md §5.6).
+    /// The **whole** Levels roadmap, `1..=LEVEL_CAP` (UI.md §5.6).
     ///
-    /// The **window**, not the whole 1..50 ladder: phase 2 has no scroll state to
-    /// pick a window with, so the fixture *is* the window the frame draws. The
-    /// scrollbar's total comes from the core's `LEVEL_CAP`, not from this length.
+    /// It was the visible window until the screens learned to window their own
+    /// lists; carrying the slice meant a taller terminal could not show more of the
+    /// ladder, because the extra rows were never in the view to begin with.
     pub levels: Vec<LevelRow>,
+    /// The topmost drawn row of that roadmap — scroll position, not selection.
+    ///
+    /// The cursor is `player_level`, so unlike the Upgrades sub-tabs there is
+    /// nothing to derive; only where the window sits is state.
+    pub levels_offset: usize,
     /// The three panels of the Stats screen (UI.md §5.5).
     pub stats: StatsView,
     /// The Inventory table and its compress panel (UI.md §5.3).
@@ -395,6 +434,12 @@ impl View {
     /// These figures are chosen to match the wireframes so a rendered screen can
     /// be compared against the counted frame, not invented independently.
     pub fn sample() -> Self {
+        // **The one line that switches grid fixture.** Swap in
+        // `sample_grid_small_5x5` or `sample_grid_wireframe_12x7` to see the same
+        // screen at another mine size; the `#[expect(dead_code)]` on whichever two
+        // are dormant then turns into a build error naming the one you just woke up,
+        // which is the reminder to clean the attribute off it.
+        let (grid, target) = sample_grid_full_20x10();
         Self {
             player_level: 23,
             xp: 1_240,
@@ -420,11 +465,12 @@ impl View {
             raw_held: 480,
             compressed_held: 2,
             mine_kind: MineKind::Iron,
-            grid: sample_grid(),
-            target: Some((7, 1)),
+            grid,
+            target: Some(target),
             break_ratio: 0.61,
             target_name: "Iron Block".to_owned(),
             levels: sample_levels(),
+            levels_offset: LEVELS_OFFSET,
             stats: sample_stats(),
             inventory: sample_inventory(),
             mines: sample_mines(),
@@ -441,6 +487,86 @@ impl View {
 /// affordability the panes quote are phases 5–6 too. The Pickaxe marks are laid
 /// out to honour the ladder invariant — the `✓` region is a contiguous prefix from
 /// the current rung — so the fixture is a legal ladder, not an arbitrary one.
+/// Roman numerals `I`..=`XV` — exactly the range an Efficiency level can take, since
+/// [`PickaxeTier::efficiency_cap`] tops out at 15 on Netherite.
+const ROMAN: [&str; 15] = [
+    "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV",
+];
+
+/// The rung the fixture's player stands on — dotted `●` in the list.
+const CURRENT_RUNG: &str = "Diamond Eff IV";
+
+/// The rung the fixture's cursor sits on — the tier jump the detail pane warns about.
+const SELECTED_RUNG: &str = "Netherite Pickaxe";
+
+/// The topmost drawn rung at 80×24, which is what makes the counted frame the
+/// counted frame: `window(46, 30, 27, 19)` is `27..46`, and row 27 is
+/// `Diamond Eff III`, exactly as UI-EN.md §5.5 drew it.
+const PICKAXE_OFFSET: usize = 27;
+
+/// The whole pickaxe roadmap — six tiers, each with its Efficiency levels.
+///
+/// **Generated, not transcribed, and that is a change of kind.** The old fixture
+/// held the nineteen rungs that fit an 80×24 window; this holds all 46, because the
+/// window is now the screen's business. The count is not written down anywhere: it
+/// falls out of walking [`PickaxeTier::next`] and asking each tier its
+/// [`efficiency_cap`](PickaxeTier::efficiency_cap) — 5 × (1 + 5) + (1 + 15). If the
+/// core ever raises a cap, this ladder grows with it instead of contradicting it.
+///
+/// The marks are still fixture data (real reachability is a phase-6 core read), and
+/// they are placed **relative to the two named rungs** rather than at hardcoded
+/// indices, so inserting a tier cannot silently slide the `●` onto the wrong row.
+/// They honour the ladder invariant by construction: `""` while owned, then a
+/// contiguous `✓` run, then `~`, then `✗` — never a `✓` after a `✗`.
+fn pickaxe_ladder() -> Vec<UpgradeRow> {
+    let name = |tier: PickaxeTier| match tier {
+        PickaxeTier::Wooden => "Wooden",
+        PickaxeTier::Stone => "Stone",
+        PickaxeTier::Iron => "Iron",
+        PickaxeTier::Gold => "Gold",
+        PickaxeTier::Diamond => "Diamond",
+        PickaxeTier::Netherite => "Netherite",
+    };
+
+    let mut labels = Vec::new();
+    let mut tier = Some(PickaxeTier::Wooden);
+    while let Some(current) = tier {
+        labels.push(format!("{} Pickaxe", name(current)));
+        for level in 1..=usize::from(current.efficiency_cap()) {
+            // `level - 1` cannot underflow: the range starts at one, and a cap of
+            // zero would make the loop body unreachable rather than index at -1.
+            let numeral = ROMAN.get(level - 1).copied().unwrap_or("?");
+            labels.push(format!("{} Eff {numeral}", name(current)));
+        }
+        tier = current.next();
+    }
+
+    // `position` rather than a constant: the two rungs are named, and where they
+    // land is whatever the walk above put them at.
+    let current = labels.iter().position(|l| l == CURRENT_RUNG).unwrap_or(0);
+    let selected = labels.iter().position(|l| l == SELECTED_RUNG).unwrap_or(0);
+
+    labels
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| UpgradeRow {
+            mark: match index {
+                // Owned already, so there is nothing to be able to afford.
+                i if i <= current => "",
+                // Reachable buying every rung from here — the cumulative sense.
+                i if i <= selected => "✓",
+                // The third state: the ore is held, the denomination is not.
+                i if i == selected + 1 => "~",
+                _ => "✗",
+            }
+            .to_owned(),
+            cursor: index == selected,
+            current: index == current,
+            text,
+        })
+        .collect()
+}
+
 fn sample_upgrades() -> UpgradesView {
     /// `(text, mark, cursor, current)` → one row.
     fn r(text: &str, mark: &str, cursor: bool, current: bool) -> UpgradeRow {
@@ -461,28 +587,8 @@ fn sample_upgrades() -> UpgradesView {
 
     let pickaxe = UpgradeSubtab {
         header: Vec::new(),
-        rows: vec![
-            r("Diamond Eff III", "", false, false),
-            r("Diamond Eff IV", "", false, true),
-            r("Diamond Eff V", "✓", false, false),
-            r("Netherite Pickaxe", "✓", true, false),
-            r("Netherite Eff I", "~", false, false),
-            r("Netherite Eff II", "✗", false, false),
-            r("Netherite Eff III", "✗", false, false),
-            r("Netherite Eff IV", "✗", false, false),
-            r("Netherite Eff V", "✗", false, false),
-            r("Netherite Eff VI", "✗", false, false),
-            r("Netherite Eff VII", "✗", false, false),
-            r("Netherite Eff VIII", "✗", false, false),
-            r("Netherite Eff IX", "✗", false, false),
-            r("Netherite Eff X", "✗", false, false),
-            r("Netherite Eff XI", "✗", false, false),
-            r("Netherite Eff XII", "✗", false, false),
-            r("Netherite Eff XIII", "✗", false, false),
-            r("Netherite Eff XIV", "✗", false, false),
-            r("Netherite Eff XV", "✗", false, false),
-        ],
-        scroll: Some((46, 27)),
+        rows: pickaxe_ladder(),
+        offset: PICKAXE_OFFSET,
         detail: lines(&[
             " Netherite Pickaxe             tier jump",
             "",
@@ -517,7 +623,10 @@ fn sample_upgrades() -> UpgradesView {
             r("Excavator   I → II    6", "✗", false, false),
             r("Haste       0 → I     6", "✗", false, false),
         ],
-        scroll: None,
+        // Six tracks, and no terminal this crate will draw into is shorter than the
+        // nineteen rows they fit in — so this sub-tab never scrolls and its offset is
+        // structurally zero rather than merely happening to be.
+        offset: 0,
         detail: lines(&[
             " Explosive                  level II",
             "",
@@ -544,7 +653,16 @@ fn sample_upgrades() -> UpgradesView {
 
     let mines = UpgradeSubtab {
         header: lines(&["   Mine           Track    Next"]),
+        // All twelve mines, both tracks each — the six rows above the counted window
+        // (Stone, Coal and Iron, the three already maxed or nearly so) were the ones
+        // the old fixture cut off to fit nineteen rows.
         rows: vec![
+            r("Stone          Size     maxed", "—", false, false),
+            r("Stone          Richness maxed", "—", false, false),
+            r("Coal           Size     20x10", "~", false, false),
+            r("Coal           Richness 8", "~", false, false),
+            r("Iron           Size     14x8", "✓", false, false),
+            r("Iron           Richness 1", "✓", false, false),
             r("Gold           Size     12x7", "~", false, false),
             r("Gold           Richness 3", "~", false, false),
             r("Lapis          Size     10x6", "✗", false, false),
@@ -564,7 +682,9 @@ fn sample_upgrades() -> UpgradesView {
             r("End            Size     Lv 30", "—", false, false),
             r("End            Richness Lv 30", "—", false, false),
         ],
-        scroll: Some((24, 6)),
+        // Row 6 (`Gold Size`) at the top, which is where the counted frame starts —
+        // `window(24, 21, 6, 18)` is `6..24`, the cursor on `Obsidian Richness`.
+        offset: 6,
         detail: lines(&[
             " Obsidian Mine — richness",
             "",
@@ -743,6 +863,23 @@ fn sample_stats() -> StatsView {
         "19:58  Bought Diamond Pickaxe Efficiency IV",
         "19:51  Richness dial: Obsidian 46% → 64%",
         "19:44  Mine refilled",
+        // Past the ten rows the counted frame had room for. They change nothing at
+        // 80×24 — the window still starts at zero and still ends after ten — and are
+        // what a taller Stats panel now has to show.
+        "19:39  Nuke — 21 blocks cleared",
+        "19:36  Mine refilled",
+        "19:30  Level 22 — +110 Quartz, +77 A. Debris",
+        "19:28  Bought Obsidian richness level 6",
+        "19:22  Excavator!  +1 Compressed Obsidian",
+        "19:15  Explosive — 9 blocks cleared",
+        "19:11  Mine refilled",
+        "19:04  Entered the Obsidian Mine",
+        "18:57  Bought Ancient Debris size 8x5",
+        "18:49  Level 21 — +105 Quartz, +73 A. Debris",
+        "18:42  Jackhammer — 8 blocks",
+        "18:35  Mine refilled",
+        "18:20  Prestige II — ×1.20 on everything",
+        "18:19  Reached 6 540 Amethyst",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -760,18 +897,67 @@ fn sample_stats() -> StatsView {
         this_run: "3h 07m".to_owned(),
         milestones,
         history,
+        history_offset: 0,
     }
 }
 
-/// The Levels roadmap window drawn in UI.md §5.6, levels 13..=31.
+/// The topmost drawn level at 80×24 — index 12, which is level 13.
 ///
-/// Transcribed from the frame rather than generated: `xp` follows `level × 100`
-/// and could be computed, but the grants cannot — `loot_for_level` does not exist
-/// in the core yet — so the whole window is fixture data, kept together so the
-/// screen can be compared row for row against the document it implements. Levels
-/// 15 and 30 grant a world and no loot, which is why their lines look different.
+/// That is the row UI.md §5.6 starts its window on, and `window(50, 22, 12, 19)` is
+/// `12..31`: levels 13..=31, the counted frame exactly.
+const LEVELS_OFFSET: usize = 12;
+
+/// The **whole** Levels roadmap, `1..=LEVEL_CAP`.
+///
+/// It used to be the window UI.md §5.6 drew — levels 13..=31 — because the view
+/// decided what fit. It no longer does, so this is the full ladder and the screen
+/// windows it; [`LEVELS_OFFSET`] is what keeps 13 at the top at 80×24.
+///
+/// **Two sources, deliberately not merged.** The nineteen levels the wireframe
+/// counted stay *verbatim* below, so the frame can still be compared row for row
+/// against the document; every other level gets a generated filler line, because
+/// `loot_for_level` does not exist in the core and inventing thirty-one more
+/// hand-written reward strings would be inventing balance, not fixture data. `xp`
+/// is `level × 100` throughout, which is the curve the counted rows already follow.
 fn sample_levels() -> Vec<LevelRow> {
-    // `(level, grants, xp)` triples, verbatim from the wireframe.
+    let counted = counted_levels();
+    (1..=LEVEL_CAP)
+        .map(|level| {
+            let row = counted.iter().find(|(counted, _, _)| *counted == level);
+            LevelRow {
+                level,
+                grants: row.map_or_else(
+                    || filler_grants(level),
+                    |(_, grants, _)| (*grants).to_owned(),
+                ),
+                // The counted rows keep their transcribed XP rather than a
+                // recomputed one, so a wireframe row stays verbatim to the digit
+                // even if the curve is ever retuned under it.
+                xp: row.map_or(level * 100, |(_, _, xp)| *xp),
+            }
+        })
+        .collect()
+}
+
+/// A stand-in reward line for a level the wireframe never drew.
+///
+/// Keyed off the world the level opens into, so the materials at least name things
+/// the player could plausibly be holding at that point. It is **placeholder prose**
+/// and says nothing about balance — the real bundles arrive with the tick (phase 7).
+fn filler_grants(level: u32) -> String {
+    let (common, value) = match level {
+        1..=14 => ("Stone", "Iron"),
+        15..=29 => ("Netherrack", "Quartz"),
+        _ => ("End Stone", "Amethyst"),
+    };
+    format!("+{} {common}, +{} {value}", level * 10, level * 3)
+}
+
+/// The nineteen rows UI.md §5.6 counted, as `(level, grants, xp)`.
+///
+/// Levels 15 and 30 grant a world and no loot, which is why their lines look
+/// different from the rest.
+fn counted_levels() -> Vec<(u32, &'static str, u32)> {
     [
         (13, "+65 Lapis, +45 Gold, +19 Diamond", 1_300),
         (14, "+70 Lapis, +49 Gold, +21 Diamond", 1_400),
@@ -817,13 +1003,7 @@ fn sample_levels() -> Vec<LevelRow> {
         (30, "The End opens, +1 charge", 3_000),
         (31, "+233 End Stone, +77 Amethyst", 3_100),
     ]
-    .into_iter()
-    .map(|(level, grants, xp)| LevelRow {
-        level,
-        grants: grants.to_owned(),
-        xp,
-    })
-    .collect()
+    .to_vec()
 }
 
 /// The 12x7 grid drawn in UI.md §5.1, cell for cell.

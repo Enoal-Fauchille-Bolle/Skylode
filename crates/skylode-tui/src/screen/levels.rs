@@ -20,12 +20,11 @@ use ratatui::{
     text::Line,
     widgets::Paragraph,
 };
-use skylode_core::tunables::LEVEL_CAP;
 
 use crate::{
     action::Action,
     format::{grouped, justified},
-    screen::{panel, scrollbar},
+    screen::{panel, scrollbar, window},
     theme,
     view::View,
 };
@@ -70,8 +69,16 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     // (phase 7), so the two marks coincide at `player_level` for now.
     let current = view.player_level;
     let selected = view.player_level;
-    let lines: Vec<Line> = view
-        .levels
+
+    // The roadmap is the whole 1..=LEVEL_CAP ladder, so the window is computed here,
+    // against the rows this frame actually has. `selected - 1` is the cursor's index:
+    // levels are one-based and the list is not, and `saturating_sub` covers the
+    // level-zero case the rules never produce but the type still permits.
+    let cursor = (selected as usize).saturating_sub(1);
+    let visible = usize::from(rows_area.height);
+    let range = window(view.levels.len(), cursor, view.levels_offset, visible);
+
+    let lines: Vec<Line> = view.levels[range.clone()]
         .iter()
         .map(|row| {
             let left = format!(
@@ -88,7 +95,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
 
-    roadmap_scrollbar(frame, bar_area, view);
+    roadmap_scrollbar(frame, bar_area, view.levels.len(), range.start);
 
     let footer =
         format!(" ↑↓  scroll     Home  jump to Lv {current}     Tab  next screen     ?  help");
@@ -115,12 +122,13 @@ fn mark(level: u32, current: u32, selected: u32) -> &'static str {
 }
 
 /// Draws the roadmap scrollbar, its thumb sized against the whole 1..50 ladder.
-fn roadmap_scrollbar(frame: &mut Frame, area: Rect, view: &View) {
-    // Position is the first visible level's index into the full ladder, so the
-    // thumb sits where the window is — not where the fixture's own first row is.
-    let first_visible = view.levels.first().map_or(1, |row| row.level);
-    let position = first_visible.saturating_sub(1) as usize;
-    scrollbar(frame, area, LEVEL_CAP as usize, position);
+///
+/// `total` is passed in rather than read from `LEVEL_CAP` here: the view now carries
+/// the entire ladder, so its length *is* the cap, and taking the number from the
+/// list being drawn is what stops the thumb from describing a different list than
+/// the rows beside it. The assertion that the two agree lives in the tests.
+fn roadmap_scrollbar(frame: &mut Frame, area: Rect, total: usize, position: usize) {
+    scrollbar(frame, area, total, position);
 }
 
 /// No contextual bindings yet; `↑↓` scrolls, `Home` jumps to the current level.
@@ -136,8 +144,13 @@ mod tests {
 
     /// Renders the Levels screen alone into an 80×24 buffer.
     fn render_screen() -> Buffer {
+        render_sized(80, 24)
+    }
+
+    /// The same, at an arbitrary size — for the responsive assertions.
+    fn render_sized(width: u16, height: u16) -> Buffer {
         let view = View::sample();
-        let mut terminal = match Terminal::new(TestBackend::new(80, 24)) {
+        let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
             Ok(terminal) => terminal,
             Err(infallible) => match infallible {},
         };
@@ -160,6 +173,50 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// How many roadmap rows the buffer draws — the rows inside the box that carry
+    /// an `XP`-column figure, which every level row does and no chrome row does.
+    fn levels_drawn(buffer: &Buffer) -> usize {
+        whole_frame(buffer)
+            .lines()
+            .filter(|line| line.starts_with('│'))
+            .filter(|line| line.contains("+") || line.contains("opens"))
+            .count()
+    }
+
+    #[test]
+    fn the_counted_window_still_opens_on_level_thirteen() {
+        // The view now carries all fifty levels, so *which* of them are drawn is the
+        // window's decision — and it has to still open on 13, where UI.md §5.6 does.
+        //
+        // Twenty rows, not the wireframe's nineteen: these tests hand the screen the
+        // whole 24-row terminal, while the app gives it 23 and keeps one for the tab
+        // bar. The extra row is real either way — the old fixture carried nineteen
+        // rows into a box with room for twenty, and left the last one blank.
+        let frame = whole_frame(&render_screen());
+        assert_eq!(levels_drawn(&render_screen()), 20);
+        assert!(frame.contains("The Nether opens"), "{frame}");
+        assert!(frame.contains("+233 End Stone"), "{frame}");
+        // Level 12 sits above the window, so its own grants line is absent. Asserted
+        // on that line's text rather than on `row_with(" 12 ")`, whose fallback hands
+        // back the whole frame when nothing matches — which is exactly the case a
+        // negative assertion is testing for, so it would always pass.
+        let below_the_window = &View::sample().levels[11].grants;
+        assert!(!frame.contains(below_the_window.as_str()), "{frame}");
+    }
+
+    #[test]
+    fn a_taller_terminal_shows_more_of_the_roadmap() {
+        // The ladder is fifty levels; a 24-row terminal shows nineteen of them and a
+        // 48-row one has to show more, because the extra levels are now in the view.
+        let counted = levels_drawn(&render_screen());
+        let tall = levels_drawn(&render_sized(80, 48));
+        assert!(
+            tall > counted,
+            "a 48-row terminal drew {tall} levels, no more than the {counted} at 24"
+        );
+        assert!(tall <= View::sample().levels.len());
     }
 
     /// The one row that contains `needle`, or the whole frame on failure.
