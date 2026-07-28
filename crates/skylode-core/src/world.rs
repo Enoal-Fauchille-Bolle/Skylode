@@ -292,7 +292,7 @@ mod tests {
     /// relation, so it must read the same in both directions.
     #[test]
     fn the_world_material_relation_agrees_in_both_directions() {
-        for &material in ALL_MATERIALS {
+        for material in Material::ALL {
             for &world in material.worlds() {
                 assert!(
                     world.materials().contains(&material),

@@ -55,6 +55,45 @@ pub enum Material {
 }
 
 impl Material {
+    /// Every variant, in declaration order.
+    ///
+    /// It exists because **an enum cannot enumerate itself** — the same gap
+    /// [`MineKind::ALL`](crate::mine_kind::MineKind::ALL) fills, and here for two
+    /// callers rather than one. [`from_save_key`](Material::from_save_key) walks it
+    /// to read [`save_key`](Material::save_key) backwards, so the two directions of
+    /// the save's naming cannot drift apart; and `skylode-tui`'s Inventory screen
+    /// has to *list* the fifteen (`docs/UI.md` §5.3), which it could otherwise only
+    /// do by copying the set into the front-end.
+    ///
+    /// **The order is load-bearing in three places.** It is the order the Inventory
+    /// table prints, it is the order the save's
+    /// [`BTreeMap`](std::collections::BTreeMap) of items is written in — [`Ord`] is
+    /// derived from this same declaration — and it groups the materials by world, so
+    /// the table reads as the progression the player walks.
+    ///
+    /// An array and not a slice, so the length is in the type: a caller that wants
+    /// fifteen of something gets a compile error rather than a short loop.
+    /// [`all_materials_covers_every_variant`](self) is what catches a variant added
+    /// to the enum and forgotten here, since nothing in the language ties the two
+    /// together.
+    pub const ALL: [Self; 15] = [
+        Self::Stone,
+        Self::Coal,
+        Self::Iron,
+        Self::Gold,
+        Self::Lapis,
+        Self::Redstone,
+        Self::Emerald,
+        Self::Diamond,
+        Self::Netherrack,
+        Self::Quartz,
+        Self::AncientDebris,
+        Self::Obsidian,
+        Self::CryingObsidian,
+        Self::Endstone,
+        Self::Amethyst,
+    ];
+
     /// Returns the human-readable display name of the material.
     ///
     /// Multi-word materials use spaced names (e.g. `"Ancient Debris"`) so the
@@ -122,7 +161,7 @@ impl Material {
         // Written as a reverse walk over the same table rather than a second
         // `match`, so the two directions cannot drift apart. Fifteen entries, read
         // at load time only.
-        ALL_MATERIALS.iter().copied().find(|m| m.save_key() == key)
+        Self::ALL.into_iter().find(|m| m.save_key() == key)
     }
 
     /// Returns every [`World`] in which this material can be obtained.
@@ -296,44 +335,72 @@ impl fmt::Display for Item {
     }
 }
 
-/// Every [`Material`] variant, in declaration order.
-///
-/// It exists because an enum cannot enumerate itself (see `block`'s `ALL_BLOCKS`,
-/// which states the rationale), and unlike its siblings it is **not**
-/// test-only: [`Material::from_save_key`] reads it to walk
-/// [`save_key`](Material::save_key) backwards. That is the whole reason the reverse
-/// lookup is a walk and not a second `match` — one table, so the two directions of
-/// the save's naming cannot drift apart.
-pub(crate) const ALL_MATERIALS: &[Material] = &[
-    Material::Stone,
-    Material::Coal,
-    Material::Iron,
-    Material::Gold,
-    Material::Lapis,
-    Material::Redstone,
-    Material::Emerald,
-    Material::Diamond,
-    Material::Netherrack,
-    Material::Quartz,
-    Material::AncientDebris,
-    Material::Obsidian,
-    Material::CryingObsidian,
-    Material::Endstone,
-    Material::Amethyst,
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_json;
 
+    /// An enum cannot enumerate itself, so [`Material::ALL`] is written by hand and
+    /// this is what holds it to the enum.
+    ///
+    /// **The `match` is the load-bearing half, not the length.** Declaring `ALL` as
+    /// `[Self; 15]` already puts its size in the type, so a forgotten entry and a
+    /// duplicated one are both compile errors — but neither says a word about the
+    /// *enum*, which is where a sixteenth material would actually be added. The
+    /// `match` below is exhaustive, so that variant breaks the build here rather
+    /// than shipping a material the Inventory screen never lists and no save can
+    /// name.
+    ///
+    /// It pins the **positions** and not just the membership, because the order is
+    /// three facts at once (see [`Material::ALL`]): the table's rows, the save's
+    /// key order, and the world grouping. A material moved one row up is a silent
+    /// change to all three.
     #[test]
     fn all_materials_covers_every_variant() {
-        assert_eq!(
-            ALL_MATERIALS.len(),
-            15,
-            "a Material variant was added or removed: update ALL_MATERIALS"
-        );
+        for material in Material::ALL {
+            let position = match material {
+                Material::Stone => 0,
+                Material::Coal => 1,
+                Material::Iron => 2,
+                Material::Gold => 3,
+                Material::Lapis => 4,
+                Material::Redstone => 5,
+                Material::Emerald => 6,
+                Material::Diamond => 7,
+                Material::Netherrack => 8,
+                Material::Quartz => 9,
+                Material::AncientDebris => 10,
+                Material::Obsidian => 11,
+                Material::CryingObsidian => 12,
+                Material::Endstone => 13,
+                Material::Amethyst => 14,
+            };
+            assert_eq!(
+                Material::ALL[position],
+                material,
+                "{material:?} is not at position {position} of Material::ALL"
+            );
+        }
+    }
+
+    /// The table is in declaration order, which is what makes it the same order the
+    /// save writes its [`BTreeMap`](std::collections::BTreeMap) of items in: [`Ord`]
+    /// is derived from the enum, so "sorted" and "as declared" are the same sequence
+    /// only while this holds.
+    ///
+    /// Worth its own test rather than folding into the walk above, because it is the
+    /// one property `ALL` shares with a *type* the front-end never touches — the
+    /// display order could be reshuffled freely if it were not also the save's.
+    #[test]
+    fn the_table_is_sorted_and_therefore_the_save_order() {
+        for pair in Material::ALL.windows(2) {
+            if let [earlier, later] = pair {
+                assert!(
+                    earlier < later,
+                    "{earlier:?} sorts after {later:?}: Material::ALL has left declaration order"
+                );
+            }
+        }
     }
 
     /// Every world's filler yields its own material — Stone, Netherrack, End
@@ -350,7 +417,7 @@ mod tests {
     /// A material no world produces is dead weight the player can never obtain.
     #[test]
     fn every_material_is_obtainable_in_at_least_one_world() {
-        for &material in ALL_MATERIALS {
+        for material in Material::ALL {
             assert!(
                 !material.worlds().is_empty(),
                 "{material:?} belongs to no world, so nothing can ever drop it"
@@ -372,8 +439,8 @@ mod tests {
     /// would be indistinguishable to the player.
     #[test]
     fn display_names_are_unique() {
-        for (i, &a) in ALL_MATERIALS.iter().enumerate() {
-            for &b in &ALL_MATERIALS[i + 1..] {
+        for (i, &a) in Material::ALL.iter().enumerate() {
+            for &b in &Material::ALL[i + 1..] {
                 assert_ne!(
                     a.name(),
                     b.name(),
@@ -386,7 +453,7 @@ mod tests {
 
     /// Every item the inventory can hold: both denominations of every material.
     fn all_items() -> Vec<Item> {
-        ALL_MATERIALS
+        Material::ALL
             .iter()
             .flat_map(|&m| [Item::Raw(m), Item::Compressed(m)])
             .collect()
@@ -423,7 +490,7 @@ mod tests {
     /// quoted in both add up to a single number of raw items.
     #[test]
     fn both_denominations_share_one_material() {
-        for &material in ALL_MATERIALS {
+        for material in Material::ALL {
             assert_eq!(Item::Raw(material).material(), material);
             assert_eq!(Item::Compressed(material).material(), material);
         }
@@ -434,8 +501,8 @@ mod tests {
     /// load back as Diamonds.
     #[test]
     fn save_keys_are_unique() {
-        for (index, &a) in ALL_MATERIALS.iter().enumerate() {
-            for &b in &ALL_MATERIALS[index + 1..] {
+        for (index, &a) in Material::ALL.iter().enumerate() {
+            for &b in &Material::ALL[index + 1..] {
                 assert_ne!(
                     a.save_key(),
                     b.save_key(),
@@ -451,7 +518,7 @@ mod tests {
     /// Compressed denomination of something else — or of nothing.
     #[test]
     fn every_material_key_is_a_word_of_its_own() {
-        for &material in ALL_MATERIALS {
+        for material in Material::ALL {
             assert!(
                 !material.save_key().starts_with(COMPRESSED_PREFIX),
                 "{material:?}'s key {} collides with the Compressed prefix",
@@ -464,7 +531,7 @@ mod tests {
     /// ones a test happened to name.
     #[test]
     fn every_item_survives_its_save_key() {
-        for &material in ALL_MATERIALS {
+        for material in Material::ALL {
             for item in [Item::Raw(material), Item::Compressed(material)] {
                 let key = test_json::write(&item);
                 let read: Item = test_json::read(&key);

@@ -3368,7 +3368,7 @@ mod tests {
     /// worth ([`Inventory::raw_value`]), so compression moves nothing here.
     fn inventory_raw_total(state: &GameState) -> u64 {
         let inventory = state.player().get_inventory();
-        ALL_MATERIALS
+        Material::ALL
             .iter()
             .map(|&material| u64::from(inventory.raw_value(material)))
             .sum()
