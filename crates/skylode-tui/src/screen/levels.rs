@@ -98,7 +98,11 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
 
-    roadmap_scrollbar(frame, bar_area, view.levels.len(), range.start);
+    // The whole ladder's length, and the window's *own* start rather than the view's
+    // stored offset: `window` may have moved it to keep the cursor on screen, and a
+    // thumb pointing at where the list used to be would report a scroll that did not
+    // happen.
+    scrollbar(frame, bar_area, view.levels.len(), range.start);
 
     let footer =
         format!(" ↑↓  scroll     Home  jump to Lv {current}     Tab  next screen     ?  help");
@@ -122,16 +126,6 @@ fn mark(level: u32, current: u32, selected: u32) -> &'static str {
         _ if level < current => "  ✓ ",
         _ => "    ",
     }
-}
-
-/// Draws the roadmap scrollbar, its thumb sized against the whole 1..50 ladder.
-///
-/// `total` is passed in rather than read from `LEVEL_CAP` here: the view now carries
-/// the entire ladder, so its length *is* the cap, and taking the number from the
-/// list being drawn is what stops the thumb from describing a different list than
-/// the rows beside it. The assertion that the two agree lives in the tests.
-fn roadmap_scrollbar(frame: &mut Frame, area: Rect, total: usize, position: usize) {
-    scrollbar(frame, area, total, position);
 }
 
 /// No contextual bindings yet; `↑↓` scrolls, `Home` jumps to the current level.
