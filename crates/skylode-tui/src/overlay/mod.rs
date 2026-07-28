@@ -34,18 +34,32 @@ use ratatui::{
     text::Line,
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
 };
+use skylode_core::material::Material;
 
 use crate::theme;
 
+/// Which way a [`Modal::Compress`] dialog converts.
+///
+/// The two directions are one dialog and not two, because §6.6 specifies the inverse
+/// as *"the same frame with the arithmetic reversed"* — free-and-lossless-both-ways
+/// showing up as a UI economy. Carrying the direction as a value rather than as two
+/// modal variants is what keeps that literally true: one spinner, one confirm path,
+/// one place the numbers are read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Conversion {
+    /// Raw into Compressed units: `c`.
+    Compress,
+    /// Compressed units back into raw: `C`.
+    Decompress,
+}
+
 /// A modal overlay that captures input.
 ///
-/// One variant so far — [`Help`](Modal::Help), the first pulled overlay to be
-/// reachable. The others ([`compression`], [`dip`], [`prestige`], [`settings`]) are
-/// drawn but not yet stacked: they arrive as variants here when the screens that
-/// open them are wired (phases 5–7), and the exhaustive `match` in [`crate::keymap`]
-/// and [`crate::app`] then refuses to compile until each learns to draw and drive.
+/// Two variants so far. The rest ([`dip`], [`prestige`], [`settings`]) are drawn but
+/// not yet stacked: they arrive as variants here when the screens that open them are
+/// wired (phases 6–7), and the exhaustive `match` in [`crate::keymap`] and
+/// [`crate::app`] then refuses to compile until each learns to draw and drive.
 ///
-/// [`compression`]: crate::overlay::compression
 /// [`dip`]: crate::overlay::dip
 /// [`prestige`]: crate::overlay::prestige
 /// [`settings`]: crate::overlay::settings
@@ -53,6 +67,26 @@ use crate::theme;
 pub enum Modal {
     /// The full-screen key reference (UI.md §6.11), opened with `?` from any screen.
     Help,
+    /// The compression dialog (UI.md §6.6), opened with `c` / `C` from Inventory.
+    ///
+    /// **The spinner's count lives in the variant, not in a field beside
+    /// [`App::modal`](crate::app::App::modal)**, and that is the same device
+    /// [`TargetView`](crate::view::TargetView) uses for the cell being dug: two facts
+    /// that only mean anything together are stored together, so *"a count of 12 with
+    /// no dialog open"* is a state that cannot be written down. The whole payload is
+    /// [`Copy`], so [`Modal`] stays `Copy` and nothing downstream changes shape.
+    ///
+    /// `material` is read from the Inventory cursor at the moment of opening rather
+    /// than followed live: the dialog is *about* one pile, and a cursor that could
+    /// move underneath it would convert something the player was not looking at.
+    Compress {
+        /// Which pile is being converted.
+        material: Material,
+        /// Which way.
+        direction: Conversion,
+        /// How many units the spinner currently reads, always `1..=max`.
+        units: u32,
+    },
 }
 
 /// Draws a centred modal box of `width × height`, titled, filled with `lines`.

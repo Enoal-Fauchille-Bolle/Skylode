@@ -12,6 +12,7 @@
 
 use skylode_core::{
     block::Block,
+    economy::CostLine,
     enchant::EnchantType,
     game::GameState,
     inventory::Inventory,
@@ -257,35 +258,64 @@ pub struct MinesView {
 /// Held in both denominations, exactly as the player carries them: the raw count
 /// and the compressed count are separate numbers, never a single total, because
 /// costs are paid in the denomination they are quoted in and the screen must show
-/// which one the player is short of. `material` is a display string (fixture here;
-/// phase 5 fills the table from `Inventory`).
-#[derive(Clone, Debug)]
+/// which one the player is short of.
+///
+/// **`material` is the [`Material`] and not its name**, which is the same move the
+/// Mines list made with [`MineKind`]: a display string decided here is a decision
+/// taken on the wrong side of the boundary, and the screen needs the value anyway to
+/// tell which row the cursor is on.
+#[derive(Clone, Copy, Debug)]
 pub struct InvRow {
-    /// The material's display name, e.g. `Ancient Debris`.
-    pub material: String,
+    /// The material this row is for — the source of its display name.
+    pub material: Material,
     /// Compressed units held.
     pub compressed: u32,
     /// Raw units held.
     pub raw: u32,
 }
 
+/// What a refused purchase is waiting on, in the material under the cursor
+/// (UI.md §5.3, §8.4).
+///
+/// **The panel's whole reason to exist.** UI.md §5.3's frame is drawn mid-refusal on
+/// purpose: Iron reads 680 against a price of 650 and the player still cannot buy it,
+/// so a panel that said "you cannot afford this" would be lying. What it says instead
+/// is which *denomination* is missing, and this is the pair of facts that sentence is
+/// built from.
+///
+/// Carried as a [`CostLine`] rather than the finished sentence, so the screen
+/// composes `6 Compressed + 50` from the two numbers and cannot print a split that
+/// disagrees with the price.
+#[derive(Clone, Debug)]
+pub struct CompressHint {
+    /// What was refused, in the front-end's own words: `Efficiency V`.
+    pub purchase: String,
+    /// What that price wants in this material, in both denominations.
+    pub needed: CostLine,
+}
+
 /// The Inventory screen: the table, the cursor, and the compress-first context
 /// (UI.md §5.3).
-///
-/// `selected` is a **front-end cursor**, not game state — it moves to `App` when
-/// `↑↓` is wired (phase 5); here it is fixed on the row the frame highlights.
-/// `hint` is the compress-first refusal spelled out (`Efficiency V wants 6
-/// Compressed + 50`), a **placeholder** until the three-state affordability query
-/// lands (phase 5) — the frame is drawn mid-refusal on purpose, so the panel names
-/// the missing *denomination* rather than claiming the player cannot afford it.
 #[derive(Clone, Debug)]
 pub struct InventoryView {
-    /// The fifteen materials, in the fixed display order the frame lists.
+    /// The fifteen materials, in [`Material::ALL`]'s order.
     pub rows: Vec<InvRow>,
-    /// Which row the cursor sits on, indexing `rows`.
-    pub selected: usize,
-    /// The compress-first context lines, already wrapped to the panel width.
-    pub hint: Vec<String>,
+    /// The material under the cursor.
+    ///
+    /// A [`Material`] rather than an index into `rows`, matching
+    /// [`MinesView::selected`] and [`Cursors::material`](crate::cursor::Cursors): the
+    /// screen looks the row up, so the cursor cannot survive as a number pointing
+    /// somewhere the table does not go.
+    pub selected: Material,
+    /// The refusal this screen was walked here to clear, or [`None`].
+    ///
+    /// **[`None`] on every run today, and that is not a stub.** A `CompressFirst`
+    /// verdict is only produced by `Enter` on the Upgrades screen, which phase 6
+    /// wires — so until then nothing has been refused and the panel has nothing to
+    /// report. Printing the frame's `Efficiency V wants…` regardless would have the
+    /// screen inventing a refusal that never happened, which is worse than the blank
+    /// space: it is the same class of lie the panel exists to avoid.
+    pub hint: Option<CompressHint>,
 }
 
 /// One run-progress row in the Stats "This run" panel (UI.md §5.5).
@@ -618,8 +648,9 @@ impl View {
                 ratio: mine.break_ratio(),
             }),
             mines: mines_view(state, cursors),
+            inventory: inventory_view(player.get_inventory(), cursors),
 
-            // Everything below is still the fixture. Phases 5-7 own these, one
+            // Everything below is still the fixture. Phases 6-7 own these, one
             // screen at a time; see this function's own note on the `..`.
             ..Self::sample()
         }
@@ -894,6 +925,36 @@ fn mines_view(state: &GameState, cursors: Cursors) -> MinesView {
         rows,
         selected,
         detail,
+    }
+}
+
+/// The Inventory screen's read model, projected from what the player carries.
+///
+/// **Walks [`Material::ALL`] and not the inventory**, which is the opposite of what
+/// the data structure invites. An [`Inventory`] is *sparse* — an item absent from its
+/// map is held zero times, and `remove` deletes an entry the moment it hits zero — so
+/// iterating it would give a table whose rows appeared and vanished as the player
+/// spent. The frame is fifteen fixed rows (`docs/UI.md` §5.3), and a row reading `0`
+/// is information: it says the player has none of a material that exists, which is
+/// exactly what an empty inventory should look like.
+///
+/// **Takes the [`Inventory`] and not the [`GameState`]**, unlike [`mines_view`]. It
+/// needs nothing else — no lock, no lazily-created mine — and the narrower parameter
+/// is what lets a test build one directly instead of driving a run to reach it.
+///
+/// The `hint` is [`None`] here rather than derived: see [`InventoryView::hint`].
+fn inventory_view(inventory: &Inventory, cursors: Cursors) -> InventoryView {
+    InventoryView {
+        rows: Material::ALL
+            .into_iter()
+            .map(|material| InvRow {
+                material,
+                compressed: inventory.count(Item::Compressed(material)),
+                raw: inventory.count(Item::Raw(material)),
+            })
+            .collect(),
+        selected: cursors.material,
+        hint: None,
     }
 }
 
@@ -1221,51 +1282,54 @@ fn sample_mines() -> MinesView {
 /// The Inventory table and compress panel drawn in UI.md §5.3, from the frame.
 ///
 /// The counts are fixture data; the compress panel's derived numbers (value,
-/// compressible-now) are computed in the screen, not stored here. The frame is
-/// drawn **mid-refusal** — Iron is selected, worth 680 but short the compressed
-/// denomination an upgrade wants — which is why `hint` names the denomination.
+/// compressible-now) are computed in the screen, not stored here.
+///
+/// **The one thing a real run cannot produce, and the reason this fixture outlived
+/// the wiring**: the frame is drawn **mid-refusal**. Iron is selected, worth 680 and
+/// short the Compressed denomination an upgrade wants — a state only `Enter` on the
+/// Upgrades screen can reach, which is phase 6. [`inventory_view`] therefore answers
+/// [`None`] for the hint on every run, and this fixture is where the panel's refusal
+/// half stays testable until then.
 fn sample_inventory() -> InventoryView {
-    // `(material, compressed, raw)`, in the fixed display order the frame lists.
-    let rows = [
-        ("Stone", 12, 4_508),
-        ("Coal", 3, 871),
-        ("Iron", 2, 480),
-        ("Gold", 0, 312),
-        ("Lapis", 1, 44),
-        ("Redstone", 0, 128),
-        ("Emerald", 0, 17),
-        ("Diamond", 0, 9),
-        ("Netherrack", 2, 340),
-        ("Quartz", 0, 73),
-        ("Ancient Debris", 4, 60),
-        ("Obsidian", 0, 21),
-        ("Crying Obsidian", 0, 2),
-        ("End Stone", 0, 0),
-        ("Amethyst", 0, 38),
-    ]
-    .into_iter()
-    .map(|(material, compressed, raw)| InvRow {
-        material: material.to_owned(),
-        compressed,
-        raw,
-    })
-    .collect();
-
-    let hint = [
-        "Efficiency V wants",
-        "6 Compressed + 50.",
-        "You hold the value, not",
-        "the denomination.",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
+    // `(material, compressed, raw)`. The order is `Material::ALL`'s — the same order
+    // the frame lists and the table prints — so this is a column of counts against
+    // that table rather than a second copy of it.
+    let counts = [
+        (12, 4_508),
+        (3, 871),
+        (2, 480),
+        (0, 312),
+        (1, 44),
+        (0, 128),
+        (0, 17),
+        (0, 9),
+        (2, 340),
+        (0, 73),
+        (4, 60),
+        (0, 21),
+        (0, 2),
+        (0, 0),
+        (0, 38),
+    ];
+    let rows = Material::ALL
+        .into_iter()
+        .zip(counts)
+        .map(|(material, (compressed, raw))| InvRow {
+            material,
+            compressed,
+            raw,
+        })
+        .collect();
 
     InventoryView {
         rows,
         // Iron: the row the frame highlights and the compress panel details.
-        selected: 2,
-        hint,
+        selected: Material::Iron,
+        hint: Some(CompressHint {
+            purchase: "Efficiency V".to_owned(),
+            // 650 raw, which `CostLine` splits into the frame's `6 Compressed + 50`.
+            needed: CostLine::from_raw_total(Material::Iron, 650),
+        }),
     }
 }
 

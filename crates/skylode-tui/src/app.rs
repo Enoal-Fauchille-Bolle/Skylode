@@ -16,15 +16,22 @@ use ratatui::{
     style::{Modifier, Style},
     widgets::Tabs,
 };
-use skylode_core::{game::GameState, mine::Mine, mine_kind::MineKind};
+use skylode_core::{
+    game::GameState,
+    material::{Item, Material},
+    mine::Mine,
+    mine_kind::MineKind,
+    tunables::RAW_PER_COMPRESSED,
+};
 
 use crate::{
     action::Action,
     config::Config,
-    cursor::Cursors,
+    cursor::{self, Cursors},
     event::{Event, Events},
+    format::grouped,
     keymap,
-    overlay::{Modal, help, too_small},
+    overlay::{Conversion, Modal, compression, help, too_small},
     screen::Screen,
     theme,
     toast::{TOAST_TTL, Toasts},
@@ -196,6 +203,11 @@ impl App {
     /// unit test. The `match` is exhaustive, so a new `Action` variant cannot be
     /// added without deciding what it does here.
     pub fn update(&mut self, action: Action) {
+        // Returns `true` when the stacked modal consumed the gesture, so the screen
+        // below never sees it.
+        if self.update_modal(&action) {
+            return;
+        }
         match action {
             Action::Quit => self.should_quit = true,
             Action::NextScreen => self.screen = self.screen.next(),
@@ -214,17 +226,10 @@ impl App {
             Action::OpenHelp => self.modal = Some(Modal::Help),
             Action::CloseModal => self.modal = None,
             // The list gestures are decoded without a screen in mind, so this is
-            // where one is chosen. Only Mines answers today; phases 5-7 add arms.
-            Action::CursorUp => {
-                if self.screen == Screen::Mines {
-                    self.step_mine_cursor(-1);
-                }
-            }
-            Action::CursorDown => {
-                if self.screen == Screen::Mines {
-                    self.step_mine_cursor(1);
-                }
-            }
+            // where one is chosen. Mines and Inventory answer today; phases 6-7 add
+            // arms.
+            Action::CursorUp => self.step_list_cursor(-1),
+            Action::CursorDown => self.step_list_cursor(1),
             Action::AdjustLeft => {
                 if self.screen == Screen::Mines {
                     self.step_richness_dial(-1);
@@ -240,13 +245,13 @@ impl App {
                     self.enter_selected_mine();
                 }
             }
+            // Nothing to adjust to its maximum outside the spinner, which
+            // `update_modal` has already answered for.
+            Action::AdjustMax => {}
+            Action::Compress => self.open_conversion(Conversion::Compress),
+            Action::Decompress => self.open_conversion(Conversion::Decompress),
         }
     }
-
-    /// Moves the Mines cursor one row, **stopping at the ends rather than wrapping**.
-    ///
-    /// Wrapping is what the tab ring does, and it is right there because the ring is
-    /// six equivalent destinations. This list is not: it is twelve mines in
     /// progression order under three world headers, so a `↑` on the Stone mine that
     /// landed on the End one would be a jump across the whole game. Lists clamp,
     /// rings wrap.
