@@ -10,7 +10,8 @@ use std::time::Instant;
 
 use color_eyre::Result;
 use ratatui::{
-    DefaultTerminal, Frame,
+    Frame, Terminal,
+    backend::Backend,
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     widgets::Tabs,
@@ -19,7 +20,7 @@ use ratatui::{
 use crate::{
     action::Action,
     config::Config,
-    event::{Event, EventHandler},
+    event::{Event, Events},
     keymap,
     overlay::{Modal, help, too_small},
     screen::Screen,
@@ -84,7 +85,38 @@ impl App {
     /// rather than after the first keypress. Blocking on `events.next()` is what
     /// keeps the app at zero CPU while idle; the tick guarantees we still wake up
     /// often enough to expire toasts.
-    pub fn run(mut self, mut terminal: DefaultTerminal, events: EventHandler) -> Result<()> {
+    ///
+    /// **Generic over both of its collaborators, so that the loop itself can be
+    /// tested.** It used to take a `DefaultTerminal` — ratatui's alias for
+    /// `Terminal<CrosstermBackend<Stdout>>` — and a concrete
+    /// [`EventHandler`](crate::event::EventHandler), and
+    /// between them they made this function unreachable from a test: the backend
+    /// writes to the real stdout, and the handler's thread dies the moment it polls
+    /// a terminal that is not there. Everything else in the crate is exercised
+    /// through ratatui's own `TestBackend`; these two parameters are what let the
+    /// loop join it.
+    ///
+    /// Generics rather than `dyn`: both types are known at every call site, so the
+    /// compiler emits one specialised copy per pair (*monomorphisation*) and the
+    /// indirection costs nothing at runtime. `main` still passes the real terminal
+    /// and the real handler, and neither has to change.
+    ///
+    /// The `where` clause is what `?` needs. Since ratatui 0.30 a backend names its
+    /// own error type rather than always being `io::Error`, and `color_eyre::Report`
+    /// can only absorb one that is a `std::error::Error` it can carry across threads
+    /// and outlive the frame. Both real backends satisfy it, including
+    /// `TestBackend`, whose error is [`Infallible`](core::convert::Infallible) — a
+    /// type with no values, so the conversion is one that provably never runs.
+    /// The terminal is borrowed, not consumed: `run` has no business dropping it —
+    /// `main` restores the screen afterwards and needs it alive to do so — and a
+    /// caller that could not look at the terminal again after the loop returned could
+    /// not read the last frame the player saw.
+    pub fn run<B, E>(mut self, terminal: &mut Terminal<B>, events: E) -> Result<()>
+    where
+        B: Backend,
+        B::Error: std::error::Error + Send + Sync + 'static,
+        E: Events,
+    {
         while !self.should_quit {
             terminal.draw(|frame| self.render(frame))?;
 

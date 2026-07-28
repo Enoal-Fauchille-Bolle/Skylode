@@ -47,12 +47,12 @@ fn main() -> Result<()> {
     // `init` enables raw mode, switches to the alternate screen, and installs a
     // panic hook that restores both before any message is printed — the reason
     // this crate no longer hand-rolls terminal setup.
-    let terminal = ratatui::init();
+    let mut terminal = ratatui::init();
     let events = EventHandler::new(TICK_RATE_MS);
 
     // The result is held, not propagated with `?`: the terminal must be restored
     // first, or an error would print into the alternate screen and vanish with it.
-    let result = App::new().run(terminal, events);
+    let result = App::new().run(&mut terminal, events);
 
     ratatui::restore();
     result

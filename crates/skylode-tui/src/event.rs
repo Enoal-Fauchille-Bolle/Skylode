@@ -43,6 +43,27 @@ pub enum Event {
     Resize,
 }
 
+/// Where [`crate::app::App::run`] gets its events from.
+///
+/// **A trait with exactly one production implementor**, which is usually a smell and
+/// here is the point: [`EventHandler`] below cannot run without a terminal — its
+/// thread calls `event::poll`, which fails outside a tty and takes the thread with
+/// it — so a `run` that named the concrete type could not be executed by a test at
+/// all. The loop is the one piece of this crate where drawing, decoding and quitting
+/// meet, and it was the only piece nothing could reach.
+///
+/// The seam is deliberately this narrow. It does not abstract the terminal, the
+/// channel or the thread; it abstracts *"hand me the next event"*, which is the whole
+/// of what the loop asks. A test implements it over a list and drives the real loop.
+///
+/// `&self` and not `&mut self`, matching [`EventHandler::next`]: receiving from an
+/// [`mpsc::Receiver`] needs no exclusive borrow, and requiring one here would stop
+/// the loop from lending `&self` to `keymap::resolve` in the same iteration.
+pub trait Events {
+    /// Blocks until the next event is available.
+    fn next(&self) -> Result<Event>;
+}
+
 /// Owns the event thread and the receiving end of its channel.
 #[derive(Debug)]
 pub struct EventHandler {
@@ -113,7 +134,26 @@ impl EventHandler {
     /// Blocking is what we want: with nothing to do, the render loop should sleep
     /// rather than spin, and the heartbeat guarantees it wakes at least every
     /// `tick_rate`.
+    ///
+    /// Kept as an inherent method as well as the [`Events`] implementation below, so
+    /// that a caller holding a concrete `EventHandler` does not have to import the
+    /// trait to ask it the one question it answers.
+    ///
+    /// **The `Err` arm cannot fire while `self` exists.** `recv` fails only once every
+    /// sender is gone, and [`Self::sender`] is one — held for exactly that reason —
+    /// so a disconnect is unreachable through this method. The [`Result`] matches
+    /// `recv`'s own signature rather than describing a case a caller should plan for.
+    /// The consequence is worth knowing: if the polling thread dies, this **blocks**
+    /// rather than returning an error.
+    ///
+    /// [`Self::sender`]: EventHandler#structfield.sender
     pub fn next(&self) -> Result<Event> {
         Ok(self.receiver.recv()?)
+    }
+}
+
+impl Events for EventHandler {
+    fn next(&self) -> Result<Event> {
+        Self::next(self)
     }
 }
