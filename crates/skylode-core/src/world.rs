@@ -240,7 +240,7 @@ pub(crate) const ALL_WORLDS: [World; 3] = [World::Overworld, World::Nether, Worl
 mod tests {
     use super::*;
     use crate::block::ALL_BLOCKS;
-    use crate::material::ALL_MATERIALS;
+    use crate::material::Material;
     use crate::tunables::LEVEL_CAP;
 
     #[test]

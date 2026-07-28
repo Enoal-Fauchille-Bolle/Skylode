@@ -63,9 +63,11 @@ pub struct App {
     pub screen: Screen,
     /// The modal stacked over it, if any.
     ///
-    /// Always `None` today — [`Modal`] has no variants yet — but the field is
-    /// wired through the keymap and the renderer so that adding the first modal
-    /// is one variant plus two `match` arms, not a re-plumbing.
+    /// **It carries the modal's own state, not just which one is up**, which is why
+    /// [`Modal::Compress`] has fields: a dialog with a value in it has nowhere else to
+    /// keep that value where "no dialog" and "a dialog reading zero" stay distinct.
+    /// [`keymap`] gives whatever is here first refusal on every key, and
+    /// [`update`](App::update) gives it first refusal on every gesture.
     pub modal: Option<Modal>,
     /// Live announcements, drawn over everything.
     pub toasts: Toasts,
@@ -83,7 +85,7 @@ pub struct App {
     /// Rebuilt by [`sync_view`](App::sync_view) before each draw rather than inside
     /// `render`, for two reasons. `render` takes `&self` and stays a pure read, which
     /// is what lets a test draw an `App` it does not own; and the projection still
-    /// rebuilds `View::sample`'s fixture for the five screens phases 4-7 have not
+    /// rebuilds `View::sample`'s fixture for the three screens phases 6-7 have not
     /// wired, which is worth doing when the state changes and not thirty times a
     /// second.
     pub view: View,
@@ -128,10 +130,10 @@ impl App {
 
     /// Rebuilds the read model from the run.
     ///
-    /// Called once per frame, before drawing. It is unconditional today because
-    /// nothing yet changes the state — with no tick, a session is a still image —
-    /// and phase 7 is where "redraw on change" earns its keep and this gains a
-    /// guard.
+    /// Called once per frame, before drawing, and unconditional. Redraw-on-change is
+    /// phase 7's, where the 20 tps tick makes most frames identical to the last and a
+    /// guard here starts earning its keep; today a session only changes when a key is
+    /// pressed, so the projection runs about as often as it would anyway.
     fn sync_view(&mut self) {
         self.view = View::from_state(&self.state, self.cursors);
     }
@@ -200,8 +202,16 @@ impl App {
     ///
     /// This is the reducer, and it is the reason [`Action`] exists: it takes no
     /// `KeyEvent` and touches no terminal, so every transition below is a plain
-    /// unit test. The `match` is exhaustive, so a new `Action` variant cannot be
+    /// unit test. The `match` is exhaustive, so a new [`Action`] variant cannot be
     /// added without deciding what it does here.
+    ///
+    /// **A modal is offered the gesture before the screen is, and that ordering is
+    /// the rule.** A modal captures the keyboard — [`keymap`] already gives it first
+    /// refusal on every *key* — so it must also own what those keys decode to, or a
+    /// `←` meant for the compression spinner would slide the richness dial on the
+    /// screen behind the box. The five overlays phases 6 and 7 still owe inherit this
+    /// seam rather than re-deriving it, which is why the split lives here in one line
+    /// and not as a condition repeated in each arm.
     pub fn update(&mut self, action: Action) {
         // Returns `true` when the stacked modal consumed the gesture, so the screen
         // below never sees it.
@@ -252,25 +262,174 @@ impl App {
             Action::Decompress => self.open_conversion(Conversion::Decompress),
         }
     }
-    /// progression order under three world headers, so a `↑` on the Stone mine that
-    /// landed on the End one would be a jump across the whole game. Lists clamp,
-    /// rings wrap.
+
+    /// Offers `action` to the stacked modal, answering whether it took it.
     ///
-    /// `position` cannot fail — the cursor is a [`MineKind`] and [`MineKind::ALL`]
-    /// holds every one — but it returns an [`Option`] all the same, and this crate's
-    /// lints leave no `unwrap` to spend on it. `unwrap_or(0)` keeps the function
-    /// total without adding a branch nothing can reach.
-    fn step_mine_cursor(&mut self, delta: isize) {
-        let mines = MineKind::ALL;
-        let index = mines
-            .iter()
-            .position(|&kind| kind == self.cursors.mine)
-            .unwrap_or(0);
-        // Signed arithmetic, then clamped back into the list: `index - 1` on a
-        // `usize` at row zero would wrap to `usize::MAX` and index far past the end.
-        let next = (index as isize + delta).clamp(0, mines.len() as isize - 1);
-        if let Some(&kind) = mines.get(next as usize) {
-            self.cursors.mine = kind;
+    /// **Only the compression dialog answers anything**, because it is the only modal
+    /// with a value in it. Help swallows keys in [`keymap`] and never reaches here
+    /// with a gesture at all; `Esc` deliberately falls through to
+    /// [`Action::CloseModal`] in the main `match`, so closing a modal stays one
+    /// implementation for every modal there will ever be.
+    ///
+    /// Returning a `bool` rather than an `Option<Action>` to re-dispatch: a modal
+    /// either consumed the gesture or did not, and translating one gesture into
+    /// another would give the reducer a second dispatch path to reason about.
+    fn update_modal(&mut self, action: &Action) -> bool {
+        let Some(Modal::Compress {
+            material,
+            direction,
+            units,
+        }) = self.modal
+        else {
+            return false;
+        };
+
+        match action {
+            // `saturating_sub` on the way down and a clamp on the way up: the floor
+            // is 1, since a conversion of nothing is not something the dialog should
+            // be able to offer, and `Esc` is how a player who changed their mind
+            // leaves.
+            Action::AdjustLeft => self.set_spinner(material, direction, units.saturating_sub(1)),
+            Action::AdjustRight => self.set_spinner(material, direction, units.saturating_add(1)),
+            // `a` — *all*. Asking for more than the pile holds and letting the clamp
+            // answer, rather than reading the ceiling twice.
+            Action::AdjustMax => self.set_spinner(material, direction, u32::MAX),
+            Action::Confirm => self.apply_conversion(material, direction, units),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Moves the spinner to `requested`, clamped into what the pile can actually
+    /// convert.
+    ///
+    /// **The ceiling is re-read from the inventory on every step** rather than stored
+    /// beside the count when the dialog opened. It costs a division, and it means the
+    /// bound cannot go stale — phase 7's tick credits loot while a modal is up, so a
+    /// ceiling captured at opening time would be wrong by the second keypress.
+    ///
+    /// `max(1)` on the ceiling because [`u32::clamp`] panics when its floor exceeds
+    /// its ceiling. A dialog is only ever *opened* on a pile of at least one unit, so
+    /// the zero case belongs to a pile emptied underneath it — a confirm that spent
+    /// the lot — and the honest answer there is to leave the spinner reading 1 rather
+    /// than to take the terminal down over it.
+    ///
+    /// **Takes the pair rather than re-reading it off `self.modal`**, because
+    /// [`update_modal`](App::update_modal) has already destructured it: reading it a
+    /// second time would need a second `else { return }` for a case the caller has
+    /// just proved impossible, and a branch nothing can reach is a branch no test can
+    /// justify.
+    fn set_spinner(&mut self, material: Material, direction: Conversion, requested: u32) {
+        let ceiling =
+            compression::max_units(self.state.player().get_inventory(), material, direction).max(1);
+        self.modal = Some(Modal::Compress {
+            material,
+            direction,
+            units: requested.clamp(1, ceiling),
+        });
+    }
+
+    /// Opens the dialog on the material under the Inventory cursor, or says why
+    /// there is nothing to open it for.
+    ///
+    /// **A pile with nothing to convert gets a toast and no dialog.** A modal the
+    /// player can only cancel is a keypress spent on nothing, and the refusal is one
+    /// they cannot otherwise see — the panel prints `Compressible now: 0`, but a
+    /// player who pressed `c` was not reading it.
+    ///
+    /// The ceiling is asked of [`compression::max_units`], the same function the
+    /// dialog draws its `all (13)` from, so "is there anything to convert" and "how
+    /// much" are one answer read twice. It is display arithmetic and not a rule: the
+    /// Compress panel already performs the same division.
+    fn open_conversion(&mut self, direction: Conversion) {
+        if self.screen != Screen::Inventory {
+            return;
+        }
+        let material = self.cursors.material;
+        let inventory = self.state.player().get_inventory();
+        if compression::max_units(inventory, material, direction) > 0 {
+            // Opens at one, the smallest real conversion, so a player who hits
+            // `Enter` straight away never converts more than they meant to. `a` is
+            // one keypress away for the other end.
+            self.modal = Some(Modal::Compress {
+                material,
+                direction,
+                units: 1,
+            });
+            return;
+        }
+
+        let name = material.name();
+        let refusal = match direction {
+            Conversion::Compress => format!(
+                "Nothing to compress — {RAW_PER_COMPRESSED} raw {name} needed, {} held",
+                grouped(inventory.count(Item::Raw(material)))
+            ),
+            Conversion::Decompress => format!("Nothing to decompress — no Compressed {name} held"),
+        };
+        self.toasts.push(refusal, TOAST_TTL);
+    }
+
+    /// Performs the conversion the dialog is set to, announces it, and closes.
+    ///
+    /// **The announcement names the [`Item`] that was gained, not a sentence per
+    /// direction**, which is what makes one `format!` serve both: `Item`'s own
+    /// [`Display`](std::fmt::Display) already writes `Compressed Iron` for one
+    /// denomination and `Iron` for the other, so the wording of a denomination lives
+    /// in the core beside the type and cannot drift between the two toasts here. The
+    /// `+N` shape is the house style the event toasts already use.
+    ///
+    /// A refusal is toasted verbatim: [`CoreError`](skylode_core::error::CoreError)
+    /// says what it refused and why, and the dialog closes either way — the state it
+    /// was set against has just been proved wrong, so leaving it up would invite the
+    /// player to press `Enter` again on the same impossible number.
+    fn apply_conversion(&mut self, material: Material, direction: Conversion, units: u32) {
+        let (outcome, gained) = match direction {
+            Conversion::Compress => (
+                self.state.compress(material, units),
+                (Item::Compressed(material), units),
+            ),
+            Conversion::Decompress => (
+                self.state.decompress(material, units),
+                (
+                    Item::Raw(material),
+                    units.saturating_mul(RAW_PER_COMPRESSED),
+                ),
+            ),
+        };
+
+        let message = match outcome {
+            Ok(()) => {
+                let (item, amount) = gained;
+                format!("+{} {item}", grouped(amount))
+            }
+            Err(refusal) => refusal.to_string(),
+        };
+        self.toasts.push(message, TOAST_TTL);
+        self.modal = None;
+    }
+
+    /// Moves whichever list the open screen owns by one row.
+    ///
+    /// **The screen is chosen here and not in [`keymap`], which is the whole shape of
+    /// [`Action`]'s list gestures.** `↑` decodes to [`Action::CursorUp`] without
+    /// knowing what it will move, because the keymap has no access to the run; which
+    /// cursor that is lands where the state is, and that is here.
+    ///
+    /// Both arms delegate to [`cursor::step_in`], so the *lists clamp, rings wrap*
+    /// rule has one implementation rather than one per screen. A screen with no list
+    /// does nothing, which is why this is a `match` with a catch-all rather than a
+    /// chain of `if`s that each has to remember to be exclusive.
+    fn step_list_cursor(&mut self, delta: isize) {
+        match self.screen {
+            Screen::Mines => {
+                self.cursors.mine = cursor::step_in(&MineKind::ALL, self.cursors.mine, delta);
+            }
+            Screen::Inventory => {
+                self.cursors.material =
+                    cursor::step_in(&Material::ALL, self.cursors.material, delta);
+            }
+            _ => {}
         }
     }
 
@@ -374,6 +533,21 @@ impl App {
                 // Help reports the bindings of the screen it was opened over, so it
                 // is handed the current screen and the config the sub-tab line reads.
                 Modal::Help => help::render(frame, area, self.screen, &self.config),
+                // The dialog reads the run rather than the `View`: it is about a pile
+                // as it stands *now*, and the snapshot behind it was projected before
+                // the conversion the player is about to confirm.
+                Modal::Compress {
+                    material,
+                    direction,
+                    units,
+                } => compression::render(
+                    frame,
+                    area,
+                    self.state.player().get_inventory(),
+                    material,
+                    direction,
+                    units,
+                ),
             }
         }
     }
@@ -419,6 +593,7 @@ mod tests {
         buffer::Buffer,
         crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     };
+    use skylode_core::game::Input;
 
     use super::*;
 
@@ -639,9 +814,13 @@ mod tests {
         let mut app = session();
         app.update(Action::SelectScreen(2));
         let frame = whole_frame(&render_to_buffer(&app));
-        // The Inventory placeholder prints the held counts from the snapshot.
+        // The Inventory table, drawn from the run. A fresh one has mined nothing, so
+        // the assertion is on the *table* and not on a count: it lists all fifteen
+        // materials whether or not the player holds any, which is the whole reason
+        // the projection walks `Material::ALL` rather than the sparse map.
         assert!(frame.contains("Inventory"), "{frame}");
-        assert!(frame.contains("480"), "{frame}");
+        assert!(frame.contains("Ancient Debris"), "{frame}");
+        assert!(frame.contains("Amethyst"), "{frame}");
     }
 
     #[test]
@@ -912,23 +1091,329 @@ mod tests {
         assert_eq!(app.cursors.mine, MineKind::Amethyst);
     }
 
+    /// A session on the Inventory tab — the second screen to answer the gestures.
+    fn browsing_inventory() -> App {
+        let mut app = session();
+        app.screen = Screen::Inventory;
+        app
+    }
+
     #[test]
-    fn the_list_gestures_are_ignored_on_every_other_screen() {
-        // They are decoded without a screen in mind, so `update` is what decides who
-        // answers. A screen phases 5-7 have not wired must leave the cursor alone.
+    fn the_material_cursor_walks_the_table_and_stops_at_both_ends() {
+        let mut app = browsing_inventory();
+        // Nothing in the run says which material the player is looking at, so the
+        // table opens at its first row.
+        assert_eq!(app.cursors.material, Material::Stone);
+
+        app.update(Action::CursorDown);
+        assert_eq!(app.cursors.material, Material::Coal);
+        app.update(Action::CursorUp);
+        assert_eq!(app.cursors.material, Material::Stone);
+
+        // Lists clamp, rings wrap — the same rule the Mines list keeps, and here it
+        // is kept by the same helper rather than by a second copy of the arithmetic.
+        app.update(Action::CursorUp);
+        assert_eq!(app.cursors.material, Material::Stone);
+
+        // Walked the whole way, so the clamp is the table's length and not a number
+        // written down here.
+        for _ in Material::ALL {
+            app.update(Action::CursorDown);
+        }
+        assert_eq!(app.cursors.material, Material::Amethyst);
+    }
+
+    #[test]
+    fn a_list_gesture_reaches_exactly_the_cursor_of_the_open_screen() {
+        // The gestures are decoded without a screen in mind, so `update` is what
+        // decides who answers — and the claim is not merely that an unwired screen
+        // does nothing, but that a wired one moves *its* cursor and no other. Both
+        // halves are asserted for every screen, so the next one phases 6-7 wire fails
+        // here rather than quietly moving two lists at once.
         for screen in Screen::ALL {
-            if screen == Screen::Mines {
+            let mut app = session();
+            app.screen = screen;
+            app.update(Action::CursorDown);
+
+            let mine_moved = app.cursors.mine != MineKind::Stone;
+            let material_moved = app.cursors.material != Material::Stone;
+
+            assert_eq!(
+                mine_moved,
+                screen == Screen::Mines,
+                "{screen:?} answered for the Mines cursor when it should not have"
+            );
+            assert_eq!(
+                material_moved,
+                screen == Screen::Inventory,
+                "{screen:?} answered for the Inventory cursor when it should not have"
+            );
+        }
+    }
+
+    // --- The compression dialog ---
+
+    /// A session on the Inventory tab holding one material in both denominations.
+    ///
+    /// The purse is stocked through the **two conversion doors and the swing**, since
+    /// this crate cannot reach `Inventory::add`: `Player::inventory_mut` is
+    /// `pub(crate)` in the core, deliberately, so a front-end cannot grant itself
+    /// materials. Mining is the only way in, which is the same constraint phase 3 met
+    /// with `Enchants::upgrade` — and it means the fixture below is a state the rules
+    /// actually produce.
+    fn holding_stone(app: &mut App) -> u32 {
+        // A fresh run stands in the Stone mine, so a held Space is Stone in the bag.
+        // Two thousand ticks is comfortably past the hundred raw one unit needs.
+        for _ in 0..2_000 {
+            app.state.tick(Input { space_held: true });
+        }
+        app.state
+            .player()
+            .get_inventory()
+            .count(Item::Raw(Material::Stone))
+    }
+
+    fn mining_session() -> (App, u32) {
+        let mut app = session();
+        app.screen = Screen::Inventory;
+        let raw = holding_stone(&mut app);
+        (app, raw)
+    }
+
+    #[test]
+    fn c_opens_the_dialog_on_the_row_under_the_cursor_at_one_unit() {
+        let (mut app, _) = mining_session();
+
+        app.update(Action::Compress);
+
+        assert_eq!(
+            app.modal,
+            Some(Modal::Compress {
+                material: Material::Stone,
+                direction: Conversion::Compress,
+                units: 1,
+            }),
+            "the dialog did not open at the smallest real conversion"
+        );
+        assert!(app.toasts.is_empty(), "an opened dialog also toasted");
+    }
+
+    /// A pile with nothing to convert gets a toast and no dialog: a modal the player
+    /// could only cancel is a keypress spent on nothing.
+    ///
+    /// Both directions, because they fail on different denominations — a run that has
+    /// mined Stone still holds no Compressed Stone, so `C` refuses where `c` succeeds.
+    #[test]
+    fn a_pile_with_nothing_to_convert_toasts_instead_of_opening_a_dialog() {
+        // Nothing mined at all: neither direction has anything to work with.
+        let mut app = session();
+        app.screen = Screen::Inventory;
+
+        app.update(Action::Compress);
+        assert_eq!(app.modal, None, "an empty pile opened a dialog");
+        assert!(!app.toasts.is_empty(), "an empty pile refused in silence");
+
+        // And after mining: the raw pile converts, the Compressed one still does not.
+        let raw = holding_stone(&mut app);
+        assert!(raw >= RAW_PER_COMPRESSED, "the fixture mined too little");
+        app.toasts = Toasts::new();
+
+        app.update(Action::Decompress);
+        assert_eq!(app.modal, None, "a run with no Compressed units opened one");
+        assert!(!app.toasts.is_empty());
+    }
+
+    #[test]
+    fn the_spinner_walks_and_clamps_between_one_and_the_pile() {
+        let (mut app, raw) = mining_session();
+        let max = raw / RAW_PER_COMPRESSED;
+        assert!(max >= 2, "the fixture mined too little to walk a spinner");
+        app.update(Action::Compress);
+
+        let units = |app: &App| match app.modal {
+            Some(Modal::Compress { units, .. }) => units,
+            _ => 0,
+        };
+
+        app.update(Action::AdjustRight);
+        assert_eq!(units(&app), 2);
+        app.update(Action::AdjustLeft);
+        assert_eq!(units(&app), 1);
+
+        // The floor is one, not zero: a conversion of nothing is not something the
+        // dialog should be able to offer, and `Esc` is how a player backs out.
+        app.update(Action::AdjustLeft);
+        assert_eq!(units(&app), 1);
+
+        // `a` asks for everything and the clamp answers with the pile's own ceiling,
+        // so the bound is read from the inventory rather than written down here.
+        app.update(Action::AdjustMax);
+        assert_eq!(units(&app), max);
+        app.update(Action::AdjustRight);
+        assert_eq!(units(&app), max, "the spinner ran past what is held");
+    }
+
+    /// The gesture the modal takes is the gesture the screen never sees — which is
+    /// the whole reason `update` offers it to the modal first.
+    ///
+    /// Asserted on the Mines screen, where `←` has a visible effect of its own: a
+    /// dialog open over it must not slide the richness dial behind the box.
+    #[test]
+    fn a_stacked_dialog_takes_the_gesture_before_the_screen_below_does() {
+        let (mut app, _) = mining_session();
+        app.update(Action::Compress);
+        // The screen behind the modal is one whose `←` does something.
+        app.screen = Screen::Mines;
+        app.cursors.mine = MineKind::Stone;
+        let setting = app.state.current_mine().get_richness_setting();
+
+        app.update(Action::AdjustRight);
+
+        assert_eq!(
+            app.state.current_mine().get_richness_setting(),
+            setting,
+            "the spinner's key reached the dial behind the dialog"
+        );
+        assert!(matches!(app.modal, Some(Modal::Compress { units: 2, .. })));
+    }
+
+    /// `Esc` still falls through to the one `CloseModal` arm every modal shares, so
+    /// the dialog closes without converting anything.
+    #[test]
+    fn escaping_the_dialog_converts_nothing() {
+        let (mut app, raw) = mining_session();
+        app.update(Action::Compress);
+        app.update(Action::AdjustMax);
+
+        app.update(Action::CloseModal);
+
+        assert_eq!(app.modal, None);
+        assert_eq!(
+            app.state
+                .player()
+                .get_inventory()
+                .count(Item::Raw(Material::Stone)),
+            raw,
+            "a cancelled dialog converted the pile anyway"
+        );
+    }
+
+    /// The round trip through the interface: compress by hand, then decompress back.
+    ///
+    /// It is the conversion doors' own losslessness seen from the front-end, and it
+    /// is what makes the two directions one feature — the second half is only
+    /// reachable *because* the first half minted the units it spends.
+    #[test]
+    fn converting_by_hand_moves_the_denominations_and_announces_it() {
+        let (mut app, raw) = mining_session();
+
+        app.update(Action::Compress);
+        app.update(Action::AdjustMax);
+        app.update(Action::Confirm);
+
+        let minted = raw / RAW_PER_COMPRESSED;
+        let inventory = app.state.player().get_inventory();
+        assert_eq!(inventory.count(Item::Compressed(Material::Stone)), minted);
+        assert_eq!(
+            inventory.count(Item::Raw(Material::Stone)),
+            raw % RAW_PER_COMPRESSED,
+            "compressing left the wrong remainder"
+        );
+        assert_eq!(app.modal, None, "the dialog stayed up after converting");
+        assert!(!app.toasts.is_empty(), "a conversion happened in silence");
+
+        // And back the other way, which is only possible because of the first half.
+        app.update(Action::Decompress);
+        app.update(Action::AdjustMax);
+        app.update(Action::Confirm);
+
+        let inventory = app.state.player().get_inventory();
+        assert_eq!(inventory.count(Item::Compressed(Material::Stone)), 0);
+        assert_eq!(
+            inventory.count(Item::Raw(Material::Stone)),
+            raw,
+            "the round trip did not come back to where it started"
+        );
+    }
+
+    /// The three conversion gestures belong to one screen and one modal, so every
+    /// other combination is a no-op rather than a surprise.
+    ///
+    /// `c` from the Mine screen must not open a dialog about whatever material the
+    /// Inventory cursor happens to rest on — the player is not looking at it — and
+    /// `a` with nothing stacked has no value to push to its maximum.
+    #[test]
+    fn the_conversion_gestures_do_nothing_off_their_screen_and_off_their_modal() {
+        for screen in Screen::ALL {
+            if screen == Screen::Inventory {
                 continue;
             }
             let mut app = session();
             app.screen = screen;
-            app.update(Action::CursorDown);
-            assert_eq!(
-                app.cursors.mine,
-                MineKind::Stone,
-                "{screen:?} moved the Mines cursor"
+            let _ = holding_stone(&mut app);
+
+            app.update(Action::Compress);
+            app.update(Action::Decompress);
+            assert_eq!(app.modal, None, "{screen:?} opened a compression dialog");
+            assert!(
+                app.toasts.is_empty(),
+                "{screen:?} refused a key it never had"
             );
         }
+
+        // And `a` outside the dialog: there is nothing else in the game with a
+        // maximum to be pushed to, so it is deliberately inert.
+        let mut app = session();
+        app.screen = Screen::Inventory;
+        app.update(Action::AdjustMax);
+        assert_eq!(app.modal, None);
+        assert!(app.toasts.is_empty());
+    }
+
+    /// The state a dialog was set against can change underneath it, and confirming
+    /// then refuses rather than converting something else.
+    ///
+    /// Only reachable by setting the modal directly, which is the point: the spinner
+    /// clamps against the *current* pile on every step, so a player cannot walk into
+    /// this. What can is phase 7's tick, which will credit and spend while a modal is
+    /// up. The dialog closes either way — leaving it would invite the player to press
+    /// `Enter` again on the same impossible number.
+    #[test]
+    fn confirming_a_conversion_the_pile_can_no_longer_cover_refuses_and_closes() {
+        let (mut app, raw) = mining_session();
+        app.modal = Some(Modal::Compress {
+            material: Material::Stone,
+            direction: Conversion::Compress,
+            units: u32::MAX,
+        });
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.modal, None, "the refused dialog stayed up");
+        assert_eq!(
+            app.state
+                .player()
+                .get_inventory()
+                .count(Item::Raw(Material::Stone)),
+            raw,
+            "a refused conversion took part of the pile"
+        );
+        assert!(!app.toasts.is_empty(), "the refusal was not announced");
+    }
+
+    #[test]
+    fn a_stacked_dialog_is_drawn_over_the_screen_it_was_opened_from() {
+        let (mut app, _) = mining_session();
+        app.update(Action::Compress);
+        app.sync_view();
+
+        let frame = whole_frame(&render_to_buffer(&app));
+
+        assert!(frame.contains("Compress Stone"), "{frame}");
+        assert!(frame.contains("Enter  do it"), "{frame}");
+        // Drawn *over*, not instead of: the tab bar is still there, which is what
+        // `Clear`-then-render buys and what makes an overlay cost no layout rows.
+        assert!(frame.contains("3 Inventory"), "{frame}");
     }
 
     #[test]

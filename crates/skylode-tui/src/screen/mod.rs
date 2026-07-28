@@ -351,7 +351,20 @@ mod tests {
                     None,
                     None,
                 ],
-                // Phases 5-7 own the rest; `None` is "not mine", which lets `keymap`
+                // The table walks its rows and opens the compression dialog on `c`,
+                // but adjusts nothing and confirms nothing itself: `←/→` and `Enter`
+                // belong to the spinner inside that dialog, which is a modal and is
+                // resolved before any screen is asked.
+                Screen::Inventory => [
+                    Some(Action::CursorUp),
+                    Some(Action::CursorDown),
+                    None,
+                    None,
+                    None,
+                    Some(Action::Compress),
+                    None,
+                ],
+                // Phases 6-7 own the rest; `None` is "not mine", which lets `keymap`
                 // fall through instead of swallowing the key.
                 _ => [const { None }; 7],
             }

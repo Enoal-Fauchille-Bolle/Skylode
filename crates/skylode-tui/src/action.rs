@@ -46,10 +46,27 @@ pub enum Action {
     CursorUp,
     /// Move it down one row.
     CursorDown,
-    /// Turn the active screen's value down one step — the richness dial, today.
+    /// Turn the active screen's value down one step — the richness dial, or the
+    /// compression spinner while its dialog is up.
     AdjustLeft,
     /// Turn it up one step.
     AdjustRight,
+    /// Push that value straight to its maximum (`a`) — the compression dialog's
+    /// *all*.
+    ///
+    /// A gesture and not a purchase: it names *"set this to the most it can be"*,
+    /// which is why the Upgrades screen's `M` (buy to the cap) will not reuse it. One
+    /// moves a number, the other spends an inventory.
+    AdjustMax,
     /// Act on whatever the cursor is sitting on (`Enter`).
     Confirm,
+    /// Open the compression dialog on the material under the Inventory cursor (`c`).
+    ///
+    /// **Not a list gesture**, which is why it is a variant of its own rather than a
+    /// [`Confirm`](Action::Confirm) the Inventory screen interprets: opening a modal
+    /// is a different kind of act from acting on a row, and the two keys that do it
+    /// are `c` and `C` rather than `Enter`.
+    Compress,
+    /// Open the same dialog with the arithmetic reversed (`C`).
+    Decompress,
 }

@@ -34,13 +34,28 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
     }
 
     // 2. A modal captures the rest: while one is up, it gets every key the globals
-    //    would otherwise claim, which is what "modal" means. Help closes on its own
-    //    key (`?`) or `Esc`, and swallows all others so nothing leaks to the screen
-    //    behind it.
+    //    would otherwise claim, which is what "modal" means. Each swallows what it
+    //    does not use, so nothing leaks to the screen behind it.
+    //
+    //    The `match` is exhaustive on purpose: a modal added to the enum cannot be
+    //    stacked until someone decides what its keys are.
     if let Some(modal) = app.modal {
         return match modal {
+            // Help closes on its own key (`?`) or `Esc`.
             Modal::Help => match key.code {
                 KeyCode::Char('?') | KeyCode::Esc => Some(Action::CloseModal),
+                _ => None,
+            },
+            // The compression spinner. It reuses the list gestures rather than
+            // naming keys of its own — `←/→` is *adjust the value under the cursor*
+            // everywhere in UI.md §9, and a spinner is exactly that — which is why
+            // this arm adds one variant (`a`) and not five.
+            Modal::Compress { .. } => match key.code {
+                KeyCode::Left => Some(Action::AdjustLeft),
+                KeyCode::Right => Some(Action::AdjustRight),
+                KeyCode::Char('a') => Some(Action::AdjustMax),
+                KeyCode::Enter => Some(Action::Confirm),
+                KeyCode::Esc => Some(Action::CloseModal),
                 _ => None,
             },
         };
@@ -73,10 +88,10 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
 
 #[cfg(test)]
 mod tests {
-    use skylode_core::game::GameState;
+    use skylode_core::{game::GameState, material::Material};
 
     use super::*;
-    use crate::screen::Screen;
+    use crate::{overlay::Conversion, screen::Screen};
 
     /// A plain key press, with no modifiers.
     fn press(code: KeyCode) -> KeyEvent {
@@ -170,6 +185,51 @@ mod tests {
         assert_eq!(resolve(&app, press(KeyCode::Tab)), None);
         assert_eq!(resolve(&app, press(KeyCode::Char('1'))), None);
         // But `Ctrl-C` still outranks even a modal.
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(resolve(&app, ctrl_c), Some(Action::Quit));
+    }
+
+    /// The compression dialog owns the keyboard the same way Help does, but it has
+    /// gestures to hand back rather than only a way out.
+    ///
+    /// **The five keys it answers are four it did not have to invent.** `←/→` is
+    /// *adjust the value under the cursor* everywhere in UI.md §9 and a spinner is
+    /// exactly that; `Enter` and `Esc` are the acts every modal shares. Only `a` is
+    /// new. That is the dividend of naming the list gestures after movements instead
+    /// of after screens.
+    #[test]
+    fn the_compression_dialog_captures_the_keyboard_and_answers_its_five_keys() {
+        let mut app = session();
+        app.modal = Some(Modal::Compress {
+            material: Material::Iron,
+            direction: Conversion::Compress,
+            units: 3,
+        });
+
+        assert_eq!(
+            resolve(&app, press(KeyCode::Left)),
+            Some(Action::AdjustLeft)
+        );
+        assert_eq!(
+            resolve(&app, press(KeyCode::Right)),
+            Some(Action::AdjustRight)
+        );
+        assert_eq!(
+            resolve(&app, press(KeyCode::Char('a'))),
+            Some(Action::AdjustMax)
+        );
+        assert_eq!(resolve(&app, press(KeyCode::Enter)), Some(Action::Confirm));
+        assert_eq!(resolve(&app, press(KeyCode::Esc)), Some(Action::CloseModal));
+
+        // Everything else is swallowed rather than leaking to the Inventory screen
+        // behind it — including the globals, which is what "modal" means. `c` would
+        // otherwise open a second dialog over the first.
+        assert_eq!(resolve(&app, press(KeyCode::Tab)), None);
+        assert_eq!(resolve(&app, press(KeyCode::Char('q'))), None);
+        assert_eq!(resolve(&app, press(KeyCode::Char('c'))), None);
+        assert_eq!(resolve(&app, press(KeyCode::Char('?'))), None);
+
+        // `Ctrl-C` still outranks even a modal — the one key that is never captured.
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(resolve(&app, ctrl_c), Some(Action::Quit));
     }
