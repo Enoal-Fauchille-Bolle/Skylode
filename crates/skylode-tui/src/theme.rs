@@ -138,6 +138,19 @@ const ROLES: [Color; 6] = [ACCENT, MUTED, AFFORDABLE, REFUSED, COMPRESS_FIRST, C
 /// explained and colouring it is right — and `the_tilde_is_only_ever_the_mark`
 /// pins that, so the phase-5 screens that introduce the real `~` rows find the
 /// question already asked rather than discovering it as a rendering bug.
+///
+/// **`—` is drawn in the mark column and is deliberately not here.** Upgrades › Mines
+/// uses it on the rows that have no price to quote — a maxed track, or the End's
+/// level gate (`docs/UI.md` §5.4.2) — and it is the one glyph in that column this
+/// module does not own. Adding it would be the `~` hazard, except already realised:
+/// the em dash is ordinary prose in half the interface, and every one of those lines
+/// already passes through [`marked`] — the Stats history (`20:13  Explosive — 9
+/// blocks cleared`), the Upgrades detail pane (`Obsidian Mine — richness`), and
+/// `overlay::help`'s own legend. One entry here would tint all of them.
+///
+/// So it renders in the terminal's default foreground, and that is the right answer
+/// rather than a gap: `✓ ~ ✗` say what the ore can buy, and `—` says the question was
+/// never asked on this row. An absence of an affordability answer has no hue.
 const MARKS: [(char, Color); 5] = [
     ('✓', AFFORDABLE),
     ('✗', REFUSED),
@@ -312,6 +325,28 @@ mod tests {
             style_of(&line, '~'),
             Some(Style::default().fg(COMPRESS_FIRST))
         );
+    }
+
+    #[test]
+    fn the_em_dash_stays_prose_on_both_of_the_lines_it_appears_on() {
+        // The mirror of the test above, and the reason `—` is not in `MARKS`. It is
+        // the mark column's "no price here" glyph on one row and ordinary prose on
+        // the next, so the two are asserted together: styling it would tint the
+        // history line, and the history line is why it cannot be styled.
+        for row in [
+            "   Stone          Size     maxed        —",
+            "20:13  Explosive — 9 blocks cleared",
+        ] {
+            let line = marked(row);
+            // `Some(default)` and not `None`: an unmarked dash is still *in* a span,
+            // it is simply in the run of plain text rather than in one of its own.
+            assert_eq!(
+                style_of(&line, '—'),
+                Some(Style::default()),
+                "the em dash took a colour: {row:?}"
+            );
+            assert_eq!(text_of(&line), row, "the text moved");
+        }
     }
 
     #[test]

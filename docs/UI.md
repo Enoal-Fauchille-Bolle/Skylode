@@ -202,6 +202,15 @@ and the current level render adjacent as `▸●`, so it has to separate from th
 beside it *and* from the `✓` on the reached levels above it. Titles take the accent
 **plus bold**, so a title still reads as a title where the hue is dropped.
 
+**`—` is drawn in the mark column and is deliberately absent from this table.** §5.4.2
+uses it on the rows with no price to quote — a maxed track, the End's level gate — and
+it stays in the terminal's default foreground. It cannot be added: the em dash is
+ordinary prose across half the interface (the Stats history, the Upgrades detail pane,
+the Help legend itself), and the colouring pass reads whole finished rows, so one
+entry here would tint every one of those. That is the right answer rather than a gap.
+`✓ ~ ✗` say what the ore can buy; `—` says the question was never asked on this row,
+and an absence of an answer has no hue.
+
 **Every entry doubles a glyph that is already there.** §4.4's rule is not relaxed
 for chrome: the colour of a mark is *derived from* the mark, in one place, so it can
 neither contradict its glyph nor appear without one. Colour is never the only thing
