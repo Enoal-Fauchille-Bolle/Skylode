@@ -270,6 +270,34 @@ impl Pickaxe {
 }
 
 impl PickaxeTier {
+    /// The tier's display name, e.g. `"Diamond"` — the *material*, without the
+    /// word "Pickaxe".
+    ///
+    /// **The noun is the caller's to add**, and that is what keeps one table
+    /// serving two very differently shaped readouts. The Mine screen writes
+    /// `Diamond Pickaxe  Efficiency IV` on one line; the Upgrades ladder writes
+    /// forty-six rungs of which five in six are `Diamond Eff III`, where the word
+    /// "Pickaxe" appears once per tier and would be noise on the rest. A table that
+    /// baked it in would force the second caller to strip it back off.
+    ///
+    /// Sits beside [`base_power`](PickaxeTier::base_power) rather than in the
+    /// front-end because every other name in the game already does —
+    /// [`Material::name`](crate::material::Material::name),
+    /// [`MineKind::name`](crate::mine_kind::MineKind::name),
+    /// [`EnchantType::name`](crate::enchant::EnchantType::name),
+    /// [`World::name`](crate::world::World::name) — and a name kept in the UI is a
+    /// second copy that drifts the day a tier is renamed here.
+    pub fn name(self) -> &'static str {
+        match self {
+            PickaxeTier::Wooden => "Wooden",
+            PickaxeTier::Stone => "Stone",
+            PickaxeTier::Iron => "Iron",
+            PickaxeTier::Gold => "Gold",
+            PickaxeTier::Diamond => "Diamond",
+            PickaxeTier::Netherite => "Netherite",
+        }
+    }
+
     /// Returns the flat mining power contributed by the tier alone, before
     /// enchantments.
     ///
@@ -440,6 +468,28 @@ mod tests {
             assert!(pickaxe.upgrade().is_ok());
         }
         pickaxe
+    }
+
+    /// Every tier names itself, distinctly, and names the *material* only.
+    ///
+    /// The last assertion is the interesting one: it pins the absence of the word
+    /// "Pickaxe", which is the contract the Upgrades ladder's forty-six rungs depend
+    /// on. Baking the noun in would still compile everywhere and would print
+    /// `Diamond Pickaxe Eff III` on thirty of those rungs.
+    #[test]
+    fn every_tier_names_its_material_and_nothing_else() {
+        use std::collections::BTreeSet;
+
+        let names: BTreeSet<&str> = ALL_TIERS.iter().map(|tier| tier.name()).collect();
+        assert_eq!(names.len(), ALL_TIERS.len(), "two tiers share a name");
+        for tier in ALL_TIERS {
+            assert!(!tier.name().is_empty(), "{tier:?} has no name");
+            assert!(
+                !tier.name().contains("Pickaxe"),
+                "{tier:?} names the tool as well as the material"
+            );
+        }
+        assert_eq!(PickaxeTier::Diamond.name(), "Diamond");
     }
 
     #[test]

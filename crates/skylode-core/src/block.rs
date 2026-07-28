@@ -97,6 +97,56 @@ impl Block {
         }
     }
 
+    /// The block's display name, e.g. `"Iron Block"`, `"Quartz Ore"`, `"End Stone"`.
+    ///
+    /// **A table, and not `format!("{} Ore", material.name())`**, because the
+    /// derivation is wrong on three of the twenty-four rows and would be wrong
+    /// silently. [`AncientDebris`](Block::AncientDebris)' dense form is *Netherite
+    /// Block* — the material is Ancient Debris, the name is not — and
+    /// [`Cobblestone`](Block::Cobblestone) and [`Netherrack`](Block::Netherrack)
+    /// carry no suffix at all. A block's name belongs to the block, the way
+    /// [`MineKind::name`](crate::mine_kind::MineKind::name) belongs to the mine and
+    /// not to what it mostly produces.
+    ///
+    /// Kept apart from [`Material::name`](crate::material::Material::name) for the
+    /// reason those two are already apart from a save key: a display name may be
+    /// reworded, and the twenty-four rows here reword independently of the fifteen
+    /// there. `Block` has no save-key table of its own — a save stores the mine's
+    /// kind and its dial, never a grid of block names.
+    ///
+    /// Read by the Mine screen, whose Break gauge is labelled with the block being
+    /// dug (`organization/UI-EN.md` §5.2). That caller reads the name off the grid
+    /// cell the target points at rather than storing it, so a name can never
+    /// disagree with the cell it is drawn over.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Stone => "Stone",
+            Self::Cobblestone => "Cobblestone",
+            Self::CoalOre => "Coal Ore",
+            Self::CoalBlock => "Coal Block",
+            Self::IronOre => "Iron Ore",
+            Self::IronBlock => "Iron Block",
+            Self::GoldOre => "Gold Ore",
+            Self::GoldBlock => "Gold Block",
+            Self::LapisOre => "Lapis Ore",
+            Self::LapisBlock => "Lapis Block",
+            Self::RedstoneOre => "Redstone Ore",
+            Self::RedstoneBlock => "Redstone Block",
+            Self::EmeraldOre => "Emerald Ore",
+            Self::EmeraldBlock => "Emerald Block",
+            Self::DiamondOre => "Diamond Ore",
+            Self::DiamondBlock => "Diamond Block",
+            Self::Netherrack => "Netherrack",
+            Self::QuartzOre => "Quartz Ore",
+            Self::AncientDebris => "Ancient Debris",
+            Self::NetheriteBlock => "Netherite Block",
+            Self::Obsidian => "Obsidian",
+            Self::CryingObsidian => "Crying Obsidian",
+            Self::Endstone => "End Stone",
+            Self::Amethyst => "Amethyst",
+        }
+    }
+
     /// Returns the hardness of the block,
     /// which determines how long it takes to mine.
     ///
@@ -404,6 +454,44 @@ mod tests {
             24,
             "a Block variant was added or removed: update ALL_BLOCKS"
         );
+    }
+
+    /// Two blocks sharing a name would make the Break gauge ambiguous about what
+    /// is under the pickaxe, which is the one thing that label is for.
+    ///
+    /// Uniqueness is asserted by counting a set rather than by comparing pairs: the
+    /// `match` is exhaustive, so the only way to get this wrong is to paste a row
+    /// and forget to edit it, and a duplicate collapses the set by one.
+    #[test]
+    fn every_block_has_its_own_name() {
+        use std::collections::BTreeSet;
+
+        let names: BTreeSet<&str> = ALL_BLOCKS.iter().map(|block| block.name()).collect();
+        assert_eq!(
+            names.len(),
+            ALL_BLOCKS.len(),
+            "two blocks answer to the same name"
+        );
+        for &block in ALL_BLOCKS {
+            assert!(!block.name().is_empty(), "{block:?} has no name");
+        }
+    }
+
+    /// The three rows that stop this table from being `format!("{material} Ore")`.
+    ///
+    /// Written down because the derivation is *nearly* right, which is what makes it
+    /// dangerous: it would produce "Ancient Debris Block" for the block the game
+    /// calls Netherite, and would suffix the two fillers that carry no suffix. If
+    /// someone ever replaces the table with a format string, this is what says no.
+    #[test]
+    fn a_blocks_name_is_not_derivable_from_its_material() {
+        assert_eq!(Block::NetheriteBlock.material(), Material::AncientDebris);
+        assert_eq!(Block::NetheriteBlock.name(), "Netherite Block");
+
+        assert_eq!(Block::Cobblestone.material(), Material::Stone);
+        assert_eq!(Block::Cobblestone.name(), "Cobblestone");
+
+        assert_eq!(Block::Netherrack.name(), Material::Netherrack.name());
     }
 
     /// An ore and its dense form are two shapes of one resource, so they must
