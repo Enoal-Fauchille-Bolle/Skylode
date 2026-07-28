@@ -10,8 +10,10 @@
 //! 2. **In what?** The per-track functions (added alongside this) turn a mine, a
 //!    tier, or an enchant into a [`Cost`] — the place the *"which material"*
 //!    mapping lives.
-//! 3. **Can they pay, and take it if so?** The transactional purchase path checks
-//!    solvency, debits, and applies the upgrade, refusing as a no-op.
+//! 3. **Can they pay, and take it if so?** [`affordability`] answers the first half
+//!    in three states, not two — the till needs a `bool`, but an interface has to
+//!    tell *"go mine more"* from *"compress first"* — and the transactional purchase
+//!    path answers the second, debiting and applying, refusing as a no-op.
 //!
 //! ## Why a cost is a *list* of lines
 //!
@@ -676,18 +678,137 @@ pub fn mine_richness_cost(kind: MineKind, current_richness_level: u32) -> Cost {
 // are established, the apply cannot fail — it is called on a state its own
 // pre-check already cleared.
 
+/// One demand the inventory does not meet: what is owed, and what is held against
+/// it.
+///
+/// **Both numbers, not the difference**, because the interface quotes both — *"6
+/// Compressed Iron, you have 2"* (`organization/UI-EN.md` §6.4). A bare shortfall of
+/// four would make the player do the subtraction backwards to learn what the price
+/// actually is.
+///
+/// The `item` carries the **denomination**, and that is what a caller reads to
+/// choose its wording: a shortfall in [`Item::Compressed`] is cleared by
+/// [`compress`](Inventory::compress), one in [`Item::Raw`] by
+/// [`decompress`](Inventory::decompress) — or by mining, depending on which variant
+/// of [`Affordability`] it arrived in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shortfall {
+    /// What is owed, in the denomination it is owed in.
+    pub item: Item,
+    /// How many of it the price demands.
+    pub needed: u32,
+    /// How many the player holds.
+    pub held: u32,
+}
+
+/// What a [`Cost`] is, held against an [`Inventory`]: the three-state answer
+/// `docs/MECHANICS.md` requires a UI to be able to give.
+///
+/// **The two refusals are different news, and collapsing them into one `✗ can't
+/// afford` is what MECHANICS forbids by name.** They are not two wordings of one
+/// verdict; they drive two different loops (`docs/UI.md` §8.4).
+/// [`Insufficient`](Affordability::Insufficient) is *"come back later"* — the player
+/// leaves the screen and goes mining. [`CompressFirst`](Affordability::CompressFirst)
+/// is *"you already own this, do the paperwork"* — a short trip to the Inventory
+/// screen that never touches a mine.
+///
+/// **Both refusals carry their shortfalls** rather than a bare variant, because the
+/// toast has to name the number the player is about to go and fix. It costs nothing:
+/// the query computed them to reach its verdict.
+///
+/// Two things worth knowing before matching on this:
+///
+/// - **`CompressFirst` can name a shortfall in *raw*.** A player who compressed too
+///   much — `7 Compressed Iron` against a price of `6 Compressed + 50` — holds 700
+///   against 650 and is still refused, in the *other* direction. The fix is
+///   [`decompress`](Inventory::decompress). The variant is named for the common case,
+///   not the only one; the [`Item`] of each [`Shortfall`] is what says which verb
+///   applies.
+/// - **`CompressFirst` is always repairable, and `Insufficient` never is** without
+///   mining. That is exactly what the split below tests for, and it is what makes
+///   the two branches trustworthy enough to route a player on. See
+///   `a_compress_first_refusal_can_always_be_cleared_by_converting`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Affordability {
+    /// Every line is held in the exact denomination quoted; the till will take it.
+    Affordable,
+    /// The value is there, the denomination is not — one conversion away.
+    CompressFirst(Vec<Shortfall>),
+    /// The ore itself is missing, whatever denomination it is counted in.
+    Insufficient(Vec<Shortfall>),
+}
+
+/// Which of the three states `cost` is in against `inventory`.
+///
+/// **The order of the two tests is the rule, and `Insufficient` wins.** Wealth is
+/// asked first, per material and blind to denomination
+/// ([`Inventory::raw_value`]); only a price the player can *cover* is then checked
+/// for its exact shape. A multi-material price short of one ore and merely
+/// mis-denominated in another is [`Insufficient`](Affordability::Insufficient),
+/// because the player has one loop to
+/// run at a time and it is the one that leaves the screen — telling them to compress
+/// would send them on a trip that ends in the same refusal.
+///
+/// The two passes quote their shortfalls in the denomination each question is asked
+/// in, which is why they are not the same list. The wealth pass reports
+/// [`Item::Raw`] totals (*"650 needed, 400 held"*), since a value is counted in raw
+/// whatever it is stored as; the shape pass reports the exact line that is short
+/// (*"6 Compressed Iron, you have 2"*).
+///
+/// [`can_afford`] is this function's `bool`, and is written on top of it so there is
+/// one implementation of the rule and two shapes of the answer.
+pub fn affordability(inventory: &Inventory, cost: &Cost) -> Affordability {
+    // Pass one: is the ore there at all? Asked per material and in raw, so a player
+    // holding the value in either denomination passes.
+    let poor: Vec<Shortfall> = cost
+        .lines()
+        .iter()
+        .filter_map(|line| {
+            let owed = line.compressed * RAW_PER_COMPRESSED + line.raw;
+            let held = inventory.raw_value(line.material);
+            (held < owed).then_some(Shortfall {
+                item: Item::Raw(line.material),
+                needed: owed,
+                held,
+            })
+        })
+        .collect();
+    if !poor.is_empty() {
+        return Affordability::Insufficient(poor);
+    }
+
+    // Pass two: is it held in the shape the price is quoted in? The wealth is
+    // established, so anything short here is a denomination the player can convert
+    // their way to — in one direction or the other.
+    let misshaped: Vec<Shortfall> = cost
+        .lines()
+        .iter()
+        .flat_map(CostLine::requirements)
+        .filter_map(|(item, needed)| {
+            let held = inventory.count(item);
+            (held < needed).then_some(Shortfall { item, needed, held })
+        })
+        .collect();
+    if misshaped.is_empty() {
+        Affordability::Affordable
+    } else {
+        Affordability::CompressFirst(misshaped)
+    }
+}
+
 /// Whether the inventory holds every line of `cost`, in the exact denominations
 /// quoted.
 ///
 /// Strict, like [`Inventory::has`]: 650 raw Iron does not satisfy a `6 Compressed
-/// Iron` line. This is what the Upgrades screen reads to enable a buy button. A
-/// [`Cost`] is one line per material by construction, so each line is checked on
-/// its own.
+/// Iron` line. This is what the till reads before debiting, and what the Upgrades
+/// screen reads to enable a buy button.
+///
+/// **Written on top of [`affordability`]** rather than beside it, so the rule the
+/// screen renders and the rule the till enforces cannot disagree. The two differ only
+/// in how much of the answer they keep: a caller that is about to *pay* needs a
+/// `bool`, a caller that is about to *explain* needs the variant and its shortfalls.
 pub fn can_afford(inventory: &Inventory, cost: &Cost) -> bool {
-    cost.lines()
-        .iter()
-        .flat_map(CostLine::requirements)
-        .all(|(item, amount)| inventory.has(item, amount))
+    affordability(inventory, cost) == Affordability::Affordable
 }
 
 /// Debits `cost` from the inventory, or refuses without touching it.
@@ -2050,5 +2171,204 @@ mod tests {
             !can_afford(&loose, &cost),
             "raw items satisfied a price quoted in Compressed units"
         );
+    }
+
+    // --- The three-state refusal ---
+
+    /// A price of `6 Compressed Iron + 50 Iron`: the worked example every doc in the
+    /// repo reasons about, and the only shape these tests need.
+    fn iron_650() -> Cost {
+        Cost::single(Material::Iron, 650)
+    }
+
+    /// An inventory holding exactly these two denominations of Iron.
+    fn holding(compressed: u32, raw: u32) -> Inventory {
+        let mut inventory = Inventory::new();
+        if compressed > 0 {
+            inventory.add(Item::Compressed(Material::Iron), compressed);
+        }
+        if raw > 0 {
+            inventory.add(Item::Raw(Material::Iron), raw);
+        }
+        inventory
+    }
+
+    /// The three states, on the one price, told apart by nothing but what is held.
+    ///
+    /// The middle case is the whole reason this query replaced a `bool`: **680 is
+    /// more Iron than the 650 the price asks for, and it is still refused.** A screen
+    /// that answered "you cannot afford this" there would be lying to a player who
+    /// can. It is the frame `docs/UI.md` §5.3 is deliberately drawn mid-refusal on.
+    #[test]
+    fn the_three_states_are_told_apart_by_what_is_held() {
+        let cost = iron_650();
+
+        // Exactly the shape quoted.
+        assert_eq!(
+            affordability(&holding(6, 50), &cost),
+            Affordability::Affordable
+        );
+
+        // 2 Compressed + 480 raw = 680: the value is there, the denomination is not.
+        assert!(matches!(
+            affordability(&holding(2, 480), &cost),
+            Affordability::CompressFirst(_)
+        ));
+
+        // 4 Compressed = 400: the ore itself is missing.
+        assert!(matches!(
+            affordability(&holding(4, 0), &cost),
+            Affordability::Insufficient(_)
+        ));
+    }
+
+    /// Each refusal quotes its shortfall in the denomination its own question was
+    /// asked in, because the two toasts are written from those numbers.
+    ///
+    /// `Insufficient` counts in raw — a wealth is a wealth whatever it is stored as,
+    /// so *"650 needed, 400 held"*. `CompressFirst` names the exact line that is
+    /// short — *"6 Compressed Iron, you have 2"* — since that is the one the player
+    /// is about to go and mint.
+    #[test]
+    fn each_refusal_quotes_the_denomination_its_question_was_asked_in() {
+        let cost = iron_650();
+
+        let Affordability::Insufficient(poor) = affordability(&holding(4, 0), &cost) else {
+            unreachable!("400 raw Iron is short of a 650 price")
+        };
+        assert_eq!(
+            poor,
+            vec![Shortfall {
+                item: Item::Raw(Material::Iron),
+                needed: 650,
+                held: 400,
+            }]
+        );
+
+        let Affordability::CompressFirst(misshaped) = affordability(&holding(2, 480), &cost) else {
+            unreachable!("680 in the wrong shape is a compress-first refusal")
+        };
+        assert_eq!(
+            misshaped,
+            vec![Shortfall {
+                item: Item::Compressed(Material::Iron),
+                needed: 6,
+                held: 2,
+            }]
+        );
+    }
+
+    /// The case the variant is *not* named for, and the one a caller must not assume
+    /// away: a player who compressed too much is short of **raw**.
+    ///
+    /// Seven Compressed Iron is 700 against a 650 price — richer than the price, and
+    /// refused, because nothing can pay the 50-raw line. The fix is
+    /// [`Inventory::decompress`], and the only thing that says so is the [`Item`] of
+    /// the shortfall. A front-end that read the variant alone and printed "compress
+    /// first" would send this player the wrong way.
+    #[test]
+    fn a_compress_first_refusal_can_point_the_other_way() {
+        let Affordability::CompressFirst(misshaped) = affordability(&holding(7, 0), &iron_650())
+        else {
+            unreachable!("700 held against 650 owed is not an Insufficient")
+        };
+
+        assert_eq!(
+            misshaped,
+            vec![Shortfall {
+                item: Item::Raw(Material::Iron),
+                needed: 50,
+                held: 0,
+            }]
+        );
+    }
+
+    /// **The invariant that makes the split trustworthy enough to route a player on:
+    /// a `CompressFirst` is always clearable without mining.**
+    ///
+    /// It follows from the order of the two passes — the wealth test has already
+    /// succeeded — and the constructive proof is the walk below: decompress
+    /// everything to raw, then mint back exactly the split the price quotes. Asserted
+    /// across every shape of a 650 price, so it is a property and not one example.
+    ///
+    /// If this ever fails, the bug is not in the wording of a toast: it is that the
+    /// interface is sending players on a trip that ends where it started.
+    #[test]
+    fn a_compress_first_refusal_can_always_be_cleared_by_converting() {
+        let cost = iron_650();
+        // Every way of holding 650 or more Iron across the two denominations, up to a
+        // little over the price — the band `CompressFirst` lives in.
+        for compressed in 0..=9u32 {
+            for raw in 0..=200u32 {
+                let mut inventory = holding(compressed, raw);
+                let Affordability::CompressFirst(_) = affordability(&inventory, &cost) else {
+                    continue;
+                };
+
+                // Flatten, then mint the quoted split back out of the raw pile.
+                let units = inventory.count(Item::Compressed(Material::Iron));
+                assert!(inventory.decompress(Material::Iron, units).is_ok());
+                assert!(
+                    inventory.compress(Material::Iron, 6).is_ok(),
+                    "{compressed} Compressed + {raw} raw could not mint the split it was refused for"
+                );
+
+                assert_eq!(
+                    affordability(&inventory, &cost),
+                    Affordability::Affordable,
+                    "{compressed} Compressed + {raw} raw stayed refused after converting"
+                );
+            }
+        }
+    }
+
+    /// A price short of one ore and merely mis-denominated in another is
+    /// `Insufficient`, not `CompressFirst`.
+    ///
+    /// The order of the two passes decides this, and it decides it that way because a
+    /// player runs one loop at a time: sending them to the Inventory screen to
+    /// compress the material they *do* own would end in the same refusal, since the
+    /// one they do not own is still missing. "Go mine" is the news that helps.
+    #[test]
+    fn a_mixed_shortage_is_reported_as_the_loop_that_helps() {
+        let cost = Cost::new(vec![
+            CostLine::from_raw_total(Material::Iron, 650),
+            CostLine::from_raw_total(Material::Gold, 300),
+        ]);
+        // Iron: the value in the wrong shape. Gold: simply not there.
+        let mut inventory = holding(2, 480);
+        inventory.add(Item::Raw(Material::Gold), 100);
+
+        let Affordability::Insufficient(poor) = affordability(&inventory, &cost) else {
+            unreachable!("a missing ore outranks a mis-denominated one")
+        };
+        // Only the ore that is genuinely absent is named: the Iron line is a shape
+        // problem, and reporting it here would send the player to compress on a trip
+        // that cannot succeed.
+        assert_eq!(
+            poor,
+            vec![Shortfall {
+                item: Item::Raw(Material::Gold),
+                needed: 300,
+                held: 100,
+            }]
+        );
+    }
+
+    /// `can_afford` is `affordability`'s `bool` and nothing else — asserted over the
+    /// three states rather than trusted, because the two are read by different
+    /// callers (the till, and the screen) and a drift between them would let a
+    /// purchase the UI marked `✓` be refused at the counter.
+    #[test]
+    fn can_afford_is_exactly_the_affordable_state() {
+        let cost = iron_650();
+        for (compressed, raw) in [(6, 50), (2, 480), (4, 0), (7, 0), (0, 0)] {
+            let inventory = holding(compressed, raw);
+            assert_eq!(
+                can_afford(&inventory, &cost),
+                affordability(&inventory, &cost) == Affordability::Affordable,
+                "{compressed} Compressed + {raw} raw: the two queries disagree"
+            );
+        }
     }
 }
