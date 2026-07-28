@@ -431,8 +431,19 @@ impl View {
     /// The placeholder save drawn throughout UI.md §5: level 23, Diamond
     /// pickaxe, standing in the Iron Mine.
     ///
-    /// These figures are chosen to match the wireframes so a rendered screen can
-    /// be compared against the counted frame, not invented independently.
+    /// Every figure is transcribed from a wireframe rather than invented, **with one
+    /// deliberate exception: the grid**. `docs/UI.md` §5.1 counts a 12×7 mine, which
+    /// is honest about a level-5 mine and silent about the thing worth eyeballing —
+    /// whether a *maxed* one still fits the panel reserved for it. The live fixture is
+    /// therefore the full 20×10, and [`sample_grid_wireframe_12x7`] is one line away
+    /// when comparing against the counted frame is what is wanted.
+    ///
+    /// The exception has to be carried through, and that is what the three mine
+    /// figures below are about: `mine_panel.size_level`, the Mines list row in
+    /// [`sample_mines`] and the Size track in [`sample_upgrades`] all describe the
+    /// *same* Iron Mine, on three screens the player can reach in two keystrokes.
+    /// `the_three_fixtures_agree_on_the_standing_mine` is what stops them drifting
+    /// apart the next time the grid is swapped.
     pub fn sample() -> Self {
         // **The one line that switches grid fixture.** Swap in
         // `sample_grid_small_5x5` or `sample_grid_wireframe_12x7` to see the same
@@ -665,7 +676,7 @@ fn sample_upgrades() -> UpgradesView {
             r("Stone          Richness maxed", "—", false, false),
             r("Coal           Size     20x10", "~", false, false),
             r("Coal           Richness 8", "~", false, false),
-            r("Iron           Size     14x8", "✓", false, false),
+            r("Iron           Size     maxed", "—", false, false),
             r("Iron           Richness 1", "✓", false, false),
             r("Gold           Size     12x7", "~", false, false),
             r("Gold           Richness 3", "~", false, false),
@@ -733,7 +744,7 @@ fn sample_mines() -> MinesView {
     let rows = [
         (MineKind::Stone, "20 x 10   R 9"),
         (MineKind::Coal, "18 x 9   R 7"),
-        (MineKind::Iron, "12 x 7   R 0"),
+        (MineKind::Iron, "20 x 10   R 0"),
         (MineKind::Gold, "10 x 6   R 2"),
         (MineKind::Lapis, "8 x 5   R 1"),
         (MineKind::Redstone, "6 x 4   R 0"),
@@ -1152,6 +1163,61 @@ mod tests {
         let view = View::sample();
         assert_eq!(view.grid.len(), 10);
         assert_eq!(view.grid.first().map_or(0, Vec::len), 20);
+    }
+
+    #[test]
+    fn the_three_fixtures_agree_on_the_standing_mine() {
+        // The Mine panel, the Mines list and the Upgrades Size track all describe the
+        // *same* mine, on three screens two keystrokes apart — and they are three
+        // independent fixtures, so nothing but this test holds them together. It is
+        // written because they came apart: growing the grid to 20×10 left the list
+        // still quoting `12 x 7` and Upgrades still offering a `14x8` step for a mine
+        // already at its ceiling, which is three answers to one question.
+        let view = View::sample();
+        let columns = view.grid.first().map_or(0, Vec::len);
+        let rows = view.grid.len();
+        let size = format!("{columns} x {rows}");
+
+        // The Mines list, on the row for the mine the player is standing in.
+        let listed = view
+            .mines
+            .rows
+            .iter()
+            .find(|row| row.kind == view.mine_kind)
+            .map(|row| row.detail.clone())
+            .unwrap_or_default();
+        assert!(
+            listed.contains(&size),
+            "the Mines list says {listed:?}, but the grid is {size}"
+        );
+        assert!(
+            listed.contains(&format!("R {}", view.mine_panel.richness_level)),
+            "the Mines list says {listed:?}, but the Mine panel says richness {}",
+            view.mine_panel.richness_level
+        );
+
+        // Upgrades › Mines, on the Size track for that same mine. The grid is the
+        // largest mine the game has, so there is no step left to sell — and the row
+        // has to say so rather than quote a next size. `maxed` carries `—`, the one
+        // glyph in that column `theme::MARKS` deliberately does not own.
+        assert_eq!(
+            (columns, rows),
+            (20, 10),
+            "the live grid is no longer the largest mine, so the Size track below \
+             should quote a next step instead of `maxed`"
+        );
+        let prefix = view.mine_kind.name();
+        let track = view
+            .upgrades
+            .mines
+            .rows
+            .iter()
+            .find(|row| row.text.starts_with(prefix) && row.text.contains("Size"));
+        assert_eq!(
+            track.map(|row| (row.text.contains("maxed"), row.mark.as_str())),
+            Some((true, "—")),
+            "the Size track still offers {prefix} a step it is already past"
+        );
     }
 
     #[test]
