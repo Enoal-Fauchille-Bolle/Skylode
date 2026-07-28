@@ -2621,7 +2621,6 @@ mod tests {
     // =====================================================================
 
     use crate::material::ALL_MATERIALS;
-    use crate::mine_kind::ALL_MINES;
     use crate::tunables::{AMETHYST_PER_CLIMB, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND};
     use std::collections::BTreeMap;
 
@@ -2907,7 +2906,7 @@ mod tests {
     /// leaving Stone costs Coal — that the deepest mine does not produce, so a player
     /// climbing tiers has to farm the mine that does, not just the richest one open.
     fn mine_for_material(state: &GameState, material: Material) -> Option<MineKind> {
-        ALL_MINES.iter().copied().rfind(|&kind| {
+        MineKind::ALL.iter().copied().rfind(|&kind| {
             (kind.common_material() == material || kind.value_material() == material)
                 && state.player().mine_lock(kind).is_open()
         })
@@ -2916,7 +2915,7 @@ mod tests {
     /// The deepest open mine, whatever it produces — the richest one the player can
     /// enter, and the Amethyst mine once Netherite opens it.
     fn deepest_open(state: &GameState) -> Option<MineKind> {
-        ALL_MINES
+        MineKind::ALL
             .iter()
             .copied()
             .rfind(|&kind| state.player().mine_lock(kind).is_open())
@@ -2934,10 +2933,10 @@ mod tests {
     }
 
     /// The shallowest reachable mine the completionist has not yet fully developed, or
-    /// [`None`] once every open mine is maxed. `ALL_MINES` runs shallow → deep, so
+    /// [`None`] once every open mine is maxed. `MineKind::ALL` runs shallow → deep, so
     /// `find` yields the shallowest, and the sweep back-fills the ladder in order.
     fn next_undeveloped_mine(state: &GameState) -> Option<MineKind> {
-        ALL_MINES.iter().copied().find(|&kind| {
+        MineKind::ALL.iter().copied().find(|&kind| {
             state.player().mine_lock(kind).is_open() && !mine_fully_developed(state, kind)
         })
     }
@@ -3064,7 +3063,7 @@ mod tests {
         {
             return false;
         }
-        ALL_MINES
+        MineKind::ALL
             .iter()
             .copied()
             .filter(|&kind| state.player().mine_lock(kind).is_open())

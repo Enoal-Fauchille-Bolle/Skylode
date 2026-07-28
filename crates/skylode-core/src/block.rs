@@ -582,7 +582,7 @@ mod tests {
     /// is the whole reason XP stopped being the drop count.
     #[test]
     fn a_cell_of_value_is_worth_three_of_its_mines_common_cell() {
-        for &mine in crate::mine_kind::ALL_MINES {
+        for mine in crate::mine_kind::MineKind::ALL {
             assert_eq!(
                 mine.value_block().xp_value(),
                 3 * mine.common_block().xp_value(),

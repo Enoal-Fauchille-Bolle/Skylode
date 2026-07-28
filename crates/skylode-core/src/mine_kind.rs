@@ -87,6 +87,41 @@ pub enum MineKind {
 }
 
 impl MineKind {
+    /// Every mine, in declaration order — which is world by world, in progression
+    /// order.
+    ///
+    /// **Public, unlike the `ALL_*` constants the other tables keep for their own
+    /// tests**, because a front-end has to *list* the twelve: the Mines screen draws
+    /// one row per mine grouped under three world headers
+    /// (`organization/UI-EN.md` §5.3), and it cannot ask the enum to enumerate
+    /// itself. The alternative was a twelve-entry array copied into `skylode-tui`,
+    /// which is exactly the second copy this module spends its every method
+    /// avoiding.
+    ///
+    /// The order is load-bearing twice over: it is the order the screen lists them
+    /// in, and — since [`Ord`] is derived from the same declaration — the order a
+    /// save's [`BTreeMap`](std::collections::BTreeMap) of mines is written in.
+    ///
+    /// An array and not a slice, so the length is in the type: a caller that wants
+    /// twelve of something gets a compile error rather than a short loop.
+    /// [`all_mines_covers_every_variant`](self) is what catches a variant added to
+    /// the enum and forgotten here, since nothing in the language ties the two
+    /// together.
+    pub const ALL: [Self; 12] = [
+        Self::Stone,
+        Self::Coal,
+        Self::Iron,
+        Self::Gold,
+        Self::Lapis,
+        Self::Redstone,
+        Self::Emerald,
+        Self::Diamond,
+        Self::Quartz,
+        Self::AncientDebris,
+        Self::Obsidian,
+        Self::Amethyst,
+    ];
+
     /// The mine's **common cell**: the block that makes up the bulk of a fresh
     /// grid, and whose material funds the mine's own growth.
     ///
@@ -267,28 +302,6 @@ impl MineLock {
     }
 }
 
-/// Every [`MineKind`] variant, for tests that must cover the whole enum.
-///
-/// Test-only; see [`ALL_BLOCKS`](crate::block::ALL_BLOCKS) for the rationale. The
-/// `match`es above are exhaustive, so adding a variant already breaks the build;
-/// the length assertion in `all_mines_covers_every_variant` is what reminds you to
-/// extend this list too.
-#[cfg(test)]
-pub(crate) const ALL_MINES: &[MineKind] = &[
-    MineKind::Stone,
-    MineKind::Coal,
-    MineKind::Iron,
-    MineKind::Gold,
-    MineKind::Lapis,
-    MineKind::Redstone,
-    MineKind::Emerald,
-    MineKind::Diamond,
-    MineKind::Quartz,
-    MineKind::AncientDebris,
-    MineKind::Obsidian,
-    MineKind::Amethyst,
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,13 +309,38 @@ mod tests {
     use crate::pickaxe::Pickaxe;
     use crate::tunables::{END_UNLOCK_LEVEL, LEVEL_CAP, NETHER_UNLOCK_LEVEL};
 
+    /// An enum cannot enumerate itself, so [`MineKind::ALL`] is written by hand and
+    /// this is what holds it to the enum.
+    ///
+    /// **The `match` is the load-bearing half, not the assertion.** Declaring `ALL`
+    /// as `[Self; 12]` already puts its length in the type, so a forgotten entry and
+    /// a duplicated one are both compile errors — but neither says a word about the
+    /// *enum*, which is where a thirteenth mine would actually be added. The `match`
+    /// below is exhaustive, so that thirteenth variant breaks the build here, in the
+    /// one test whose job is to notice, rather than shipping a mine no screen lists.
     #[test]
     fn all_mines_covers_every_variant() {
-        assert_eq!(
-            ALL_MINES.len(),
-            12,
-            "a MineKind variant was added or removed: update ALL_MINES"
-        );
+        for mine in MineKind::ALL {
+            let position = match mine {
+                MineKind::Stone => 0,
+                MineKind::Coal => 1,
+                MineKind::Iron => 2,
+                MineKind::Gold => 3,
+                MineKind::Lapis => 4,
+                MineKind::Redstone => 5,
+                MineKind::Emerald => 6,
+                MineKind::Diamond => 7,
+                MineKind::Quartz => 8,
+                MineKind::AncientDebris => 9,
+                MineKind::Obsidian => 10,
+                MineKind::Amethyst => 11,
+            };
+            assert_eq!(
+                MineKind::ALL[position],
+                mine,
+                "{mine:?} is not at position {position} of MineKind::ALL"
+            );
+        }
     }
 
     /// A mine is one grid, and a grid is in one world. Both cells must therefore
@@ -311,7 +349,7 @@ mod tests {
     /// for that mine.
     #[test]
     fn common_and_value_share_a_world() {
-        for &mine in ALL_MINES {
+        for mine in MineKind::ALL {
             assert_eq!(
                 mine.common_block().world(),
                 mine.value_block().world(),
@@ -332,7 +370,7 @@ mod tests {
     /// [`MineKind::gating_tier`] reading only the common cell correct.
     #[test]
     fn common_and_value_share_a_gating_tier() {
-        for &mine in ALL_MINES {
+        for mine in MineKind::ALL {
             assert_eq!(
                 mine.common_block().min_pickaxe_tier(),
                 mine.value_block().min_pickaxe_tier(),
@@ -360,7 +398,7 @@ mod tests {
     /// if the gate itself is the thing that broke.
     #[test]
     fn no_mine_holds_a_cell_its_gating_tier_cannot_break() {
-        for &mine in ALL_MINES {
+        for mine in MineKind::ALL {
             let pickaxe = Pickaxe::new(mine.gating_tier(), Enchants::new());
             assert!(
                 pickaxe.can_mine(mine.common_block()),
@@ -377,7 +415,7 @@ mod tests {
     /// generation would place a cell the world's own registry does not list.
     #[test]
     fn both_cells_belong_to_the_mines_world() {
-        for &mine in ALL_MINES {
+        for mine in MineKind::ALL {
             let world_blocks = mine.world().blocks();
             assert!(
                 world_blocks.contains(&mine.common_block()),
@@ -402,7 +440,7 @@ mod tests {
     /// unlock is the stall the rule exists to prevent.
     #[test]
     fn overworld_ore_mines_are_pure_same_material() {
-        for &mine in ALL_MINES {
+        for mine in MineKind::ALL {
             if mine.world() == World::Overworld {
                 assert_eq!(
                     mine.common_material(),
@@ -420,7 +458,7 @@ mod tests {
     /// two-material means it is drawn.
     #[test]
     fn only_the_endgame_mines_are_two_material() {
-        let two_material: Vec<MineKind> = ALL_MINES
+        let two_material: Vec<MineKind> = MineKind::ALL
             .iter()
             .copied()
             .filter(|mine| mine.common_material() != mine.value_material())
@@ -446,7 +484,7 @@ mod tests {
     /// that the tier admitting a mine can break everything inside it.
     #[test]
     fn no_mine_stays_closed_to_a_maxed_player() {
-        for &mine in ALL_MINES {
+        for mine in MineKind::ALL {
             let lock = mine.lock(LEVEL_CAP, PickaxeTier::Netherite);
             assert!(
                 lock.is_open(),
@@ -496,7 +534,7 @@ mod tests {
     /// one variant wired to the wrong world.
     #[test]
     fn the_lock_only_ever_quotes_the_mines_own_requirements() {
-        for &mine in ALL_MINES {
+        for mine in MineKind::ALL {
             let lock = mine.lock(1, PickaxeTier::Wooden);
             if let Some(level) = lock.missing_level() {
                 assert_eq!(level, mine.world().unlock_level(), "{mine:?}");
@@ -511,8 +549,8 @@ mod tests {
     /// the player cannot tell apart.
     #[test]
     fn mine_names_are_unique() {
-        for (i, &a) in ALL_MINES.iter().enumerate() {
-            for &b in &ALL_MINES[i + 1..] {
+        for (i, &a) in MineKind::ALL.iter().enumerate() {
+            for &b in &MineKind::ALL[i + 1..] {
                 assert_ne!(
                     a.name(),
                     b.name(),
