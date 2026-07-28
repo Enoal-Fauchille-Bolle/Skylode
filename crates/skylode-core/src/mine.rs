@@ -75,7 +75,16 @@ const TICKS_PER_HARDNESS: f32 = 30.0;
 /// `RICHNESS_MIX_SPAN` at the same value, with nothing but care keeping the two in
 /// step — a re-balance moving one and not the other would have made the rare share
 /// overshoot or never arrive, silently.
-pub(crate) const MAX_RICHNESS_LEVEL: u32 = 9;
+///
+/// **Now `pub`, and the front-end is why.** The Mine panel prints `Richness  level
+/// 6 / 9` and the Mines detail pane draws the dial against the same ceiling
+/// (`organization/UI-EN.md` §5.2, §5.3), so a crate that could not see this number
+/// had to mirror it — and a mirrored ceiling is one that goes on printing `/ 9`
+/// after phase-10 balance moves it, with no test anywhere able to notice. There is
+/// no matching read for [`get_richness_level`](Mine::get_richness_level)'s
+/// *current* value, because that one is per-mine and already a method; this is the
+/// bound, which belongs to the rules and not to any one grid.
+pub const MAX_RICHNESS_LEVEL: u32 = 9;
 
 /// Weight (out of 100) of the *value* cell at richness `0`: the "mixed mine as
 /// first specified". Non-zero, so a mine at richness 0 already sprinkles in its
