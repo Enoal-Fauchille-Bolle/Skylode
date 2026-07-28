@@ -16,13 +16,13 @@ use skylode_core::{
     game::GameState,
     inventory::Inventory,
     material::{Item, Material},
-    mine::MAX_RICHNESS_LEVEL,
-    mine_kind::MineKind,
+    mine::{MAX_RICHNESS_LEVEL, Mine},
+    mine_kind::{MineKind, MineLock},
     pickaxe::PickaxeTier,
     tunables::{BOOST_DURATION_TICKS, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND},
 };
 
-use crate::palette::ColourMode;
+use crate::{cursor::Cursors, palette::ColourMode};
 
 /// What a readout with nothing to report prints.
 ///
@@ -162,49 +162,75 @@ impl UpgradesView {
 /// One mine's row in the Mines list (UI.md §5.2).
 ///
 /// The world grouping, the mine name and whether it is two-material are all read
-/// from `kind` in the screen; only `detail` — the size and richness the run has
-/// bought, or a lock reason for a mine still closed — is fixture data. That lock
-/// reason is a **string here on purpose**: `MineLock` keeps its two axes private
-/// (the "nameable lock reason" is TODO-TUI phase 4's core gap), so phase 2 prints
-/// the frame's text rather than deriving it.
+/// from `kind` in the screen. The rest is the run's, and it is **typed rather than
+/// pre-formatted**: this row used to carry `detail: String`, the frame's own
+/// `8 x 5   R 6` or `locked   Netherite`, because [`MineLock`] was assumed not to
+/// exist yet. It does, and it answers both axes separately — so the row hands the
+/// screen the facts and the screen decides the wording.
 #[derive(Clone, Debug)]
 pub struct MineListRow {
     /// Which mine this row is — the source of its name and world.
     pub kind: MineKind,
-    /// The right-hand column: `8 x 5   R 6`, or `locked   Netherite` when shut.
-    pub detail: String,
+    /// What this mine is still waiting on, for this player.
+    ///
+    /// The row prints only the **tier** half. The level half belongs to the world,
+    /// and the world already has a header row of its own carrying it — printing it
+    /// on all three of that world's mines would say one thing four times.
+    pub lock: MineLock,
+    /// The grid's `(width, height)`, real or — for a mine never entered — the size
+    /// it will be created at.
+    pub size: (u8, u8),
+    /// The richness **ceiling** bought for this mine: the `R 6` of the right column.
+    pub richness_level: u32,
+    /// Whether this is the mine the player is standing in — drawn `●`.
+    ///
+    /// Distinct from the cursor, which the screen reads off
+    /// [`MinesView::selected`]: the two start together and part company on the first
+    /// `↑`, and a screen that could not tell them apart would stop saying where the
+    /// player is the moment they looked at anything else.
+    pub current: bool,
 }
 
 /// The detail pane of the selected mine (UI.md §5.2).
 ///
-/// Placeholder numbers throughout — sizes, block counts and richness are run state
-/// the tick owns (phase 7). `value_percent` drives the richness **dial**, the free
-/// reversible cursor drawn only on the three two-material mines; `dial_split` is
-/// its readout (`Crying 64%   Obsidian 36%`). The two gate lines carry their own
-/// `✓` because the tick against the player's tier is not derivable from `View` yet.
+/// **Two pre-formatted lines went away here**, and for the reason the whole `View`
+/// exists: `world_line` and `gate_line` carried the frame's `Nether  Lv 15  ✓` and
+/// `Diamond pickaxe  ✓` as text, because the `✓` was not derivable. It is now — the
+/// requirement halves come from [`MineKind::world`] and
+/// [`MineKind::gating_tier`], which the screen already asks for the mine's
+/// materials, and the ticks come from [`MineLock`]. Likewise `dial_split`: the
+/// screen composes it from `value_percent` and the two material names, so the
+/// percentage under the bar cannot disagree with the bar.
 #[derive(Clone, Debug)]
 pub struct MineDetail {
-    /// The world row: `Nether        Lv 15  ✓`.
-    pub world_line: String,
-    /// The pickaxe-gate row: `Diamond pickaxe      ✓`.
-    pub gate_line: String,
+    /// What this mine is still waiting on — the two `✓`/`✗` of the pane's gate rows.
+    pub lock: MineLock,
     /// Grid size, as `(width, height)`.
-    pub size: (u32, u32),
+    pub size: (u8, u8),
     /// The purchased size level.
     pub size_level: u32,
-    /// Standing blocks over total.
-    pub blocks_standing: u32,
-    /// Total blocks in the grid.
-    pub blocks_total: u32,
-    /// The purchased richness level.
+    /// Blocks still standing, or [`None`] for a mine this run has never entered.
+    ///
+    /// **The [`Option`] is the "never entered" case made structural**, the same
+    /// device [`TargetView`] uses for a mine nobody has swung at yet. A run creates
+    /// its mines lazily, so eleven of the twelve have no grid to count; a `0` would
+    /// claim the player had emptied one, and the grid's own total — `width × height`
+    /// — is what the screen divides by, so there is nothing else to carry.
+    pub blocks_standing: Option<u32>,
+    /// The purchased richness level: the **ceiling**, permanent and paid.
     pub richness_level: u32,
+    /// Where the free dial currently sits, `0..=richness_level`.
+    ///
+    /// Carried beside the ceiling because they are two different numbers that a
+    /// single `R 6` conflates: the pane prints the ceiling as `level 6 / 9` and
+    /// draws the setting as the bar. A player who bought a ceiling and left the dial
+    /// down needs to see exactly that gap.
+    pub richness_setting: u32,
     /// The richness ceiling (9 today).
     pub richness_max: u32,
-    /// The dial's value-material weight, as a percent; the common weight is its
-    /// complement. Drives the bar fill on the two-material mines.
+    /// The dial's value-cell weight, as a percent; the common weight is its
+    /// complement. Drives the bar fill and the readout below it.
     pub value_percent: u32,
-    /// The dial readout: `Crying 64%   Obsidian 36%`.
-    pub dial_split: String,
     /// The mine-specific note under the dial (Obsidian's optimum-not-maximum).
     pub note: Vec<String>,
 }
@@ -542,7 +568,7 @@ impl View {
     /// That is why [`App`](crate::app::App) caches the result in a field rather than
     /// projecting inside its `render`: the cost is paid when the state changes, not
     /// thirty times a second.
-    pub fn from_state(state: &GameState) -> Self {
+    pub fn from_state(state: &GameState, cursors: Cursors) -> Self {
         let player = state.player();
         let pickaxe = player.get_pickaxe();
         let enchants = pickaxe.enchants();
@@ -589,8 +615,9 @@ impl View {
                 cell,
                 ratio: mine.break_ratio(),
             }),
+            mines: mines_view(state, cursors),
 
-            // Everything below is still the fixture. Phases 4-7 own these, one
+            // Everything below is still the fixture. Phases 5-7 own these, one
             // screen at a time; see this function's own note on the `..`.
             ..Self::sample()
         }
@@ -810,6 +837,83 @@ fn haul_view(kind: MineKind, inventory: &Inventory) -> HaulView {
         common: entry(common),
         value: (value != common).then(|| entry(value)),
     }
+}
+
+/// The Mines screen's whole read model, projected from the run and the cursor.
+///
+/// **Walks [`MineKind::ALL`] rather than the run's mines**, and that is the shape of
+/// the screen's job: the twelve always exist as *kinds*, while a run only holds a
+/// [`Mine`] for the ones it has opened. `state.mine(kind)` is therefore an
+/// [`Option`] on every row, and the [`None`] arm is not an error case — it is the
+/// mine the player has never walked into, drawn from what a fresh one would be:
+/// [`Mine::size_for_level(0)`](Mine::size_for_level) and a ceiling of 0.
+fn mines_view(state: &GameState, cursors: Cursors) -> MinesView {
+    let player = state.player();
+    let standing = state.current_mine().kind();
+
+    let rows = MineKind::ALL
+        .into_iter()
+        .map(|kind| MineListRow {
+            kind,
+            lock: player.mine_lock(kind),
+            size: state
+                .mine(kind)
+                .map_or_else(|| Mine::size_for_level(0), Mine::get_size),
+            richness_level: state.mine(kind).map_or(0, Mine::get_richness_level),
+            current: kind == standing,
+        })
+        .collect();
+
+    let selected = cursors.mine;
+    let mine = state.mine(selected);
+    let detail = MineDetail {
+        lock: player.mine_lock(selected),
+        size: mine.map_or_else(|| Mine::size_for_level(0), Mine::get_size),
+        size_level: mine.map_or(0, Mine::get_size_level),
+        // `u32` from a `usize` count: a grid is 200 cells at its very largest, so the
+        // conversion is exact — but it is still fallible in the type system, and this
+        // crate's lints leave no `unwrap`, so the saturating form is what says
+        // "narrower is fine here" without a panic to explain later.
+        blocks_standing: mine.map(|mine| u32::try_from(mine.remaining_count()).unwrap_or(u32::MAX)),
+        richness_level: mine.map_or(0, Mine::get_richness_level),
+        richness_setting: mine.map_or(0, Mine::get_richness_setting),
+        richness_max: MAX_RICHNESS_LEVEL,
+        // A mine that does not exist yet would be created at dial 0, and
+        // `value_weight_percent` is a pure function of the dial — so the fallback is
+        // the weight of a fresh grid, not a placeholder.
+        value_percent: mine.map_or_else(
+            || Mine::value_weight_percent_for(0),
+            Mine::value_weight_percent,
+        ),
+        note: mine_note(selected),
+    };
+
+    MinesView {
+        rows,
+        selected,
+        detail,
+    }
+}
+
+/// The prose under a mine's dial, or nothing.
+///
+/// **Front-end text, not a rule**, which is why it lives here and not beside
+/// [`MineKind`]. It says what a *player* should make of the dial on this particular
+/// mine, and only one mine has anything to say: the enhancement past Netherite
+/// consumes Obsidian and Crying Obsidian both, so that dial has an **optimum**
+/// rather than a maximum — the one dial in the game a player can set too high.
+/// The other eleven are "more is more, if you can afford the trade", which the pane
+/// already shows by drawing the split.
+fn mine_note(kind: MineKind) -> Vec<String> {
+    let lines: &[&str] = match kind {
+        MineKind::Obsidian => &[
+            "The enhancement past Netherite eats",
+            "both of them, so this dial has an",
+            "optimum, not a maximum.",
+        ],
+        _ => &[],
+    };
+    lines.iter().map(|line| (*line).to_owned()).collect()
 }
 
 /// The rung the fixture's player stands on — dotted `●` in the list.
@@ -1038,57 +1142,62 @@ fn sample_upgrades() -> UpgradesView {
 /// The Mines list and detail pane drawn in UI.md §5.2, from the frame.
 ///
 /// Obsidian is selected — a two-material mine, so the detail pane shows the
-/// richness dial. The list's sizes and richness levels are fixture data; the End
-/// mine is drawn locked, its lock reason (`Netherite`) a string, since the core
-/// does not yet expose a nameable one.
+/// richness dial — and the player is standing in the Iron mine, which is what puts
+/// the `▸` and the `●` on two different rows. The whole fixture describes the save
+/// §5 is drawn against: **Lv 23, Diamond pickaxe**, which is the level and tier
+/// every [`MineLock`] below is built from, so the ticks in the frame are the ones
+/// the rules would give.
+///
+/// The sizes and richness levels stay fixture data: the run they describe has
+/// bought upgrades no fresh run has, and the frame tests are meant to be
+/// independent of what the economy currently charges.
 fn sample_mines() -> MinesView {
-    // `(kind, detail)` in display order — Overworld, then Nether, then the locked
-    // End mine. `MineKind::Amethyst` is the End mine, named "End".
-    let rows = [
-        (MineKind::Stone, "20 x 10   R 9"),
-        (MineKind::Coal, "18 x 9   R 7"),
-        (MineKind::Iron, "20 x 10   R 0"),
-        (MineKind::Gold, "10 x 6   R 2"),
-        (MineKind::Lapis, "8 x 5   R 1"),
-        (MineKind::Redstone, "6 x 4   R 0"),
-        (MineKind::Emerald, "6 x 4   R 0"),
-        (MineKind::Diamond, "8 x 5   R 1"),
-        (MineKind::Quartz, "8 x 5   R 3"),
-        (MineKind::AncientDebris, "6 x 4   R 0"),
-        (MineKind::Obsidian, "8 x 5   R 6"),
-        (MineKind::Amethyst, "locked   Netherite"),
-    ]
-    .into_iter()
-    .map(|(kind, detail)| MineListRow {
-        kind,
-        detail: detail.to_owned(),
-    })
-    .collect();
+    /// The save §5 is drawn against, and the only two numbers a lock depends on.
+    const LEVEL: u32 = 23;
+    const TIER: PickaxeTier = PickaxeTier::Diamond;
 
-    let note = [
-        "The enhancement past Netherite eats",
-        "both of them, so this dial has an",
-        "optimum, not a maximum.",
+    // `(kind, size, richness ceiling)` in display order. Every lock is *derived*
+    // from the pair above rather than written down, so the fixture cannot claim a
+    // mine is open that the rules would shut — which is exactly what the End mine
+    // is here to prove: at Lv 23 with a Diamond pickaxe it is closed on both axes.
+    let rows = [
+        (MineKind::Stone, (20, 10), 9),
+        (MineKind::Coal, (18, 9), 7),
+        (MineKind::Iron, (20, 10), 0),
+        (MineKind::Gold, (10, 6), 2),
+        (MineKind::Lapis, (8, 5), 1),
+        (MineKind::Redstone, (6, 4), 0),
+        (MineKind::Emerald, (6, 4), 0),
+        (MineKind::Diamond, (8, 5), 1),
+        (MineKind::Quartz, (8, 5), 3),
+        (MineKind::AncientDebris, (6, 4), 0),
+        (MineKind::Obsidian, (8, 5), 6),
+        (MineKind::Amethyst, (6, 4), 0),
     ]
     .into_iter()
-    .map(str::to_owned)
+    .map(|(kind, size, richness_level)| MineListRow {
+        kind,
+        lock: kind.lock(LEVEL, TIER),
+        size,
+        richness_level,
+        // The Iron mine, matching `View::sample`'s `mine_kind` and its grid.
+        current: kind == MineKind::Iron,
+    })
     .collect();
 
     MinesView {
         rows,
         selected: MineKind::Obsidian,
         detail: MineDetail {
-            world_line: "Nether        Lv 15  ✓".to_owned(),
-            gate_line: "Diamond pickaxe      ✓".to_owned(),
+            lock: MineKind::Obsidian.lock(LEVEL, TIER),
             size: (8, 5),
             size_level: 3,
-            blocks_standing: 31,
-            blocks_total: 40,
+            blocks_standing: Some(31),
             richness_level: 6,
+            richness_setting: 6,
             richness_max: MAX_RICHNESS_LEVEL,
-            value_percent: 64,
-            dial_split: "Crying 64%   Obsidian 36%".to_owned(),
-            note,
+            value_percent: Mine::value_weight_percent_for(6),
+            note: mine_note(MineKind::Obsidian),
         },
     }
 }
@@ -1444,12 +1553,22 @@ mod tests {
         GameState::new(0x5B1_0DE, UNIX_EPOCH)
     }
 
+    /// A run projected with the cursors a session opens on.
+    ///
+    /// Most assertions here are about the *run's* half of the projection, where the
+    /// cursor is immaterial; spelling it out at each call site would put a parameter
+    /// nobody reads in front of the thing being tested. The tests that are about the
+    /// cursor build one on purpose.
+    fn projected(state: &GameState) -> View {
+        View::from_state(state, Cursors::new(state.current_mine().kind()))
+    }
+
     #[test]
     fn a_fresh_run_projects_to_a_bare_level_one_session() {
         // Everything a run has before anything has happened to it, asserted together
         // because *this* is the frame `cargo run` opens on until the phase-7 tick
         // exists — the five states the level-23 fixture never had.
-        let view = View::from_state(&fresh_run());
+        let view = projected(&fresh_run());
 
         assert_eq!(view.player_level, 1);
         assert_eq!(view.xp, 0);
@@ -1484,7 +1603,7 @@ mod tests {
         // built a fresh grid of the right dimensions would pass any shape check and
         // still be showing the player a mine that is not theirs.
         let state = fresh_run();
-        let view = View::from_state(&state);
+        let view = projected(&state);
         assert_eq!(view.grid, state.current_mine().get_grid());
 
         // And it is genuinely mixed — `draw_cell` weights each cell by the richness
@@ -1506,7 +1625,7 @@ mod tests {
     #[test]
     fn the_mine_panels_figures_come_from_the_mine() {
         let state = fresh_run();
-        let view = View::from_state(&state);
+        let view = projected(&state);
         let mine = state.current_mine();
 
         assert_eq!(view.mine_panel.size_level, mine.get_size_level());
@@ -1723,23 +1842,28 @@ mod tests {
         let rows = view.grid.len();
         let size = format!("{columns} x {rows}");
 
-        // The Mines list, on the row for the mine the player is standing in.
-        let listed = view
-            .mines
-            .rows
-            .iter()
-            .find(|row| row.kind == view.mine_kind)
-            .map(|row| row.detail.clone())
-            .unwrap_or_default();
-        assert!(
-            listed.contains(&size),
-            "the Mines list says {listed:?}, but the grid is {size}"
-        );
-        assert!(
-            listed.contains(&format!("R {}", view.mine_panel.richness_level)),
-            "the Mines list says {listed:?}, but the Mine panel says richness {}",
-            view.mine_panel.richness_level
-        );
+        // The Mines list, on the row for the mine the player is standing in — found
+        // by its own `current` flag, which is the third statement of "this is where
+        // the player is" and therefore the third that can drift.
+        // Collected rather than `find`-ed, so the count is asserted too: two rows
+        // claiming to be the standing mine is as wrong as none, and it is the failure
+        // a `find` would silently pick a winner for.
+        let standing: Vec<&MineListRow> =
+            view.mines.rows.iter().filter(|row| row.current).collect();
+        assert_eq!(standing.len(), 1, "exactly one row is the standing mine");
+        for listed in standing {
+            assert_eq!(listed.kind, view.mine_kind);
+            assert_eq!(
+                (usize::from(listed.size.0), usize::from(listed.size.1)),
+                (columns, rows),
+                "the Mines list sizes {} differently from the grid, which is {size}",
+                listed.kind.name()
+            );
+            assert_eq!(
+                listed.richness_level, view.mine_panel.richness_level,
+                "the Mines list and the Mine panel disagree on the richness ceiling"
+            );
+        }
 
         // Upgrades › Mines, on the Size track for that same mine. The grid is the
         // largest mine the game has, so there is no step left to sell — and the row
