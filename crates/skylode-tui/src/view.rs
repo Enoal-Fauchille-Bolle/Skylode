@@ -222,9 +222,11 @@ pub struct MineDetail {
     /// Where the free dial currently sits, `0..=richness_level`.
     ///
     /// Carried beside the ceiling because they are two different numbers that a
-    /// single `R 6` conflates: the pane prints the ceiling as `level 6 / 9` and
-    /// draws the setting as the bar. A player who bought a ceiling and left the dial
-    /// down needs to see exactly that gap.
+    /// single `R 6` conflates, and the pane prints both: `3/6` after the slider's
+    /// right arrow. The bar cannot say it on its own — it is filled by
+    /// [`value_percent`](MineDetail::value_percent), a curve over the setting rather
+    /// than the setting itself — and the gap between the two is exactly what a player
+    /// consults before buying a seventh level they might not need.
     pub richness_setting: u32,
     /// The richness ceiling (9 today).
     pub richness_max: u32,
@@ -895,21 +897,35 @@ fn mines_view(state: &GameState, cursors: Cursors) -> MinesView {
     }
 }
 
-/// The prose under a mine's dial, or nothing.
+/// The prose under a mine's dial: what a player should make of *this* dial.
 ///
 /// **Front-end text, not a rule**, which is why it lives here and not beside
-/// [`MineKind`]. It says what a *player* should make of the dial on this particular
-/// mine, and only one mine has anything to say: the enhancement past Netherite
-/// consumes Obsidian and Crying Obsidian both, so that dial has an **optimum**
-/// rather than a maximum — the one dial in the game a player can set too high.
-/// The other eleven are "more is more, if you can afford the trade", which the pane
-/// already shows by drawing the split.
+/// [`MineKind`]. The pane draws the same slider on all twelve mines, so what differs
+/// between them is not the control but the stakes, and that is exactly what a
+/// sentence is for. Three cases:
+///
+/// - **Obsidian** is the one dial in the game a player can set *too high*: the
+///   enhancement past Netherite consumes Obsidian and Crying Obsidian both, so its
+///   dial has an **optimum** rather than a maximum.
+/// - **The nine same-material mines** are the opposite — the value cell is the dense
+///   block, worth nine of the ore beside it, so there is no trade at all and the
+///   only reason not to max the dial is not having bought the ceiling yet.
+/// - **Quartz and the End** get nothing, because "more of the rare one, less of the
+///   common one" is what the split under the bar already says in numbers.
 fn mine_note(kind: MineKind) -> Vec<String> {
     let lines: &[&str] = match kind {
         MineKind::Obsidian => &[
             "The enhancement past Netherite eats",
             "both of them, so this dial has an",
             "optimum, not a maximum.",
+        ],
+        // Asked of the materials, not listed by hand: `common != value` is the
+        // core's own two-material test, so a thirteenth mine is classified by the
+        // rules rather than by whoever remembers to extend a list here.
+        kind if kind.common_material() == kind.value_material() => &[
+            "Pure gain here — the value cell is",
+            "nine of the same ore, so this dial",
+            "only ever wants to go up.",
         ],
         _ => &[],
     };
@@ -1827,6 +1843,30 @@ mod tests {
         let view = View::sample();
         assert_eq!(view.grid.len(), 10);
         assert_eq!(view.grid.first().map_or(0, Vec::len), 20);
+    }
+
+    /// Every mine gets the same slider, so the note is what tells them apart.
+    ///
+    /// Three classes, and the middle one is the reason this is a `match` on the two
+    /// materials rather than a list: a mine is "pure gain" because its two cells drop
+    /// the same material, which is the core's own two-material test, so a thirteenth
+    /// mine would be classified by the rules instead of by whoever remembered to edit
+    /// a list. Walking `MineKind::ALL` is what proves no mine falls between the arms.
+    #[test]
+    fn the_dials_note_says_what_is_at_stake_on_this_particular_mine() {
+        for kind in MineKind::ALL {
+            let note = mine_note(kind).join(" ");
+            let same_material = kind.common_material() == kind.value_material();
+            match kind {
+                // The one dial a player can set *too high*.
+                MineKind::Obsidian => assert!(note.contains("optimum"), "{kind:?}: {note:?}"),
+                // No trade at all: the value cell is nine of the ore beside it.
+                _ if same_material => assert!(note.contains("Pure gain"), "{kind:?}: {note:?}"),
+                // Quartz and the End: the split under the bar already says it in
+                // numbers, and a sentence repeating it would be filler.
+                _ => assert!(note.is_empty(), "{kind:?} said {note:?}"),
+            }
+        }
     }
 
     #[test]

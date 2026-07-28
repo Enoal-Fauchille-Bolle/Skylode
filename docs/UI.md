@@ -321,11 +321,12 @@ exchange rate the game does not have.
 **Constraints.** Fifteen rows for twelve mines plus three world headers fit in 20:
 this is the one list screen that never needs a `Scrollbar` at 80x24.
 
-**The dial *slider* is drawn only on the three two-material mines** (Quartz,
-Obsidian, End), where moving it is a trade. On the nine same-material mines
-enriching is pure gain and the block is a flat readout instead — but the arrows
-work there too; see the departures below. The dial reads `10 + 9 x setting`
-percent — the real `value_weight` formula, so level 9 is 91% and never 100%.
+**The dial is one control, drawn identically on all twelve mines** — slider,
+arrows, rung, and the split beneath it. The wireframe above reserved the slider for
+the three whose two cells drop *different* materials (Quartz, Obsidian, End) and
+replaced it with a flat readout elsewhere; see the departures below for why that
+did not survive. The dial reads `10 + 9 x setting` percent — the real
+`value_weight` formula, so level 9 is 91% and never 100%.
 
 **The Obsidian pane says the dial has an *optimum*, not a maximum**, because the
 post-Netherite enhancement consumes both materials in a ratio. It is the one dial in
@@ -364,24 +365,34 @@ above is left as drawn.
   chrome palette already owns both glyphs. **The cursor wins the column** when they
   coincide: `▸` is what just moved; `●` is a standing fact the player can recover by
   walking the list.
-- **`<-`/`->` move the dial on all twelve mines.** The frame removes the whole dial
-  block on the nine same-material mines, and the reasoning was sound — there is no
-  trade to picture when the value cell is nine of the same ore. But buying the
-  *ceiling* and sliding the *dial* are separate actions (§8), and only the dial
-  turns the purchase into dense cells; hiding the arrows would leave nine mines'
-  richness track unspendable. **Two presentations, one behaviour.**
-- **The split under the bar is justified, not fixed-gap.** The frame writes
-  `Crying 64%   Obsidian 36%`, abbreviating a material actually named *Crying
-  Obsidian*; spelled out at the frame's indent the row runs past the pane. The two
-  shares now sit at the pane's two edges. Same departure §5.1 records for the Haul
-  strip, and the same cause: the frame was counted against shorter strings than the
-  game produces.
-- **The pane's first line names the two *blocks*, not the two materials.** On the
-  two-material mines that is the frame's own line either way
-  (`Obsidian  +  Crying Obsidian`); on the nine others the materials are equal, so
-  the frame's rule would print `Stone  +  Stone`. The blocks never coincide, and
-  they are the more useful pair: `Iron Ore  +  Iron Block`, the second worth nine of
-  the first.
+- **The slider is drawn on all twelve mines, not three.** The frame removes the
+  whole dial block on the nine same-material mines, and its *argument* was sound —
+  there is no trade to picture when the value cell is nine of the same ore. But that
+  argument is about the **stakes**, not the **control**. The dial there still decides
+  what share of the grid is the dense block, and the arrows still move it: raising
+  the richness *ceiling* and sliding the *dial* are separate actions (§8), and only
+  the dial turns the purchase into dense cells, so a flat readout would have left
+  nine mines' richness track unspendable. A slider that appears on a quarter of the
+  screens is also one the player has to learn twice. **What varies per mine is the
+  sentence under it, not the widget** — "this one has an optimum, not a maximum" on
+  Obsidian, "pure gain here" on the nine, nothing on Quartz and the End where the
+  split already says it in numbers.
+- **The split under the bar is justified, and names the two *blocks*.** The frame
+  writes `Crying 64%   Obsidian 36%` at a fixed gap, abbreviating a block actually
+  named *Crying Obsidian*; spelled out at the frame's indent the row runs past the
+  pane, so the two shares now sit at the pane's two edges. Same departure §5.1
+  records for the Haul strip, same cause. Blocks rather than materials for the same
+  reason the line below applies to the header: on nine mines the two materials are
+  the same word, and the row would read `Iron 10%   Iron 90%`.
+- **The pane's first line names the two *blocks* too.** On the two-material mines
+  that is the frame's own line either way (`Obsidian  +  Crying Obsidian`); on the
+  nine others the materials are equal, so the frame's rule would print
+  `Stone  +  Stone`. The blocks never coincide, and they are the more useful pair:
+  `Iron Ore  +  Iron Block`, the second worth nine of the first.
+- **The dial prints its rung after the right arrow** (`3/6`). The bar is filled by
+  the value-weight *curve*, not by the setting, and the dial steps between ten
+  discrete rungs bounded by a ceiling the player buys — so "3 of the 6 I own" is what
+  they consult before buying a seventh, and no bar can say it.
 
 ### 5.3 Inventory
 

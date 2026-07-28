@@ -5,23 +5,25 @@
 //! mines plus three headers — fit in twenty, so this is the one list screen that
 //! never needs a scrollbar at 80×24.
 //!
-//! The **richness dial** has two presentations and one behaviour. The slider — bar,
-//! arrows, and the split beneath it — is drawn on the three two-material mines
-//! (Quartz, Obsidian, End), where moving the dial is a *trade*: more Crying Obsidian
-//! is less Obsidian, and a trade wants a picture. On the nine same-material mines
-//! the value cell is the dense block, worth nine of the same ore, so enriching is
-//! pure gain and one line says it.
+//! The **richness dial is one control, drawn identically on all twelve mines** —
+//! slider, arrows, rung, and the split beneath it. That is a departure from
+//! UI-EN.md §5.3, which reserved the slider for the three mines whose two cells drop
+//! *different* materials and replaced it with a flat readout on the other nine.
 //!
-//! **`←→` work on all twelve**, which is a departure from UI-EN.md §5.3 and is
-//! recorded there. The spec replaced the whole dial block on the same-material
-//! mines, but the dial is the only thing that turns a bought richness ceiling into
-//! dense cells — buying the ceiling and moving the dial are two separate actions in
-//! the core — so hiding the arrows on nine mines would leave the purchase
-//! unspendable.
+//! The spec's argument was about the **stakes**, and it holds: only on Quartz,
+//! Obsidian and the End is the setting a trade, since more Crying Obsidian is less
+//! Obsidian. But the *control* is the same everywhere — on the nine others the dial
+//! still decides what share of the grid is the dense block, worth nine of the ore
+//! beside it, and the arrows still move it. A slider that appears on a quarter of
+//! the screens is one the player has to learn twice, and hiding it would have left
+//! nine mines' bought richness ceiling with no way to spend it, since raising the
+//! ceiling and sliding the dial are two separate actions in the core.
 //!
-//! Whether a mine is two-material is read from its two materials, not carried: a
-//! mine whose common and value materials differ is one the dial has a real choice
-//! on.
+//! What differs per mine is therefore the **sentence under the dial**, not the
+//! widget: `MineDetail::note` is where "this one has an optimum, not a maximum"
+//! and "pure gain here" live. The split beneath the bar names the two **blocks**
+//! rather than the two materials, because on those nine mines the materials are the
+//! same word.
 
 use ratatui::{
     Frame,
@@ -179,23 +181,29 @@ fn gate_line(kind: MineKind, detail: &MineDetail) -> String {
 /// The readout under the dial: the value cell's share on the left, the common
 /// cell's flush right.
 ///
+/// **The two blocks, not the two materials**, for the reason the pane's first line
+/// names blocks: on the nine same-material mines the materials are the same word,
+/// and this row would read `Iron 10%   Iron 90%`. The blocks never coincide, and
+/// they are what the dial actually redraws — `Iron Block 10%   Iron Ore 90%` is the
+/// composition the bar above is a picture of.
+///
 /// **A departure from the counted frame, and the same one §5.1 already records for
 /// the Haul strip.** UI-EN.md §5.3 draws `Crying 64%   Obsidian 36%` indented eight
-/// columns to sit under the bar — but it abbreviates the material, which is really
+/// columns to sit under the bar — but it abbreviates, and the block is really
 /// *Crying Obsidian*. Spelled out, that pair is 31 columns, and the indent plus a
 /// readable gap does not fit the 38 this pane has. Rather than ship an abbreviation
-/// table for one material, the row loses the indent — landing in the label column
-/// every other row of the pane already starts at — and is [`justified`], so the two
-/// shares sit at the two edges however wide the pane is and no longer name a
-/// material can push them into each other.
+/// table, the row loses the indent — landing in the label column every other row of
+/// the pane already starts at — and is [`justified`], so the two shares sit at the
+/// two edges however wide the pane is, and no longer a name can push them into each
+/// other.
 fn dial_split(kind: MineKind, detail: &MineDetail, width: usize) -> String {
     let value = detail.value_percent;
     // The complement, not a second reading: the two shares are one number and its
     // remainder, so a subtraction here is what stops them summing to 99 or 101.
     let common = 100_u32.saturating_sub(value);
     justified(
-        &format!(" {} {value}%", kind.value_material().name()),
-        &format!("{} {common}%", kind.common_material().name()),
+        &format!(" {} {value}%", kind.value_block().name()),
+        &format!("{} {common}%", kind.common_block().name()),
         width,
     )
 }
@@ -250,42 +258,38 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
         Line::from(""),
     ];
 
-    // **Two presentations of one dial, not a dial and its absence.** The slider is
-    // drawn where the two materials differ, because there the setting is a *trade*
-    // — more Crying Obsidian is less Obsidian — and a trade wants a picture. On the
-    // nine same-material mines the value cell is the dense block, worth nine of the
-    // same ore, so the setting is pure gain and one number says it. The arrows work
-    // on both: the dial is still the only thing that turns a bought ceiling into
-    // blocks, and hiding them on nine mines would strand the purchase.
-    if selected.common_material() != selected.value_material() {
-        let filled = (detail.value_percent as usize * DIAL_WIDTH) / 100;
-        // Spans rather than `marked` here: `█` and `░` are not marks, and this row
-        // is built by `format!` alone — no `justified` padding to preserve — so the
-        // two halves can be split safely. Same accent/muted pair as the gauges and
-        // the scrollbar, because the dial is one more "how far along" bar.
-        lines.push(Line::from(vec![
-            Span::raw(" Dial   ◄ "),
-            Span::styled("█".repeat(filled), Style::default().fg(theme::ACCENT)),
-            Span::styled(
-                "░".repeat(DIAL_WIDTH.saturating_sub(filled)),
-                Style::default().fg(theme::MUTED),
-            ),
-            Span::raw(" ►"),
-        ]));
-        lines.push(Line::from(dial_split(selected, detail, width_of(inner))));
-    } else {
-        // One line, because there is one number worth reading: the dial's position
-        // and what it buys. No bar — a slider draws a trade-off, and there is none
-        // to draw when the value cell is simply nine of the same ore.
-        lines.push(Line::from(format!(
-            " Dial       {} / {}    dense cells {}%",
-            detail.richness_setting, detail.richness_level, detail.value_percent,
-        )));
-        // Kept under the pane's 38 columns: the line before it said "Richness is
-        // pure gain here — enrich freely." and lost its last four characters to the
-        // border, which is the kind of thing only a rendered frame catches.
-        lines.push(Line::from(" Pure gain here — enrich freely."));
-    }
+    // **One dial, drawn the same way on all twelve mines.** The slider used to be
+    // reserved for the three whose two cells drop different materials, on the
+    // argument that only there is the setting a *trade* worth picturing. It is drawn
+    // everywhere now, because the argument was about the stakes and not about the
+    // control: on the nine same-material mines the dial still decides what share of
+    // the grid is the dense block, worth nine of the ore beside it, and the arrows
+    // still move it. A slider that appears on a quarter of the screens is a control
+    // the player has to learn twice.
+    let filled = (detail.value_percent as usize * DIAL_WIDTH) / 100;
+    // Spans rather than `marked` here: `█` and `░` are not marks, and this row is
+    // built by `format!` alone — no `justified` padding to preserve — so the two
+    // halves can be split safely. Same accent/muted pair as the gauges and the
+    // scrollbar, because the dial is one more "how far along" bar.
+    lines.push(Line::from(vec![
+        Span::raw(" Dial   ◄ "),
+        Span::styled("█".repeat(filled), Style::default().fg(theme::ACCENT)),
+        Span::styled(
+            "░".repeat(DIAL_WIDTH.saturating_sub(filled)),
+            Style::default().fg(theme::MUTED),
+        ),
+        Span::raw(" ►"),
+        // The rung, after the arrow. A slider you drag *is* its own value, but this
+        // one steps between ten discrete settings and its travel is bounded by a
+        // ceiling the player buys — so "3 of the 6 I own" is the thing they need
+        // before deciding whether to buy a seventh, and the bar alone cannot say it.
+        // Five columns at the very most, against the six this row has spare.
+        Span::styled(
+            format!("  {}/{}", detail.richness_setting, detail.richness_level),
+            Style::default().fg(theme::MUTED),
+        ),
+    ]));
+    lines.push(Line::from(dial_split(selected, detail, width_of(inner))));
 
     lines.push(Line::from(""));
     lines.push(Line::from("        free, reversible, any time"));
@@ -475,25 +479,44 @@ mod tests {
         assert_eq!(shares.iter().sum::<u32>(), 100, "{split:?}");
     }
 
+    /// A same-material mine gets the same slider, and a split that is readable.
+    ///
+    /// Iron's two *materials* are both `Iron`, so a split built from them would read
+    /// `Iron 10%   Iron 90%` and say nothing. It is built from the two **blocks**,
+    /// which never coincide — and on this mine that is the whole point of the dial:
+    /// the value cell is worth nine of the common one.
     #[test]
-    fn a_same_material_mine_shows_a_flat_readout_not_a_slider() {
-        // Selecting Iron — whose common and value materials are the same — replaces
-        // the *slider* with a flat readout: there is no trade to picture when the
-        // value cell is nine of the same ore.
+    fn a_same_material_mine_gets_the_same_slider_and_a_split_that_names_both_blocks() {
         let mut view = View::sample();
         view.mines.selected = MineKind::Iron;
         let frame = whole_frame(&render_view(&view));
 
-        assert!(
-            !frame.contains('◄') && !frame.contains('►'),
-            "a one-material mine drew a slider: {frame}"
-        );
-        assert!(frame.contains("Pure gain here"), "{frame}");
-        // The dial is still *there*, and still says where it sits — the arrows work
-        // on all twelve mines, because moving the dial is the only way a bought
-        // ceiling becomes dense cells.
-        assert!(row_with(&frame, "Dial").contains("dense cells"), "{frame}");
+        let dial = row_with(&frame, "Dial");
+        assert!(dial.contains('◄') && dial.contains('►'), "{dial:?}");
+        assert!(dial.contains('█') && dial.contains('░'), "{dial:?}");
+
+        // Matched on the percentage: `Iron Block` also appears three rows up, in the
+        // pane's own `Iron Ore  +  Iron Block`.
+        let split = row_with(&frame, "64%");
+        assert!(split.contains("Iron Block 64%"), "{frame}");
+        assert!(split.contains("Iron Ore 36%"), "{frame}");
         assert!(frame.contains("← →  move the dial"), "{frame}");
+    }
+
+    /// The rung is printed after the arrow, because the bar cannot say it.
+    ///
+    /// The dial steps between ten discrete settings and its travel is bounded by a
+    /// ceiling the player *buys*, so "3 of the 6 I own" is what they need before
+    /// deciding whether to buy a seventh — and a bar filled to 37% says neither
+    /// number.
+    #[test]
+    fn the_dial_prints_its_rung_against_the_ceiling_it_can_reach() {
+        let mut view = View::sample();
+        view.mines.detail.richness_setting = 3;
+        view.mines.detail.richness_level = 6;
+        let frame = whole_frame(&render_view(&view));
+
+        assert!(row_with(&frame, "Dial").contains("3/6"), "{frame}");
     }
 
     /// The pane's two gate rows are the two-axis lock drawn whole.
