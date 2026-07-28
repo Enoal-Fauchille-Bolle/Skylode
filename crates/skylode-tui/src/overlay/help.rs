@@ -46,15 +46,25 @@ const MINING: [&str; 4] = [
 ];
 
 /// The right pane: the glyph legend, fixed whatever the screen.
-const LEGEND: [&str; 22] = [
+///
+/// **Twenty-one lines, and that is the pane's whole height**, not a coincidence: at
+/// the reference 80×24 the footer takes one row and the box's own borders two, which
+/// leaves exactly this many. A `Paragraph` clips what does not fit *in silence* — no
+/// panic, no warning, just a missing line — and this legend had been one line over
+/// for a while without anyone seeing it, because the line that fell off the bottom
+/// was the last one. `the_legend_fits_the_pane_at_the_reference_size` asserts on that
+/// last line for exactly that reason: it is the one the overflow eats first.
+///
+/// The length is spelled out rather than inferred so that adding an entry is a build
+/// error until it has been counted — the type is the inventory, the same job
+/// `theme::MARKS` does for the colours these glyphs take.
+const LEGEND: [&str; 21] = [
     "",
     "The mine grid",
-    "  a solid colour  an intact cell; the",
-    "                  colour is the",
-    "                  material",
-    "  a stippled cell the cell of value —",
-    "                  stippled in every",
-    "                  colour mode",
+    "  a solid colour  an intact cell, in",
+    "                  its material colour",
+    "  a stippled cell the cell of value,",
+    "                  in every colour mode",
     "  · : #           the cell you are",
     "                  breaking, filling up",
     "  nothing at all  already broken",
@@ -65,6 +75,7 @@ const LEGEND: [&str; 22] = [
     "      denomination — compress first",
     "  ✗   not enough ore",
     "  ●   where you are now",
+    "  —   nothing to buy: maxed, or gated",
     "",
     "  On Levels and on Stats, ✓ reads",
     "  \"already yours\": nothing is bought",
@@ -163,6 +174,34 @@ mod tests {
         assert!(frame.contains("Reading the screen"), "{frame}");
         assert!(frame.contains("already yours"), "{frame}");
         assert!(frame.contains("Esc  or  ?   close"), "{frame}");
+    }
+
+    #[test]
+    fn the_legend_fits_the_pane_at_the_reference_size() {
+        // The **last** line of `LEGEND`, which is what a `Paragraph` drops first and
+        // drops without saying so. Asserting a middle line would pass with the legend
+        // one, two or ten lines over its pane; asserting this one cannot.
+        let frame = help(Screen::Mine, &Config::default());
+        let last = LEGEND.last().copied().unwrap_or_default();
+        assert!(
+            frame.contains(last),
+            "the legend overflows its pane: {frame}"
+        );
+        // Every mark the theme owns is explained, plus the one it does not.
+        for glyph in ['✓', '~', '✗', '●', '—'] {
+            assert!(frame.contains(glyph), "{glyph} is missing from the legend");
+        }
+
+        // The Keys pane has the same 21 rows and the same silent clip, and Upgrades
+        // is its worst case: ten globals, a blank, a heading, its four contextual
+        // bindings, a blank and the four Mining lines come to exactly 21. Checked on
+        // the last Mining line for the same reason as above.
+        let upgrades = help(Screen::Upgrades, &Config::default());
+        let last = MINING.last().copied().unwrap_or_default();
+        assert!(
+            upgrades.contains(last),
+            "the Keys pane overflows on the screen with the most bindings: {upgrades}"
+        );
     }
 
     #[test]
