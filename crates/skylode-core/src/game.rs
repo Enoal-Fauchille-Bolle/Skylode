@@ -353,11 +353,57 @@ impl GameState {
 
     /// Slides the current mine's richness dial, refusing above the bought ceiling.
     ///
-    /// Forwards to [`Mine::set_richness_setting`], which owns the rule and the
-    /// redraw. It is here at all because the dial needs the generator, and the
-    /// generator is this struct's.
+    /// The common case of [`set_mine_richness_setting`](GameState::set_mine_richness_setting),
+    /// spelled out so the caller that is *standing in* the mine does not have to name
+    /// it. One implementation, so the two cannot grow apart.
     pub fn set_richness_setting(&mut self, setting: u32) -> Result<(), CoreError> {
-        self.mine.set_richness_setting(setting, &mut self.rng)
+        self.set_mine_richness_setting(self.mine.kind(), setting)
+    }
+
+    /// Slides **any** mine's richness dial, refusing above that mine's own bought
+    /// ceiling.
+    ///
+    /// Takes a [`MineKind`] because the screen that moves the dial is not the screen
+    /// the player digs on: `organization/UI-EN.md` §5.3 draws the dial of the mine
+    /// under the *cursor*, which is routinely one the player left. Forwards to
+    /// [`Mine::set_richness_setting`], which owns the rule and the redraw; this is
+    /// here at all because the dial needs the generator, and the generator is this
+    /// struct's.
+    ///
+    /// **A mine this run has never entered has no [`Mine`] to dial**, since mines are
+    /// created lazily — and it needs none, because its ceiling is structurally 0.
+    /// Asking for 0 is therefore the no-op that succeeds, and anything else is the
+    /// same [`CoreError::RichnessAboveCeiling`] a created mine would answer with,
+    /// quoting the ceiling it would have. Creating one here to refuse the request
+    /// would be worse than useless: it would spend a grid's worth of draws to say no.
+    ///
+    /// That is also why the no-op **must not touch the generator**, and it is the
+    /// same rule [`select_mine`](GameState::select_mine) follows for a refused mine
+    /// and [`Mine::set_richness_setting`] for an unmoved dial. The generator's
+    /// *position* is run state: a front-end that re-affirmed the dial on every
+    /// keypress — or on every frame — would otherwise shift every draw the rest of
+    /// the run makes, and the run would no longer be the one that was saved.
+    pub fn set_mine_richness_setting(
+        &mut self,
+        kind: MineKind,
+        setting: u32,
+    ) -> Result<(), CoreError> {
+        let mine = if kind == self.mine.kind() {
+            &mut self.mine
+        } else if let Some(mine) = self.visited.get_mut(&kind) {
+            mine
+        } else {
+            // Never entered: no grid, and a ceiling of 0 by construction.
+            return if setting == 0 {
+                Ok(())
+            } else {
+                Err(CoreError::RichnessAboveCeiling {
+                    requested: setting,
+                    ceiling: 0,
+                })
+            };
+        };
+        mine.set_richness_setting(setting, &mut self.rng)
     }
 
     /// Buys one Efficiency level for the pickaxe.
@@ -1323,6 +1369,85 @@ mod tests {
                 ceiling: 0,
             })
         );
+    }
+
+    /// A run with a richness ceiling bought on the Coal mine, and the player back in
+    /// the Stone one.
+    ///
+    /// The shape the Mines screen is always in: the dial it draws belongs to the mine
+    /// under the cursor, which is not the mine underfoot. `upgrade_richness_level` is
+    /// called directly rather than bought, for the reason [`equip`] installs a pickaxe
+    /// rather than shopping for one — this is a test of the dial, not of the till.
+    fn dialling_from_afar() -> GameState {
+        let mut state = state();
+        assert!(state.select_mine(MineKind::Coal).is_ok());
+        assert!(state.mine.upgrade_richness_level().is_ok());
+        assert!(state.select_mine(MineKind::Stone).is_ok());
+        assert_eq!(state.current_mine().kind(), MineKind::Stone);
+        state
+    }
+
+    #[test]
+    fn the_dial_reaches_a_mine_the_player_is_not_standing_in() {
+        let mut state = dialling_from_afar();
+
+        assert!(state.set_mine_richness_setting(MineKind::Coal, 1).is_ok());
+
+        // The mine that was left has moved, and the one underfoot has not.
+        assert_eq!(
+            state.mine(MineKind::Coal).map(Mine::get_richness_setting),
+            Some(1)
+        );
+        assert_eq!(state.current_mine().get_richness_setting(), 0);
+    }
+
+    /// The bound is the *addressed* mine's ceiling, not the current one's.
+    ///
+    /// Worth its own test because the obvious wrong implementation — check the
+    /// ceiling here, then forward — passes every test where the two mines happen to
+    /// agree, and this is the run where they do not: Coal is at 1, Stone at 0.
+    #[test]
+    fn a_distant_dial_is_bounded_by_its_own_mines_ceiling() {
+        let mut state = dialling_from_afar();
+
+        assert_eq!(
+            state.set_mine_richness_setting(MineKind::Coal, 2),
+            Err(CoreError::RichnessAboveCeiling {
+                requested: 2,
+                ceiling: 1,
+            })
+        );
+        // The setting Stone's ceiling would have refused is the one Coal allows.
+        assert!(state.set_mine_richness_setting(MineKind::Coal, 1).is_ok());
+    }
+
+    /// A mine this run has never entered has no grid to redraw, and needs none.
+    ///
+    /// **The generator is the assertion**, not the return value. Mines are created
+    /// lazily, so answering "what is the End mine's dial at?" must not build the End
+    /// mine — a grid's worth of draws spent to say no would shift every draw the rest
+    /// of the run makes. Both answers are checked: the no-op that succeeds and the
+    /// refusal, since a refusal that built the mine first would be just as costly.
+    #[test]
+    fn an_unvisited_mines_dial_answers_without_drawing_a_grid() {
+        let mut state = state();
+        let before = next_draws(&state);
+
+        // Its ceiling is 0 by construction, so 0 is the one setting it already holds.
+        assert_eq!(
+            state.set_mine_richness_setting(MineKind::Amethyst, 0),
+            Ok(())
+        );
+        assert_eq!(
+            state.set_mine_richness_setting(MineKind::Amethyst, 1),
+            Err(CoreError::RichnessAboveCeiling {
+                requested: 1,
+                ceiling: 0,
+            })
+        );
+
+        assert!(state.mine(MineKind::Amethyst).is_none(), "a grid was built");
+        assert_eq!(next_draws(&state), before, "the generator moved");
     }
 
     /// The three-way borrow, proven at runtime rather than only at compile time:
