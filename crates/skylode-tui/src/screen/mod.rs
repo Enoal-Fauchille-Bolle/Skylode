@@ -4,14 +4,20 @@
 //! jump. Everything else in the design hangs off one of these six.
 //!
 //! **The counted widths are the `Fill` weights.** Every side-by-side split on these
-//! screens used to be `Length(N) + Min(0)`, which froze one pane at the width
-//! UI-EN.md §4 counted and handed the other every column the terminal had to spare.
-//! They are now `Fill(a) + Fill(b)`, and `a` and `b` are *those same counted
-//! numbers* — `38 : 42` on Mines, `30 : 50` on Stats. `Fill` divides the row in the
-//! ratio of its arguments, so at 80 columns the solver reproduces the count exactly
-//! and above it the same proportion holds. Reducing the pair (`19 : 21`) would work
-//! identically and would cost the one property that makes this readable: the number
-//! in the code is still the number in the wireframe.
+//! screens used to be `Length(N) + Min(0)`, which froze one pane at the width the
+//! counted frames of `docs/UI.md` §5 gave it and handed the other every column the
+//! terminal had to spare. They are now `Fill(a) + Fill(b)`, and `a` and `b` are
+//! *those same counted numbers* — `38 : 42` on Mines, `30 : 50` on Stats. `Fill`
+//! divides the row in the ratio of its arguments, so at 80 columns the solver
+//! reproduces the count exactly and above it the same proportion holds. Reducing the
+//! pair (`19 : 21`) would work identically and would cost the one property that
+//! makes this readable: the number in the code is still the number in the wireframe.
+//!
+//! **Unreduced with no exceptions**, including where the split is even: Help writes
+//! `40 : 40` rather than `1 : 1`. The reduced form is not wrong there and is arguably
+//! clearer read alone — but a rule with one exception is a rule every reader has to
+//! check a file against before trusting a number in it, which costs more than the
+//! one line it saves.
 //!
 //! **Why an `enum` and not `Box<dyn Screen>`.** The set of screens is fixed and
 //! known at compile time, so a trait object would buy dynamic dispatch we never

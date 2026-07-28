@@ -86,10 +86,10 @@ const LEGEND: [&str; 21] = [
 pub fn render(frame: &mut Frame, area: Rect, screen: Screen, config: &Config) {
     let [body, footer_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-    // An even split, which is what the counted 40/40 already was — so the ratio is
-    // written as `1 : 1` rather than as `40 : 40`, the one place where the reduced
-    // form is not a loss of information.
-    let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(body);
+    // `40 : 40`, the counted split, written unreduced like every other one in the
+    // crate — see the rule on `crate::screen`.
+    let [left, right] =
+        Layout::horizontal([Constraint::Fill(40), Constraint::Fill(40)]).areas(body);
 
     let mut keys: Vec<String> = GLOBALS.iter().map(|line| (*line).to_owned()).collect();
     let context = contextual(screen, config);
