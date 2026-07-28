@@ -333,7 +333,18 @@ impl Mine {
     /// Percent rather than permille because the weights are already out of 100 in
     /// [`draw_cell`], so this is the number itself and not a conversion.
     pub fn value_weight_percent(&self) -> u32 {
-        value_weight(self.richness_setting)
+        Self::value_weight_percent_for(self.richness_setting)
+    }
+
+    /// The same share, for a dial setting rather than for a mine.
+    ///
+    /// Public for [`size_for_level`](Mine::size_for_level)'s reason exactly: the
+    /// Mines screen draws a dial for the mine under the cursor, and eleven of the
+    /// twelve have no [`Mine`] behind them until the player walks in. A fresh one is
+    /// created at setting 0, so `value_weight_percent_for(0)` is what that row's bar
+    /// honestly shows — not a placeholder, the real curve read at the real setting.
+    pub fn value_weight_percent_for(setting: u32) -> u32 {
+        value_weight(setting)
     }
 
     /// Moves the richness dial, redrawing the composition of the **standing**
@@ -825,11 +836,19 @@ impl Mine {
         self.size_level
     }
 
-    /// Returns this mine's `(width, height)` in blocks.
+    /// The `(width, height)` a mine of size level `level` has, whether or not such
+    /// a mine exists.
     ///
-    /// Looks the dimensions up in `MINE_SIZES` by `size_level`, clamping anything
-    /// past the table to the largest size rather than panicking.
+    /// **An associated function and not a method**, because it reads no field — and
+    /// that is the entire reason it is public. A run creates its mines *lazily*, on
+    /// first entry ([`GameState`](crate::game::GameState)), so eleven of the twelve
+    /// have no [`Mine`] at all until the player walks in; the Mines screen
+    /// nevertheless prints a size on every row (`organization/UI-EN.md` §5.3), and
+    /// `size_for_level(0)` is what it asks for those. The alternative was to build
+    /// all twelve grids up front — twelve draws from the generator for mines a run
+    /// may never open — or to copy the table into the front-end.
     ///
+    /// Anything past the table clamps to the largest size rather than panicking.
     /// [`upgrade_size_level`](Mine::upgrade_size_level) is the only thing that
     /// writes the field, and it stops at [`MAX_SIZE_LEVEL`], so a live mine cannot
     /// reach the clamp. A loaded one cannot either, since
@@ -838,13 +857,18 @@ impl Mine {
     /// *total*: it is called from inside `validate` itself, and an accessor that
     /// panicked on the very state the validator was built to catch would take the
     /// process down before the refusal could be returned.
-    pub fn get_size(&self) -> (u8, u8) {
-        let index = self.size_level as usize;
+    pub fn size_for_level(level: u32) -> (u8, u8) {
+        let index = level as usize;
         if index < MINE_SIZES.len() {
             MINE_SIZES[index]
         } else {
             MINE_SIZES[MINE_SIZES.len() - 1] // Return the largest size if out of bounds
         }
+    }
+
+    /// Returns this mine's `(width, height)` in blocks.
+    pub fn get_size(&self) -> (u8, u8) {
+        Self::size_for_level(self.size_level)
     }
 
     /// Whether the mine already fills the largest grid the size table holds, so
@@ -1001,6 +1025,45 @@ mod tests {
         assert_eq!(mine_at(0).get_size(), (3, 3));
         assert_eq!(mine_at(4).get_size(), (10, 6));
         assert_eq!(mine_at(9).get_size(), (20, 10));
+    }
+
+    /// Both tables are answerable without a mine, which is what the Mines screen
+    /// needs for the eleven mines a run has never created.
+    #[test]
+    fn the_dial_curve_can_be_read_without_a_mine_to_read_it_on() {
+        // A fresh mine's dial is 0, so this is the row an unvisited mine draws.
+        assert_eq!(Mine::value_weight_percent_for(0), value_weight(0));
+        // And the method is the function read at the mine's own setting.
+        let mut mine = mine_at(0);
+        for setting in 0..=MAX_RICHNESS_LEVEL {
+            while mine.get_richness_level() < setting {
+                assert!(mine.upgrade_richness_level().is_ok());
+            }
+            assert!(mine.set_richness_setting(setting, &mut rng()).is_ok());
+            assert_eq!(
+                mine.value_weight_percent(),
+                Mine::value_weight_percent_for(setting)
+            );
+        }
+    }
+
+    /// The table is answerable without a mine, which is what the Mines screen needs
+    /// for the eleven mines a run has never created.
+    #[test]
+    fn a_size_can_be_looked_up_without_a_mine_to_look_it_up_on() {
+        assert_eq!(Mine::size_for_level(0), (3, 3));
+        assert_eq!(Mine::size_for_level(MAX_SIZE_LEVEL), (20, 10));
+        // Past the table it clamps rather than panicking: this is the accessor
+        // `validate` itself calls, so it has to answer for a level no play produces.
+        assert_eq!(
+            Mine::size_for_level(MAX_SIZE_LEVEL + 1),
+            Mine::size_for_level(MAX_SIZE_LEVEL)
+        );
+        // And the method is the function read at the mine's own level, not a second
+        // lookup that could disagree with it.
+        for level in 0..=MAX_SIZE_LEVEL {
+            assert_eq!(mine_at(level).get_size(), Mine::size_for_level(level));
+        }
     }
 
     /// A bigger mine must never be a smaller one: mine size is a reward, so the
