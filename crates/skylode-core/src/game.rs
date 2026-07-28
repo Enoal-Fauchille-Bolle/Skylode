@@ -27,7 +27,7 @@ use crate::boost::Boost;
 use crate::economy;
 use crate::enchant::EnchantType;
 use crate::error::CoreError;
-use crate::material::Item;
+use crate::material::{Item, Material};
 use crate::mine::{Dug, Mine};
 use crate::mine_kind::MineKind;
 use crate::player::Player;
@@ -125,7 +125,7 @@ pub struct GameState {
     /// three entries beats any tree or table, and it is the shape
     /// [`credit_auto_mining`](GameState::credit_auto_mining) already builds and
     /// searches for the same reason. It is keyed by [`Item`] rather than by
-    /// [`Material`](crate::material::Material) so a Compressed substitution carries its
+    /// [`Material`] so a Compressed substitution carries its
     /// own remainder: the two denominations are a hundred to one, and merging them
     /// would pay a raw remainder out as a Compressed unit.
     yield_carry: Vec<(Item, u32)>,
@@ -463,6 +463,55 @@ impl GameState {
         economy::buy_boost(self.player.inventory_mut())?;
         self.boost_charges += 1;
         Ok(())
+    }
+
+    /// Mints `units` Compressed units of `material` out of the raw items held, or
+    /// refuses and changes nothing.
+    ///
+    /// **The two doors below are the only mutations the player performs *by hand*,
+    /// and they are the reason the inventory has any public writer at all.**
+    /// [`Player::inventory_mut`](crate::player::Player) is `pub(crate)` because
+    /// [`Inventory::add`](crate::inventory::Inventory::add) is free and unbounded: a
+    /// public door onto the inventory would be every material in the game for the
+    /// asking. These two are safe for the exact inverse reason — they can only
+    /// **convert**, never create. [`RAW_PER_COMPRESSED`] raw go in, one Compressed
+    /// unit comes out, and [`decompress`](GameState::decompress) undoes it exactly,
+    /// so no sequence of calls can leave the player holding more value than they
+    /// mined.
+    ///
+    /// **`GameState`'s doors and not just [`Inventory`](crate::inventory::Inventory)'s**,
+    /// because the front-end reads the run through [`player`](GameState::player) and
+    /// gets a shared borrow: there is no `&mut Inventory` on this side of the
+    /// boundary, deliberately, and every mutation a front-end can reach goes through
+    /// a method here that is allowed to refuse.
+    ///
+    /// That refusal is the whole mechanic and not an edge case. `docs/MECHANICS.md`
+    /// requires that **nothing compresses itself**: a cost quoted as `6 Compressed
+    /// Iron + 50 Iron` must be paid in that shape, and a player holding 650 raw is
+    /// refused until they come here and mint the units themselves. A purchase path
+    /// that called this on their behalf would make the refusal a formality — see
+    /// `organization/UI-EN.md` §6.4, where that option is rejected by name.
+    ///
+    /// Thin, like the five `buy_*` doors above: the rule and the arithmetic live in
+    /// [`Inventory::compress`](crate::inventory::Inventory::compress), and a second
+    /// copy here would give one conversion two places to disagree with itself.
+    ///
+    /// [`RAW_PER_COMPRESSED`]: crate::tunables::RAW_PER_COMPRESSED
+    pub fn compress(&mut self, material: Material, units: u32) -> Result<(), CoreError> {
+        self.player.inventory_mut().compress(material, units)
+    }
+
+    /// Breaks `units` Compressed units of `material` back into raw items, or refuses
+    /// and changes nothing.
+    ///
+    /// The exact inverse of [`compress`](GameState::compress), and it exists for a
+    /// case that is easy to miss: a player who compressed *too much* is short in the
+    /// other direction. Holding `7 Compressed` against a price of `6 Compressed + 50
+    /// raw` is a refusal cleared by decompressing one unit, not by mining. Free and
+    /// lossless both ways is what keeps a run un-brickable — the strict payment rule
+    /// can never trap a player who owns the value.
+    pub fn decompress(&mut self, material: Material, units: u32) -> Result<(), CoreError> {
+        self.player.inventory_mut().decompress(material, units)
     }
 
     /// Fires one charge from the reserve, starting a boost or lengthening the one
@@ -1066,7 +1115,7 @@ pub enum GameEvent {
 mod tests {
     use super::*;
     use crate::block::Block;
-    use crate::economy::CostLine;
+    use crate::economy::{Cost, CostLine};
     use crate::enchant::Enchants;
     use crate::material::Material;
     use crate::pickaxe::{Pickaxe, PickaxeTier};
@@ -1508,6 +1557,131 @@ mod tests {
         assert!(state.buy_boost_charge().is_err());
 
         assert_eq!(state.boost_charges(), 0);
+    }
+
+    // --- The two conversion doors ---
+
+    /// The property that makes a public writer onto the inventory safe at all:
+    /// these doors **convert**, they do not create.
+    ///
+    /// Asserted as a round trip rather than on either call alone, because "lossless"
+    /// is a statement about the pair. A `compress` that minted one unit too many
+    /// would pass a test of `compress`; it fails here, where the raw value has to
+    /// come back to exactly what it was.
+    #[test]
+    fn a_conversion_round_trip_moves_no_value() {
+        let mut state = state();
+        state
+            .player
+            .inventory_mut()
+            .add(Item::Raw(Material::Iron), 650);
+        let before = state.player().get_inventory().raw_value(Material::Iron);
+
+        assert!(state.compress(Material::Iron, 6).is_ok());
+        assert_eq!(
+            state.player().get_inventory().raw_value(Material::Iron),
+            before,
+            "compressing changed what the player is worth"
+        );
+        // The denominations *did* move, which is the point of the call — the value
+        // staying put is what makes it a conversion rather than a grant.
+        assert_eq!(
+            state
+                .player()
+                .get_inventory()
+                .count(Item::Compressed(Material::Iron)),
+            6
+        );
+        assert_eq!(
+            state
+                .player()
+                .get_inventory()
+                .count(Item::Raw(Material::Iron)),
+            50
+        );
+
+        assert!(state.decompress(Material::Iron, 6).is_ok());
+        assert_eq!(
+            state
+                .player()
+                .get_inventory()
+                .count(Item::Raw(Material::Iron)),
+            650
+        );
+        assert_eq!(
+            state.player().get_inventory().raw_value(Material::Iron),
+            before
+        );
+    }
+
+    /// Both doors refuse without taking anything, the rule every path in this crate
+    /// keeps: a partial conversion would leave the player poorer *and* empty-handed.
+    ///
+    /// The two directions fail on different denominations, so both are asserted —
+    /// a `decompress` that checked the raw pile would pass the first half alone.
+    #[test]
+    fn a_refused_conversion_takes_nothing() {
+        let mut state = state();
+        state
+            .player
+            .inventory_mut()
+            .add(Item::Raw(Material::Iron), 99);
+
+        assert!(matches!(
+            state.compress(Material::Iron, 1),
+            Err(CoreError::InsufficientItems { .. })
+        ));
+        assert_eq!(
+            state
+                .player()
+                .get_inventory()
+                .count(Item::Raw(Material::Iron)),
+            99,
+            "a refused compress took the raw pile"
+        );
+
+        assert!(matches!(
+            state.decompress(Material::Iron, 1),
+            Err(CoreError::InsufficientItems { .. })
+        ));
+        assert_eq!(
+            state
+                .player()
+                .get_inventory()
+                .count(Item::Raw(Material::Iron)),
+            99,
+            "a refused decompress invented raw items"
+        );
+    }
+
+    /// The case the door's own rustdoc names, and the reason `decompress` is public
+    /// rather than an implementation detail of `compress`: a player can be blocked by
+    /// having compressed **too much**.
+    ///
+    /// Seven Compressed Iron is 700 against a price of `6 Compressed + 50` — more
+    /// than enough value, and still refused, because the raw line has nothing to pay
+    /// it with. One `decompress` clears it. This is what "free and lossless both
+    /// ways keeps a run un-brickable" means in practice.
+    #[test]
+    fn decompressing_clears_the_refusal_that_compressing_cannot() {
+        let mut state = state();
+        state
+            .player
+            .inventory_mut()
+            .add(Item::Compressed(Material::Iron), 7);
+        let cost = Cost::new(vec![CostLine::from_raw_total(Material::Iron, 650)]);
+
+        assert!(
+            !economy::can_afford(state.player().get_inventory(), &cost),
+            "700 in Compressed units paid a price with a raw line"
+        );
+
+        assert!(state.decompress(Material::Iron, 1).is_ok());
+
+        assert!(
+            economy::can_afford(state.player().get_inventory(), &cost),
+            "the split is now exact and the till still refuses it"
+        );
     }
 
     /// The determinism contract, asserted where it can actually be broken: a state
@@ -2745,7 +2919,6 @@ mod tests {
     // else it needs is already `pub`.
     // =====================================================================
 
-    use crate::material::ALL_MATERIALS;
     use crate::tunables::{AMETHYST_PER_CLIMB, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND};
     use std::collections::BTreeMap;
 
