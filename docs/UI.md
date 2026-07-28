@@ -437,6 +437,30 @@ cannot afford this" would be lying — the player can afford it.
 **Core reads.** `Inventory::raw_value(material)` exists. Which of the two refusals
 applies is the three-state query in §5.4.
 
+#### 5.3.1 Three departures from this frame
+
+Recorded when the screen was wired. The frame above is left as drawn.
+
+- **The refusal block is absent unless something was actually refused.** The frame is
+  drawn mid-refusal on purpose, and that state is only reachable from `Enter` on the
+  Upgrades screen — so on a run where nothing has been refused, the four lines from
+  `Efficiency V wants` down are simply not there. Printing them regardless would have
+  the panel invent a refusal that never happened, which is the same class of lie the
+  panel exists to avoid. Everything above them is unconditional: the counts, the
+  value, `Compressible now`, and the two key legends.
+- **The table lists all fifteen materials at zero, and does not shrink.** Not visible
+  in the frame, which is drawn at level 23, but it is the rule the projection had to
+  choose: an inventory is a *sparse* map, so listing what is held would make rows
+  appear and vanish as the player spends. A row reading `0` is information — the
+  player has none of a material that exists — so the table walks the material list and
+  reads counts off it.
+- **`c` on a pile with nothing to convert toasts instead of opening the dialog.**
+  §6.6 specifies the dialog and not what happens when its maximum is zero. A modal the
+  player can only cancel is a keypress spent on nothing, and the refusal is one they
+  cannot otherwise see: the panel does print `Compressible now: 0`, but a player who
+  pressed `c` was not reading it. The toast names the shortfall — `Nothing to compress
+  — 100 raw Diamond needed, 9 held`.
+
 ### 5.4 Upgrades
 
 Three sub-tabs, because 96 rows of content do not fit in 21. Master-detail gives the
@@ -869,7 +893,27 @@ announcement for.
 `◄ 12 ►` rather than a typed number: it is a bounded integer with a known maximum,
 and a spinner cannot be wrong. **The inverse dialog is the same frame with the
 arithmetic reversed**, which is free-and-lossless-both-ways showing up as a UI economy
-rather than a second screen.
+rather than a second screen — same lines, same height, every figure read in the other
+denomination:
+
+```text
+                ┌─ Decompress Iron ────────────┐
+                │                              │
+                │  Compressed held    13       │
+                │                              │
+                │  Decompress ◄  2  ►          │
+                │  Costs            2 Compressed
+                │  Leaves          11 Compressed
+                │                              │
+                │  a  all (13)   Enter  do it  │
+                └──────────────────────────────┘
+```
+
+`Costs` is still what the operation spends and `Leaves` still what remains of the pile
+it spends from; what it *yields* is the number in the spinner, exactly as on the
+compress side. The spinner opens at **1**, the smallest real conversion, so a first
+`Enter` is never a bigger act than the player meant; `a` is one keypress to the other
+end. It closes on `Esc` without converting anything.
 
 ### 6.7 The dip modal
 
@@ -1391,7 +1435,8 @@ this document wins for the signature** — and a disagreement is a bug to reconc
 | a nameable lock reason — `MineKind::lock(level, tier) -> MineLock` | `Lv 30` in the mines list (§5.2) | 6 | **done** — both axes readable apart, so the header prints the level and the row the tier |
 | `MineKind::ALL`, `Mine::size_for_level(n)`, `Mine::value_weight_percent_for(n)` | listing and sizing the eleven mines a run has never entered (§5.2) | 4 | **done** — an enum cannot enumerate itself, and mines are created lazily |
 | `GameState::set_mine_richness_setting(kind, n)` | the dial, which belongs to the mine under the *cursor* (§5.2) | 4 | **done** — the old setter reached only the mine underfoot |
-| `Upgrade::affordability(&inv, n) -> Affordable \| CompressFirst \| Insufficient`, **carrying the shortfall** | the `✓ ~ ✗` column and the refusal toast (§5.5, §6.4) | 5 | new |
+| `economy::affordability(&inv, &cost) -> Affordability`, each refusal **carrying its shortfalls** | the `✓ ~ ✗` column and the refusal toast (§5.5, §6.4) | 5 | **done** — a free function over a `Cost`, not a method on an upgrade, since one price shape serves all four tracks. `can_afford` is now `== Affordable`, so screen and till read one rule |
+| `Material::ALL`, `GameState::compress` / `decompress` | listing the fifteen rows, and converting by hand (§5.3, §6.6) | 5 | **done** — two gaps this table had not predicted: an enum cannot enumerate itself, and the front-end held no `&mut Inventory` |
 | `Upgrade::preview(&state, n) -> UpgradePreview` | the dip box and modal (§5.5, §5.7.7) | 5 | new |
 | `Upgrade::max_affordable(&inv) -> u32` | `M`, and the `✓` prefix length (§5.5) | 5 | new |
 | `Pickaxe::ladder() -> impl Iterator<Item = PickaxeRung>` | the roadmap (§5.5) | 5 | new |
