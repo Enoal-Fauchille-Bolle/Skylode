@@ -139,7 +139,7 @@ fn haul_line(haul: &HaulView, width: usize) -> String {
             grouped(entry.raw),
             grouped(entry.compressed),
         );
-        let composite = format!("value {} {}", grouped(entry.value()), entry.material);
+        let composite = format!("value {} {}  ", grouped(entry.value()), entry.material);
         return justified(&held, &composite, width);
     };
     let segment = |entry: HaulEntry| {
@@ -158,14 +158,18 @@ fn haul_line(haul: &HaulView, width: usize) -> String {
 /// **A stated bound, not a discovered one.** The strip is a fixed three-row box on
 /// every mine (`organization/UI-EN.md` §5.2) — that is what keeps the grid below it
 /// from moving — so the line inside cannot wrap, and something has to give at some
-/// number. Six digits of raw beside three of Compressed is where this design draws
-/// it: a little over a million in raw value, and the two mines that decide it are
-/// Ancient Debris (whose fourteen-column name the same-material line prints twice)
-/// and Obsidian beside Crying Obsidian on the two-material one.
+/// number. Roughly six hundred thousand in raw value is where this design draws it.
 ///
-/// **The two are not independent, which is why one pair of numbers covers both.**
-/// Compressed units are minted *out of* raw, a hundred at a time, so the player who
-/// holds 999 Compressed is by that fact 99 900 raw lighter — the corner where both
+/// **The odd-looking `499_999` is the Ancient Debris mine, and nothing else.** Its
+/// material name is fourteen columns and the same-material line prints it twice —
+/// once to open the line, once inside the composite — so 28 of the 78 available
+/// columns are spent before a digit appears. Every other mine fits far more: Iron
+/// clears the same holding with fourteen columns to spare. The bound is a
+/// *guarantee across all twelve*, not a description of the typical line.
+///
+/// **Raw and Compressed are not independent, which is why one pair covers both.**
+/// Compressed units are minted *out of* raw, a hundred at a time, so a player
+/// holding 999 Compressed is by that fact 99 900 raw lighter — the corner where both
 /// columns are simultaneously maxed is one the rules cannot reach.
 ///
 /// A run can still exceed it by never compressing at all, since the denomination is
@@ -173,7 +177,7 @@ fn haul_line(haul: &HaulView, width: usize) -> String {
 /// the box keeps its shape and the layout never breaks. If the ceiling ever needs
 /// raising, the lever is the wording, not the box.
 #[cfg(test)]
-const HAUL_BUDGET: (u32, u32) = (999_999, 999);
+const HAUL_BUDGET: (u32, u32) = (499_999, 999);
 
 /// The middle band: the grid panel at a fixed width, the right column beside it.
 fn middle(frame: &mut Frame, area: Rect, view: &View) {
