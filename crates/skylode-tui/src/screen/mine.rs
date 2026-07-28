@@ -472,22 +472,34 @@ mod tests {
     }
 
     #[test]
-    fn the_gauges_are_drawn_in_the_accent_and_muted_pair() {
-        // Scanned row by row, and **only over the gauge band**, because `░` is also
-        // the value cell's stipple twelve rows above: a whole-buffer search for it
-        // would find a swatch's ink and assert the wrong thing about the wrong
-        // widget. The band is rows 15..18 — three rows under the 3-row Haul strip
-        // and the 12-row middle band.
+    fn all_three_gauges_are_drawn_in_the_accent_and_muted_pair() {
+        // Scanned **only over the gauge band**, because `░` is also the value cell's
+        // stipple in the grid above: a whole-buffer search would find a swatch's ink
+        // and assert the wrong thing about the wrong widget.
+        //
+        // The band's rows are *derived*, not written down. Three of them sit directly
+        // under the grid panel's bottom border, which `grid_box_rows` already locates
+        // — and it locates it by looking, so this stays right when the middle band
+        // flexes. A literal (`15..18` was one) is a number that agrees with the layout
+        // only until the next constraint changes, and it fails silently in the
+        // direction that matters: a band shifted down still finds a filled `█` on the
+        // border row and never reaches the last gauge at all.
         let buffer = render_screen();
-        let cell = |glyph: &str| {
-            (15..18)
-                .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
-                .map(|(x, y)| &buffer[(x, y)])
-                .find(|cell| cell.symbol() == glyph)
-                .map(|cell| cell.fg)
-        };
-        assert_eq!(cell("█"), Some(theme::ACCENT));
-        assert_eq!(cell("░"), Some(theme::MUTED));
+        let (_, grid_bottom) = grid_box_rows(&buffer);
+
+        // Each gauge asserted on its own row, so all three are covered rather than
+        // whichever one the scan reached first. `Break`, `XP`, `Boost`, in order.
+        for (offset, name) in [(1, "Break"), (2, "XP"), (3, "Boost")] {
+            let y = grid_bottom + offset;
+            let first = |glyph: &str| {
+                (0..buffer.area.width)
+                    .map(|x| &buffer[(x, y)])
+                    .find(|cell| cell.symbol() == glyph)
+                    .map(|cell| cell.fg)
+            };
+            assert_eq!(first("█"), Some(theme::ACCENT), "{name}'s filled half");
+            assert_eq!(first("░"), Some(theme::MUTED), "{name}'s unfilled half");
+        }
     }
 
     #[test]
