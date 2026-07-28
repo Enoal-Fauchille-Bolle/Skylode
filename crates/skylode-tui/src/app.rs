@@ -257,7 +257,13 @@ impl Default for App {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+    use std::time::Duration;
+
+    use ratatui::{
+        backend::TestBackend,
+        buffer::Buffer,
+        crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    };
 
     use super::*;
 
@@ -544,6 +550,130 @@ mod tests {
         app.toasts
             .prune(Instant::now() + TOAST_TTL + Duration::from_millis(1));
         assert_eq!(app.toasts.len(), 0, "the toast outlived its TTL");
+    }
+
+    /// An event source that reads from a script instead of from a terminal.
+    ///
+    /// The whole reason [`App::run`] is generic. It hands out the scripted events in
+    /// order and then returns an error, which is how the loop is made to stop even if
+    /// the script never quits: a real `EventHandler` blocks forever waiting for a key
+    /// that a test will never press, so "the script ran out" has to be a *failure*
+    /// rather than a silence. Every test below asserts on the state after `run`
+    /// returns, so which of the two ways it ended is checked explicitly.
+    ///
+    /// `Cell` and not `&mut self`: [`Events::next`] takes `&self` — the real receiver
+    /// needs no exclusive borrow — so the cursor has to be interior-mutable. `Cell`
+    /// rather than `RefCell` because a `usize` is `Copy` and there is nothing to
+    /// borrow, which makes the read a plain load and not a runtime borrow check.
+    struct Script {
+        events: Vec<Event>,
+        next: std::cell::Cell<usize>,
+    }
+
+    impl Script {
+        fn new(events: Vec<Event>) -> Self {
+            Self {
+                events,
+                next: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl Events for Script {
+        fn next(&self) -> Result<Event> {
+            let index = self.next.get();
+            self.next.set(index + 1);
+            self.events
+                .get(index)
+                .copied()
+                .ok_or_else(|| color_eyre::eyre::eyre!("the script ran out"))
+        }
+    }
+
+    /// A key press with no modifiers, as the event source would report it.
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    /// Runs the real loop over `events`, into an off-screen 80×24 terminal.
+    ///
+    /// Hands back the terminal too, so a test can read what the *last* frame drew —
+    /// the loop draws before every wait, so the buffer after `run` is the frame the
+    /// player was looking at when they quit.
+    fn run_script(events: Vec<Event>) -> (Result<()>, Buffer) {
+        let mut terminal = match Terminal::new(TestBackend::new(80, 24)) {
+            Ok(terminal) => terminal,
+            Err(infallible) => match infallible {},
+        };
+        let result = App::new().run(&mut terminal, Script::new(events));
+        (result, terminal.backend().buffer().clone())
+    }
+
+    #[test]
+    fn the_loop_draws_before_it_waits() {
+        // The first frame must be on screen *before* the first event is asked for,
+        // or the player stares at a blank terminal until they touch a key. Asserted
+        // by giving the loop a script that quits on its very first event: if drawing
+        // came second, nothing would ever have been painted.
+        let (result, buffer) = run_script(vec![key(KeyCode::Char('q'))]);
+        assert!(result.is_ok(), "the loop failed: {result:?}");
+        let frame = whole_frame(&buffer);
+        assert!(frame.contains("1 Mine"), "nothing was drawn: {frame}");
+    }
+
+    #[test]
+    fn a_key_is_decoded_and_applied_before_the_next_frame() {
+        // The loop's real job: key → `keymap::resolve` → `update` → redraw. Two tab
+        // presses then a quit, and the frame left on screen has to be the third
+        // screen of the ring — proof the keys went through the reducer and that the
+        // redraw happened after them rather than before.
+        let (result, buffer) = run_script(vec![
+            key(KeyCode::Tab),
+            key(KeyCode::Tab),
+            key(KeyCode::Char('q')),
+        ]);
+        assert!(result.is_ok(), "the loop failed: {result:?}");
+        let frame = whole_frame(&buffer);
+        assert!(frame.contains("Inventory"), "{frame}");
+        assert!(
+            frame.contains("Compressible now"),
+            "not on Inventory: {frame}"
+        );
+    }
+
+    #[test]
+    fn a_key_nothing_is_bound_to_leaves_the_session_alone() {
+        // `resolve` returns `None` and the loop must simply go round again — not
+        // quit, not panic, not swallow the next event.
+        let (result, buffer) = run_script(vec![key(KeyCode::Char('z')), key(KeyCode::Char('q'))]);
+        assert!(result.is_ok(), "the loop failed: {result:?}");
+        assert!(whole_frame(&buffer).contains("Haul"), "the screen moved");
+    }
+
+    #[test]
+    fn a_tick_and_a_resize_both_go_round_the_loop_without_changing_the_screen() {
+        // `Tick` runs the heartbeat and `Resize` does nothing at all — ratatui lays
+        // out against the new size on the next draw, which the loop is about to do
+        // anyway. Both must still reach the quit behind them, which is what fails if
+        // either arm ever starts returning early.
+        let (result, buffer) = run_script(vec![
+            Event::Tick,
+            Event::Resize,
+            Event::Tick,
+            key(KeyCode::Char('q')),
+        ]);
+        assert!(result.is_ok(), "the loop failed: {result:?}");
+        assert!(whole_frame(&buffer).contains("Haul"), "the screen moved");
+    }
+
+    #[test]
+    fn a_dead_event_source_stops_the_loop_instead_of_spinning() {
+        // The other way out. A real `EventHandler` whose thread has died closes the
+        // channel, and `recv` then fails forever — so the `?` on `events.next()` has
+        // to end the loop rather than let it spin on an error it ignores. The script
+        // reproduces that by running out.
+        let (result, _) = run_script(vec![Event::Tick]);
+        assert!(result.is_err(), "the loop kept going past a dead source");
     }
 
     #[test]

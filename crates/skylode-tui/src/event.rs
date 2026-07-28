@@ -157,3 +157,85 @@ impl Events for EventHandler {
         Self::next(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An `EventHandler` over a channel the test owns, with a thread that does
+    /// nothing.
+    ///
+    /// [`EventHandler::new`] cannot be called here: its thread polls crossterm, which
+    /// fails outside a tty and takes the thread down with it before a single tick is
+    /// sent. What is testable is the *receiving* half — which is the half the render
+    /// loop touches — so the struct is built field by field, with a thread that exits
+    /// immediately standing in for the poller. That is legitimate rather than a
+    /// workaround: `handler` is documented as detached and never joined, so a thread
+    /// that has already finished is indistinguishable to every reader of this struct.
+    fn handler_over(sender: &mpsc::Sender<Event>, receiver: mpsc::Receiver<Event>) -> EventHandler {
+        EventHandler {
+            sender: sender.clone(),
+            receiver,
+            handler: thread::spawn(|| {}),
+        }
+    }
+
+    #[test]
+    fn next_hands_back_what_the_thread_sent_in_order() {
+        let (sender, receiver) = mpsc::channel();
+        let events = handler_over(&sender, receiver);
+
+        // The three kinds the loop dispatches on, queued before any are read: the
+        // channel is a queue and not a slot, so a burst of input during a slow frame
+        // has to arrive whole and in order rather than collapsing to the last one.
+        for event in [Event::Tick, Event::Resize, Event::Tick] {
+            // `assert!` rather than `unwrap`: this crate's lints refuse the panicking
+            // helpers even in tests, and a named failure beats a `SendError` anyway.
+            assert!(sender.send(event).is_ok(), "the receiver was dropped early");
+        }
+        assert!(matches!(events.next(), Ok(Event::Tick)));
+        assert!(matches!(events.next(), Ok(Event::Resize)));
+        assert!(matches!(events.next(), Ok(Event::Tick)));
+    }
+
+    #[test]
+    fn a_producer_that_has_gone_does_not_close_the_channel() {
+        // **The `sender` field's whole job, asserted.** It is held and never read, so
+        // what it does is keep the channel open even after every *other* sender has
+        // gone — which means `recv` cannot report a disconnect while the handler is
+        // alive. Written with a producer that sends and then exits: the event it left
+        // behind still arrives, and the channel is still open behind it.
+        //
+        // This is also why `next`'s error arm is unreachable in production, and why
+        // the note on `next` says so. Asserting the *absence* of a disconnect is done
+        // by reading the queued event rather than by calling `next` a second time —
+        // the second call is precisely the one that would block forever, which is a
+        // hang and not a failure, and a test that can hang is worse than no test.
+        let (sender, receiver) = mpsc::channel();
+        let events = handler_over(&sender, receiver);
+        assert!(
+            sender.send(Event::Tick).is_ok(),
+            "the receiver was dropped early"
+        );
+        drop(sender);
+
+        assert!(
+            matches!(events.next(), Ok(Event::Tick)),
+            "the queued event was lost with its producer"
+        );
+    }
+
+    #[test]
+    fn the_trait_and_the_inherent_method_answer_alike() {
+        // The `Events` impl exists so `App::run` can be generic; it must stay a
+        // forwarder. A second opinion here would mean the loop and a direct caller
+        // could see different events from one handler.
+        let (sender, receiver) = mpsc::channel();
+        let events = handler_over(&sender, receiver);
+        assert!(
+            sender.send(Event::Resize).is_ok(),
+            "the receiver was dropped early"
+        );
+        assert!(matches!(Events::next(&events), Ok(Event::Resize)));
+    }
+}
