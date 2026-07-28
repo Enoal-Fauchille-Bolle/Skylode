@@ -263,10 +263,30 @@ permanent **Haste** enchant does not and is not shown here. The Pickaxe panel sh
 *derived numbers* — power, the boost product, the Fortune multiplier — with only
 non-zero special enchants listed; the full roster belongs to Upgrades.
 
-**Core reads.** `Mine::get_target()`, `Mine::break_ratio()`, `Block::material()`
-and `Block::hardness()` exist. `Mine::value_weight_percent()` does **not**, and the
-`Richness ... value 10%` line needs it. The boost product has no home until the tick
-owns the timer.
+**Core reads — all of them exist, and this screen is wired to them.**
+`Mine::get_target()`, `Mine::break_ratio()`, `Mine::value_weight_percent()`,
+`Mine::get_size_level()` and `Mine::get_richness_level()` supply the grid and both
+right-hand panels; `Block::name()` labels the Break gauge, read off the targeted
+cell rather than stored beside it; `Pickaxe::mining_power()` and
+`fortune_multiplier()` supply the Pickaxe panel; `MineKind::common_material()` /
+`value_material()` plus `Inventory::count()` supply the Haul strip. The boost
+product reads `GameState::active_boost()`, which the tick will keep counting down.
+
+**Two states the wireframe above does not draw, because a level-23 save does not
+have them.** Before the first swing there is no target, and until a charge is fired
+there is no boost — so both gauges read `—` on an empty bar rather than `0%` or
+`0s`, which would assert a block part-broken and a countdown running. The Pickaxe
+panel likewise drops the `×1.0 boost → 25.0` clause when nothing multiplies, and
+prints `Fortune —` and `Ench —` rather than a level of zero.
+
+**One departure from the frame above, forced by real numbers.** The composite
+`value 680 Iron` is flush right, not eight spaces along. The frame was counted at
+`480 Raw`; at the holdings a run reaches, a fixed gap plus a material name printed
+twice overflows the fixed-width box — the Ancient Debris mine spends 28 of 78
+columns on its own name — and a three-row box cannot wrap. On a **two-material**
+mine the composite is dropped entirely and the two segments are separated by `·`:
+there is no total of 540 Netherrack and 73 Quartz, and inventing one would invent an
+exchange rate the game does not have.
 
 ### 5.2 Mines
 
@@ -1307,7 +1327,8 @@ this document wins for the signature** — and a disagreement is a bug to reconc
 
 | Query | For | Phase | Status |
 | --- | --- | --- | --- |
-| `Mine::value_weight_percent()` | the richness readout (§5.2) | 5 | `value_weight` exists, private |
+| `Mine::value_weight_percent()` | the richness readout (§5.2) | 5 | **done** |
+| `PickaxeTier::name()`, `Block::name()`, `pub MAX_RICHNESS_LEVEL` | the Pickaxe panel, the Break gauge, `level 0 / 9` (§5.2) | 5 | **done** — the three display names the front-end was otherwise mirroring |
 | a nameable lock reason | `Lv 30` in the mines list (§5.3) | 6 | tier half derivable today |
 | `Upgrade::affordability(&inv, n) -> Affordable \| CompressFirst \| Insufficient`, **carrying the shortfall** | the `✓ ~ ✗` column and the refusal toast (§5.5, §6.4) | 5 | new |
 | `Upgrade::preview(&state, n) -> UpgradePreview` | the dip box and modal (§5.5, §5.7.7) | 5 | new |
