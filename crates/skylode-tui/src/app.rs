@@ -382,15 +382,6 @@ mod tests {
     }
 
     #[test]
-    fn the_heartbeat_expires_a_toast_once_its_moment_has_passed() {
-        let mut app = App::new();
-        app.update(Action::ShowToast("Mine refilled".to_owned()));
-        // `on_tick` prunes against the real clock, so reach past the TTL directly.
-        app.toasts.prune(Instant::now() + TOAST_TTL + TOAST_TTL);
-        assert!(app.toasts.is_empty());
-    }
-
-    #[test]
     fn the_tab_bar_shows_all_six_tabs_with_their_digits() {
         let buffer = render_to_buffer(&App::new());
         let bar = row(&buffer, 0);
@@ -497,6 +488,43 @@ mod tests {
         app.update(Action::ShowToast("Mine refilled".to_owned()));
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Mine refilled"), "{frame}");
+    }
+
+    #[test]
+    fn the_heartbeat_expires_a_toast_once_its_moment_has_passed() {
+        // **`on_tick` is called, not stepped around.** The test this replaces was
+        // named for the heartbeat and reached straight for `toasts.prune`, so the one
+        // line it was about — `on_tick`'s body, the thing `Event::Tick` actually runs
+        // — was never executed by anything. A test can assert the right outcome and
+        // still miss the code that is supposed to produce it.
+        //
+        // `on_tick` reads `Instant::now()` itself, so the clock is not the test's to
+        // choose: it ticks once against the live clock to prove the heartbeat spares
+        // a live toast, then prunes past the deadline by hand for the other half.
+        let mut app = App::new();
+        app.update(Action::ShowToast("Excavator!".to_owned()));
+        assert_eq!(app.toasts.len(), 1);
+
+        // A tick right now expires nothing: the toast has three seconds to live.
+        app.on_tick();
+        assert_eq!(app.toasts.len(), 1, "the heartbeat ate a live toast");
+
+        app.toasts
+            .prune(Instant::now() + TOAST_TTL + Duration::from_millis(1));
+        assert_eq!(app.toasts.len(), 0, "the toast outlived its TTL");
+    }
+
+    #[test]
+    fn the_default_session_is_the_one_new_builds() {
+        // `Default` exists because clippy asks for it beside an argument-less `new`,
+        // and it must stay a synonym rather than acquiring a second opinion about
+        // which tab a session opens on.
+        let default = App::default();
+        let new = App::new();
+        assert_eq!(default.screen, new.screen);
+        assert_eq!(default.should_quit, new.should_quit);
+        assert_eq!(default.modal, new.modal);
+        assert_eq!(default.toasts.len(), new.toasts.len());
     }
 
     #[test]

@@ -264,4 +264,40 @@ mod tests {
         let buffer = render_screen();
         assert_eq!(fg_of(&buffer, "▸"), Some(theme::ACCENT));
     }
+
+    #[test]
+    fn a_cursor_past_the_last_row_empties_the_panel_instead_of_panicking() {
+        // The `get` guard in `compress`. Indexing would panic the *renderer* over a
+        // stale cursor — the frame after a row is removed, say — and a panic in a
+        // draw call takes the terminal down mid-frame, so the guard returns early and
+        // leaves the panel blank rather than half-drawn.
+        //
+        // The screen still renders: the box, its title and the table beside it are
+        // all there, and only the panel's contents are missing. That is the whole
+        // claim, so both halves are asserted — a guard that blanked the screen would
+        // pass a test that only checked for the absence of a panic.
+        let mut view = View::sample();
+        view.inventory.selected = view.inventory.rows.len();
+
+        let mut terminal = match Terminal::new(TestBackend::new(80, 24)) {
+            Ok(terminal) => terminal,
+            Err(infallible) => match infallible {},
+        };
+        if let Err(infallible) = terminal.draw(|frame| {
+            let area = frame.area();
+            render(frame, area, &view);
+        }) {
+            match infallible {}
+        }
+        let frame = whole_frame(terminal.backend().buffer());
+
+        assert!(
+            frame.contains("Compress"),
+            "the panel's box is gone: {frame}"
+        );
+        assert!(
+            !frame.contains("Free and lossless"),
+            "the panel drew contents for a row that does not exist: {frame}"
+        );
+    }
 }

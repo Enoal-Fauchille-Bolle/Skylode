@@ -162,4 +162,34 @@ mod tests {
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(resolve(&app, ctrl_c), Some(Action::Quit));
     }
+
+    #[test]
+    fn the_demo_toast_key_is_still_bound_and_still_global() {
+        // `t` is scaffolding: it exists so the overlay path can be exercised before
+        // the tick produces real events, and it is meant to go once phase 7 does.
+        // Pinned rather than left untested for exactly that reason — a temporary
+        // binding nothing asserts is one that quietly becomes permanent, and this
+        // test is where its removal gets noticed.
+        let app = App::new();
+        assert_eq!(
+            resolve(&app, press(KeyCode::Char('t'))),
+            Some(Action::ShowToast(
+                "Excavator!  +1 Compressed Iron".to_owned()
+            ))
+        );
+
+        // Global, so every tab answers the same — it is decided before the screens
+        // are consulted, and the fall-through below it must not change that.
+        for screen in Screen::ALL {
+            let mut app = App::new();
+            app.screen = screen;
+            assert!(
+                matches!(
+                    resolve(&app, press(KeyCode::Char('t'))),
+                    Some(Action::ShowToast(_))
+                ),
+                "{screen:?} did not answer the global demo key"
+            );
+        }
+    }
 }

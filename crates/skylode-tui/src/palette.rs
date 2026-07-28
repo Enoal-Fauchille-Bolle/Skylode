@@ -515,4 +515,50 @@ mod tests {
     fn the_default_mode_is_the_richer_one() {
         assert_eq!(ColourMode::default(), ColourMode::Ansi256);
     }
+
+    #[test]
+    fn each_constructor_pairs_its_swatch_with_the_ink_its_name_promises() {
+        // The four constructors exist so the ink decision is readable off every row
+        // of `PALETTE` — `light` or `dark` in the table, and the reader knows what
+        // will be written on it. That only holds if the name and the ink agree, and
+        // nothing above checks it: `every_swatch_can_be_written_on` measures the
+        // *contrast* of whatever pair ended up in the table, so a `light` that handed
+        // out light ink would be caught there only if the result happened to be
+        // illegible. Here the promise itself is the assertion.
+        //
+        // These are `const fn`, and the table is built at compile time, so calling
+        // them at runtime is also the only way they are ever executed at all.
+        assert_eq!(
+            Swatch::light(30),
+            Swatch {
+                bg: Color::Indexed(30),
+                ink: INK_ON_LIGHT
+            }
+        );
+        assert_eq!(
+            Swatch::dark(235),
+            Swatch {
+                bg: Color::Indexed(235),
+                ink: INK_ON_DARK
+            }
+        );
+
+        // The ANSI pair takes a named colour rather than an index — the fallback's
+        // whole point is to let the terminal's theme remap it — and its ink is named
+        // too, so it travels with the background it was chosen against.
+        assert_eq!(
+            Swatch::ansi_light(Color::Yellow),
+            Swatch {
+                bg: Color::Yellow,
+                ink: Color::Black
+            }
+        );
+        assert_eq!(
+            Swatch::ansi_dark(Color::Blue),
+            Swatch {
+                bg: Color::Blue,
+                ink: Color::White
+            }
+        );
+    }
 }

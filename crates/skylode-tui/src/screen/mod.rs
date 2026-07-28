@@ -233,6 +233,8 @@ impl Screen {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
     use super::*;
 
     #[test]
@@ -314,6 +316,39 @@ mod tests {
         let range = window(46, 999, 0, 19);
         assert!(range.start <= range.end, "an inverted range: {range:?}");
         assert_eq!(range, 27..46);
+    }
+
+    #[test]
+    fn every_screen_declines_every_key_it_is_offered() {
+        // The contextual bindings arrive with the screens themselves, so today the
+        // right answer everywhere is `None` — "not mine", which lets `keymap` fall
+        // through instead of swallowing the key. Asserted through the dispatch rather
+        // than on each module's `map_key` directly, because the dispatch is the part
+        // that can go wrong: a seventh screen wired to the wrong arm would return
+        // another screen's answer, and `match` exhaustiveness cannot catch a swap.
+        //
+        // The keys are the ones a screen will *want* one day (`↑↓`, `Enter`, `c`) plus
+        // one it never will, so when the first screen does claim a key this test fails
+        // on that screen and that key rather than passing vacuously.
+        let keys = [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Enter,
+            KeyCode::Char('c'),
+            KeyCode::Char('\u{1}'),
+        ];
+        for screen in Screen::ALL {
+            for code in keys {
+                let key = KeyEvent::new(code, KeyModifiers::NONE);
+                assert_eq!(
+                    screen.map_key(key),
+                    None,
+                    "{screen:?} claimed {code:?} without a case here saying so"
+                );
+            }
+        }
     }
 
     #[test]
