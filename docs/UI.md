@@ -321,19 +321,67 @@ exchange rate the game does not have.
 **Constraints.** Fifteen rows for twelve mines plus three world headers fit in 20:
 this is the one list screen that never needs a `Scrollbar` at 80x24.
 
-**The dial is drawn only on the three two-material mines** (Quartz, Obsidian, End).
-On the nine same-material mines enriching is pure gain, the dial has one sensible
-position, and the whole block is replaced by a flat readout. The dial reads
-`10 + 9 x setting` percent — the real `value_weight` formula, so level 9 is 91%
-and never 100%.
+**The dial *slider* is drawn only on the three two-material mines** (Quartz,
+Obsidian, End), where moving it is a trade. On the nine same-material mines
+enriching is pure gain and the block is a flat readout instead — but the arrows
+work there too; see the departures below. The dial reads `10 + 9 x setting`
+percent — the real `value_weight` formula, so level 9 is 91% and never 100%.
 
 **The Obsidian pane says the dial has an *optimum*, not a maximum**, because the
 post-Netherite enhancement consumes both materials in a ratio. It is the one dial in
 the game a player can set too high.
 
-**Core reads.** The lock reason must be **nameable**, not merely checkable — the list
-prints `Lv 30`, so the core owes a reason rather than a bool. `set_richness_setting`
-is already `pub`, which is exactly right for a cursor the UI moves.
+**Core reads — all of them exist, and this screen is wired to them.**
+`MineKind::lock(level, tier)` answers *why* a mine is shut with a `MineLock`
+carrying its two axes apart (`missing_level`, `missing_tier`), which is what lets
+the list print `Lv 30` on a world header and `locked   Netherite` on the row below
+without saying either twice. `MineKind::ALL` lists the twelve — an enum cannot
+enumerate itself, and the front-end has to draw all of them.
+`GameState::select_mine` and `set_mine_richness_setting` are the two the keys call.
+
+**Two of those reads did not exist before this screen was wired**, and both come
+from the same fact: **a run creates its mines lazily**, on first entry, so eleven
+of the twelve have no `Mine` behind them at all.
+
+- `set_mine_richness_setting(kind, setting)` takes the mine by name. The old
+  `set_richness_setting` moved the dial of the mine the player is *standing in*, and
+  the frame above dials Obsidian from the Iron mine — which is the normal case, not
+  an edge one. For a mine never entered it answers from a ceiling of 0 **without
+  building a grid**: a refusal that spent a grid's worth of draws would shift every
+  later draw in the run.
+- `Mine::size_for_level(level)` and `Mine::value_weight_percent_for(setting)` are
+  pure table lookups, so a never-entered mine is drawn as the one it *will* be
+  created at rather than as a blank.
+
+#### 5.2.1 Four departures from this frame
+
+Recorded when the screen was wired, each a decision rather than a bug. The frame
+above is left as drawn.
+
+- **The standing mine is marked `●`.** The frame has one mark, `▸`, for the cursor —
+  so the moment the cursor moves after entering a mine, the screen stops saying
+  where the player is. The Upgrades ladder already carries the same pair and the
+  chrome palette already owns both glyphs. **The cursor wins the column** when they
+  coincide: `▸` is what just moved; `●` is a standing fact the player can recover by
+  walking the list.
+- **`<-`/`->` move the dial on all twelve mines.** The frame removes the whole dial
+  block on the nine same-material mines, and the reasoning was sound — there is no
+  trade to picture when the value cell is nine of the same ore. But buying the
+  *ceiling* and sliding the *dial* are separate actions (§8), and only the dial
+  turns the purchase into dense cells; hiding the arrows would leave nine mines'
+  richness track unspendable. **Two presentations, one behaviour.**
+- **The split under the bar is justified, not fixed-gap.** The frame writes
+  `Crying 64%   Obsidian 36%`, abbreviating a material actually named *Crying
+  Obsidian*; spelled out at the frame's indent the row runs past the pane. The two
+  shares now sit at the pane's two edges. Same departure §5.1 records for the Haul
+  strip, and the same cause: the frame was counted against shorter strings than the
+  game produces.
+- **The pane's first line names the two *blocks*, not the two materials.** On the
+  two-material mines that is the frame's own line either way
+  (`Obsidian  +  Crying Obsidian`); on the nine others the materials are equal, so
+  the frame's rule would print `Stone  +  Stone`. The blocks never coincide, and
+  they are the more useful pair: `Iron Ore  +  Iron Block`, the second worth nine of
+  the first.
 
 ### 5.3 Inventory
 
@@ -1329,7 +1377,9 @@ this document wins for the signature** — and a disagreement is a bug to reconc
 | --- | --- | --- | --- |
 | `Mine::value_weight_percent()` | the richness readout (§5.2) | 5 | **done** |
 | `PickaxeTier::name()`, `Block::name()`, `pub MAX_RICHNESS_LEVEL` | the Pickaxe panel, the Break gauge, `level 0 / 9` (§5.2) | 5 | **done** — the three display names the front-end was otherwise mirroring |
-| a nameable lock reason | `Lv 30` in the mines list (§5.3) | 6 | tier half derivable today |
+| a nameable lock reason — `MineKind::lock(level, tier) -> MineLock` | `Lv 30` in the mines list (§5.2) | 6 | **done** — both axes readable apart, so the header prints the level and the row the tier |
+| `MineKind::ALL`, `Mine::size_for_level(n)`, `Mine::value_weight_percent_for(n)` | listing and sizing the eleven mines a run has never entered (§5.2) | 4 | **done** — an enum cannot enumerate itself, and mines are created lazily |
+| `GameState::set_mine_richness_setting(kind, n)` | the dial, which belongs to the mine under the *cursor* (§5.2) | 4 | **done** — the old setter reached only the mine underfoot |
 | `Upgrade::affordability(&inv, n) -> Affordable \| CompressFirst \| Insufficient`, **carrying the shortfall** | the `✓ ~ ✗` column and the refusal toast (§5.5, §6.4) | 5 | new |
 | `Upgrade::preview(&state, n) -> UpgradePreview` | the dip box and modal (§5.5, §5.7.7) | 5 | new |
 | `Upgrade::max_affordable(&inv) -> u32` | `M`, and the `✓` prefix length (§5.5) | 5 | new |
