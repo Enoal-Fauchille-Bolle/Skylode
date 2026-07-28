@@ -24,9 +24,24 @@ use ratatui::{
     text::Line,
     widgets::{LineGauge, Paragraph},
 };
-use skylode_core::tunables::RAW_PER_COMPRESSED;
+use skylode_core::block::Block;
 
-use crate::{action::Action, format::grouped, screen::panel, theme, view::View, widget::MineGrid};
+use crate::{
+    action::Action,
+    format::{grouped, justified, xp_progress, xp_ratio},
+    screen::panel,
+    theme,
+    view::{HaulEntry, HaulView, View},
+    widget::MineGrid,
+};
+
+/// What a gauge reads when there is nothing for it to measure.
+///
+/// An em dash rather than a zero, and the distinction is not cosmetic: `Break 0%`
+/// asserts that a block is being dug and is nought percent through, while the state
+/// this stands for is that **no block is targeted at all**. The same glyph the
+/// Upgrades mark column uses for a track with nothing to say.
+const NOTHING: &str = "—";
 
 /// The grid panel's fixed width — 40 columns of content plus its two borders. A
 /// 12-wide mine is 24 columns and centres inside it; the largest mine still fits.
@@ -77,21 +92,88 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
 
 /// The Haul strip: a fixed three-row box, one content line, on every mine.
 fn haul(frame: &mut Frame, area: Rect, view: &View) {
-    let material = view.mine_kind.common_material().name();
-    // Value is the raw total across both denominations, in the denomination the
-    // strip quotes it in — the same arithmetic `Inventory::raw_value` performs,
-    // done here because it is a display sum and not a rule the core must own.
-    let value = view.raw_held + view.compressed_held * RAW_PER_COMPRESSED;
-
     let block = panel(&format!(" Haul · {} ", view.mine_name));
-    let line = format!(
-        "  {material}   {} Raw   {} Compressed        value {} {material}",
-        grouped(view.raw_held),
-        grouped(view.compressed_held),
-        grouped(value),
+    // The width *inside* the borders, which is what the line has to fit — asked of
+    // the block rather than computed as `area.width - 2`, so a change of border
+    // style cannot leave the arithmetic behind.
+    let width = usize::from(block.inner(area).width);
+    frame.render_widget(
+        Paragraph::new(haul_line(&view.haul, width)).block(block),
+        area,
     );
-    frame.render_widget(Paragraph::new(line).block(block), area);
 }
+
+/// The strip's one content line, laid out to `width` — the two shapes, and why.
+///
+/// **A same-material mine keeps the wireframe's wording**, composite value and all:
+/// `Iron   480 Raw   2 Compressed` with `value 680 Iron` after it. There is one
+/// currency, so summing it answers "what is this mine worth to me" in one number.
+///
+/// **A two-material mine drops the total and gains a `·`.** Two segments, each with
+/// its own denominations, and *no* composite — because there is no such thing as the
+/// total of 540 Netherrack and 73 Quartz. Adding them would invent an exchange rate
+/// the game does not have; quoting one and not the other would pick a favourite
+/// between the material that funds the mine's growth and the one it exists to
+/// produce. The three-row box is fixed (`organization/UI-EN.md` §5.2), so this has
+/// one line whichever shape it takes, and the grid below never moves.
+///
+/// **The composite is flush right rather than eight spaces along**, which is the one
+/// place this departs from the counted frame, and it is not a preference. The frame
+/// was drawn at `480 Raw`; at the holdings a real run reaches, the fixed gap plus a
+/// material name printed twice overflows the box — the Ancient Debris mine spends 28
+/// of 78 columns on its own name before a digit — and a fixed-width box cannot wrap.
+/// Anchoring the total to the right turns the gap into the slack, so the line grows
+/// inward from both ends and the budget below is what falls out. At the frame's own
+/// numbers every word is still there, in the same order.
+///
+/// The two-material shape is **tighter in two ways**: single spaces where the first
+/// uses three, and *Compressed* shortened to `Comp.`. Both are bought width, and the
+/// worst pair in the game — Obsidian beside Crying Obsidian, 23 columns of names —
+/// does not fit the loose wording at any holding worth showing.
+fn haul_line(haul: &HaulView, width: usize) -> String {
+    let Some(value) = haul.value else {
+        let entry = haul.common;
+        let held = format!(
+            "  {}   {} Raw   {} Compressed",
+            entry.material,
+            grouped(entry.raw),
+            grouped(entry.compressed),
+        );
+        let composite = format!("value {} {}", grouped(entry.value()), entry.material);
+        return justified(&held, &composite, width);
+    };
+    let segment = |entry: HaulEntry| {
+        format!(
+            "{} {} Raw {} Comp.",
+            entry.material,
+            grouped(entry.raw),
+            grouped(entry.compressed),
+        )
+    };
+    format!("  {} · {}", segment(haul.common), segment(value))
+}
+
+/// The holdings [`haul_line`] guarantees will fit the strip, as `(raw, compressed)`.
+///
+/// **A stated bound, not a discovered one.** The strip is a fixed three-row box on
+/// every mine (`organization/UI-EN.md` §5.2) — that is what keeps the grid below it
+/// from moving — so the line inside cannot wrap, and something has to give at some
+/// number. Six digits of raw beside three of Compressed is where this design draws
+/// it: a little over a million in raw value, and the two mines that decide it are
+/// Ancient Debris (whose fourteen-column name the same-material line prints twice)
+/// and Obsidian beside Crying Obsidian on the two-material one.
+///
+/// **The two are not independent, which is why one pair of numbers covers both.**
+/// Compressed units are minted *out of* raw, a hundred at a time, so the player who
+/// holds 999 Compressed is by that fact 99 900 raw lighter — the corner where both
+/// columns are simultaneously maxed is one the rules cannot reach.
+///
+/// A run can still exceed it by never compressing at all, since the denomination is
+/// minted by hand. Past the bound ratatui clips the tail rather than reflowing, so
+/// the box keeps its shape and the layout never breaks. If the ceiling ever needs
+/// raising, the lever is the wording, not the box.
+#[cfg(test)]
+const HAUL_BUDGET: (u32, u32) = (999_999, 999);
 
 /// The middle band: the grid panel at a fixed width, the right column beside it.
 fn middle(frame: &mut Frame, area: Rect, view: &View) {
@@ -122,9 +204,10 @@ fn grid_panel(frame: &mut Frame, area: Rect, view: &View) {
     let mut grid = MineGrid::new(view.mine_kind, &view.grid).mode(view.colour_mode);
     // Chained conditionally rather than passed as an `Option`: the widget models
     // "nothing is being dug" as the absence of the call, so that a break ratio
-    // cannot exist without a cell for it to be about.
-    if let Some(cell) = view.target {
-        grid = grid.target(cell, view.break_ratio);
+    // cannot exist without a cell for it to be about — the same shape
+    // [`TargetView`](crate::view::TargetView) now gives the view itself.
+    if let Some(target) = view.target {
+        grid = grid.target(target.cell, target.ratio);
     }
     frame.render_widget(grid, inner);
 }
@@ -132,15 +215,23 @@ fn grid_panel(frame: &mut Frame, area: Rect, view: &View) {
 /// The Pickaxe panel: derived numbers only, not the full enchant roster (§5.1).
 fn pickaxe_panel(frame: &mut Frame, area: Rect, view: &View) {
     let pickaxe = &view.pickaxe;
-    // The product is shown, not just the two factors, because `power × boost` is
-    // the number the player actually mines at — the factors are the explanation.
-    let product = pickaxe.power * view.boost.multiplier;
+    // **The boost is shown only when there is one.** The product is worth printing
+    // because `power × boost` is the number the player actually mines at — but with
+    // no boost running that reads `25.0 ×1.0 boost → 25.0`, which is a
+    // multiplication by one presented as news. The unboosted line is the bare power,
+    // and the arrow appearing is itself the signal that something changed.
+    let power = match &view.boost {
+        Some(boost) => format!(
+            " Power  {:.1}   ×{:.1} boost → {:.1}",
+            pickaxe.power,
+            boost.multiplier,
+            pickaxe.power * boost.multiplier,
+        ),
+        None => format!(" Power  {:.1}", pickaxe.power),
+    };
     let lines = vec![
         Line::from(format!(" {}", pickaxe.summary)),
-        Line::from(format!(
-            " Power  {:.1}   ×{:.1} boost → {:.1}",
-            pickaxe.power, view.boost.multiplier, product,
-        )),
+        Line::from(power),
         Line::from(format!(" {}", pickaxe.fortune)),
         Line::from(format!(" Ench   {}", pickaxe.enchants)),
     ];
@@ -188,33 +279,64 @@ fn gauges(frame: &mut Frame, area: Rect, view: &View) {
     ])
     .areas(area);
 
-    let percent = (view.break_ratio * 100.0).round() as u32;
     gauge(
         frame,
         break_area,
-        &format!(" Break  {percent}%  {}", view.target_name),
-        ratio(f64::from(view.break_ratio)),
+        &break_label(view),
+        view.target.map_or(0.0, |t| ratio(f64::from(t.ratio))),
     );
     gauge(
         frame,
         xp_area,
         &format!(
-            " XP  Lv {}   {} / {}",
+            " XP  Lv {}   {}",
             view.player_level,
-            grouped(view.xp),
-            grouped(view.xp_to_next),
+            xp_progress(view.xp, view.xp_to_next),
         ),
-        ratio(f64::from(view.xp) / f64::from(view.xp_to_next)),
+        ratio(xp_ratio(view.xp, view.xp_to_next)),
     );
     gauge(
         frame,
         boost_area,
-        &format!(
-            " Boost  {}s  ×{:.2}",
-            view.boost.seconds, view.boost.multiplier
-        ),
-        ratio(f64::from(view.boost.ratio)),
+        &match &view.boost {
+            Some(boost) => format!(" Boost  {}s  ×{:.2}", boost.seconds, boost.multiplier),
+            None => format!(" Boost  {NOTHING}"),
+        },
+        view.boost
+            .as_ref()
+            .map_or(0.0, |b| ratio(f64::from(b.ratio))),
     );
+}
+
+/// The Break gauge's label: `Break  61%  Iron Block`, or a dash with no target.
+///
+/// **The block's name is read off the grid, not stored beside the target.** The
+/// target is a cell, and the cell already holds the block — so
+/// [`Block::name`](skylode_core::block::Block::name) answers at the moment of
+/// drawing and the label provably describes the crack the player is looking at. A
+/// `target_name: String` on the view was the alternative, and it was a second copy
+/// of a fact the grid already carried.
+///
+/// A target pointing outside the grid, or at a hole, falls back to the bare
+/// percentage rather than refusing: the rules cannot produce either, but this is a
+/// renderer and a frame that draws slightly less is a better failure than one that
+/// does not draw.
+fn break_label(view: &View) -> String {
+    let Some(target) = view.target else {
+        // Not `0%`. A percentage claims a block is partly broken; with nothing
+        // targeted there is no block, and the dash says *that* instead.
+        return format!(" Break  {NOTHING}");
+    };
+    let percent = (target.ratio * 100.0).round() as u32;
+    let name = view
+        .grid
+        .get(usize::from(target.cell.1))
+        .and_then(|row| row.get(usize::from(target.cell.0)))
+        .and_then(|cell| cell.map(Block::name));
+    match name {
+        Some(name) => format!(" Break  {percent}%  {name}"),
+        None => format!(" Break  {percent}%"),
+    }
 }
 
 /// Draws one `LineGauge` with a fixed-width label so its bar aligns with the rest.
@@ -251,8 +373,14 @@ fn footer(frame: &mut Frame, area: Rect) {
 ///
 /// `LineGauge::ratio` **panics** outside `0.0..=1.0`, and this crate forbids a
 /// panic in production, so every ratio passes through here first. A non-finite
-/// value — an XP gauge dividing by a zero `xp_to_next`, say — maps to `0.0` rather
-/// than propagating a `NaN` that `clamp` would pass straight through to the panic.
+/// value maps to `0.0` rather than propagating a `NaN` that `clamp` would pass
+/// straight through to the panic.
+///
+/// The `NaN` route is narrower than it was — `xp_to_next` is an [`Option`] now, so
+/// the capped level yields [`format::xp_ratio`](crate::format::xp_ratio)'s `1.0`
+/// instead of dividing by a sentinel — but this stays a *filter over every ratio*
+/// and not a check at the one site that used to need it. A gauge that can panic is
+/// a gauge that crashes the game to report a rounding error.
 fn ratio(value: f64) -> f64 {
     if value.is_finite() {
         value.clamp(0.0, 1.0)
@@ -269,8 +397,10 @@ pub fn map_key(_key: KeyEvent) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Modifier};
+    use skylode_core::{mine_kind::MineKind, tunables::LEVEL_CAP};
 
     use super::*;
+    use crate::view::TargetView;
 
     /// Renders the Mine screen alone into an 80×24 buffer.
     ///
@@ -284,14 +414,23 @@ mod tests {
 
     /// The same, at an arbitrary size — for the responsive assertions.
     fn render_sized(width: u16, height: u16) -> Buffer {
-        let view = View::sample();
+        render_view(&View::sample(), width, height)
+    }
+
+    /// Renders an arbitrary view, for the states the fixture does not carry.
+    ///
+    /// The fixture is a level-23 save mid-swing, so it has a target, a boost and a
+    /// next level — none of which a fresh run has. Taking the view as a parameter is
+    /// what lets those three be asserted at all: the alternative is a second fixture
+    /// that would have to be kept in step with this one.
+    fn render_view(view: &View, width: u16, height: u16) -> Buffer {
         let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
             Ok(terminal) => terminal,
             Err(infallible) => match infallible {},
         };
         if let Err(infallible) = terminal.draw(|frame| {
             let area = frame.area();
-            render(frame, area, &view);
+            render(frame, area, view);
         }) {
             match infallible {}
         }
@@ -455,6 +594,229 @@ mod tests {
         assert!(
             !last.contains(" q "),
             "a global key leaked into the footer: {last:?}"
+        );
+    }
+
+    /// The two-material strip prints both segments, and no composite total.
+    ///
+    /// The negative assertion carries the decision: there is no exchange rate
+    /// between Netherrack and Quartz, so a `value N` on this line would be a number
+    /// the game cannot mean.
+    #[test]
+    fn a_two_material_mine_prints_both_segments_and_no_total() {
+        let view = View {
+            mine_kind: MineKind::Quartz,
+            mine_name: "Quartz Mine".to_owned(),
+            haul: HaulView {
+                common: HaulEntry {
+                    material: "Netherrack",
+                    raw: 340,
+                    compressed: 2,
+                },
+                value: Some(HaulEntry {
+                    material: "Quartz",
+                    raw: 73,
+                    compressed: 0,
+                }),
+            },
+            ..View::sample()
+        };
+        let buffer = render_view(&view, 80, 24);
+        // Row 1 is the strip's one content line, between its two border rows.
+        let strip: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 1)].symbol())
+            .collect();
+        assert!(strip.contains("Netherrack 340 Raw 2 Comp."), "{strip:?}");
+        assert!(strip.contains("Quartz 73 Raw 0 Comp."), "{strip:?}");
+        assert!(strip.contains(" · "), "the separator is missing: {strip:?}");
+        // Read off the strip and not the whole frame: the Mine panel below carries
+        // its own `value 10%` for the richness dial, so a frame-wide search would
+        // find that and fail for a reason this test is not about.
+        assert!(!strip.contains("value "), "a composite survived: {strip:?}");
+
+        let frame = whole_frame(&buffer);
+        assert!(frame.contains("Haul · Quartz Mine"), "{frame}");
+    }
+
+    /// Every mine's strip fits the box at [`HAUL_BUDGET`].
+    ///
+    /// Walks all twelve **through the core**, so the materials are the ones each
+    /// mine really drops rather than a list retyped here — and so the three
+    /// two-material mines are found by asking `common != value`, not by remembering
+    /// which they are. The width is the strip's inside: 80 columns less two borders.
+    ///
+    /// Every entry is filled to the budget rather than to the fixture's numbers,
+    /// because the line that matters is the **longest** one: a test at `480 Raw`
+    /// would pass on a layout that overflows the first time a run gets rich. The
+    /// pair that decides it is Obsidian beside Crying Obsidian — 23 columns of names
+    /// before a digit is printed, and the reason the budget is where it is.
+    #[test]
+    fn every_mines_haul_line_fits_the_strip_at_the_stated_budget() {
+        const INNER_WIDTH: usize = 78;
+        let (raw, compressed) = HAUL_BUDGET;
+
+        for kind in [
+            MineKind::Stone,
+            MineKind::Coal,
+            MineKind::Iron,
+            MineKind::Gold,
+            MineKind::Lapis,
+            MineKind::Redstone,
+            MineKind::Emerald,
+            MineKind::Diamond,
+            MineKind::Quartz,
+            MineKind::AncientDebris,
+            MineKind::Obsidian,
+            MineKind::Amethyst,
+        ] {
+            let common = HaulEntry {
+                material: kind.common_material().name(),
+                raw,
+                compressed,
+            };
+            let value = (kind.value_material() != kind.common_material()).then_some(HaulEntry {
+                material: kind.value_material().name(),
+                raw,
+                compressed,
+            });
+            let line = haul_line(&HaulView { common, value }, INNER_WIDTH);
+            assert!(
+                line.chars().count() <= INNER_WIDTH,
+                "{kind:?}: {} columns — {line:?}",
+                line.chars().count()
+            );
+        }
+    }
+
+    /// The composite is the two denominations added at the hundred-to-one rate.
+    ///
+    /// Asserted on [`HaulEntry::value`] rather than through the frame, because what
+    /// is being checked is the arithmetic and not the layout: 2 Compressed is 200
+    /// raw, so 480 + 200 is the 680 the wireframe prints.
+    #[test]
+    fn the_composite_value_counts_a_compressed_unit_as_a_hundred_raw() {
+        let entry = HaulEntry {
+            material: "Iron",
+            raw: 480,
+            compressed: 2,
+        };
+        assert_eq!(entry.value(), 680);
+    }
+
+    /// A run that has never swung has no target, and the gauge must say so.
+    ///
+    /// This is the state `cargo run` opens on until the phase-7 tick exists, so it
+    /// is the *ordinary* case rather than an edge one. The two assertions are a pair:
+    /// the dash appears **and** no percentage does, because `Break  0%` is the
+    /// plausible-looking wrong answer this design rejected — it asserts a block is
+    /// being dug when none is.
+    #[test]
+    fn a_run_that_has_not_swung_shows_a_dash_and_no_break_percentage() {
+        let view = View {
+            target: None,
+            ..View::sample()
+        };
+        let frame = whole_frame(&render_view(&view, 80, 24));
+        assert!(frame.contains("Break  —"), "{frame}");
+        assert!(!frame.contains("Break  0%"), "{frame}");
+        assert!(
+            !frame.contains("Iron Block"),
+            "a stale label survived: {frame}"
+        );
+    }
+
+    /// The Break label names the block the target points at, read off the grid.
+    ///
+    /// Moving the target to a different *kind* of cell is what proves the name is
+    /// derived rather than stored: the fixture's own target sits on an `IronBlock`,
+    /// so pointing it at an `IronOre` cell must change the words on screen. A
+    /// `target_name` field would have gone on saying "Iron Block".
+    #[test]
+    fn the_break_label_is_read_off_the_cell_the_target_points_at() {
+        let sample = View::sample();
+        // (0, 2) is an ore cell in every grid fixture's third row.
+        assert_eq!(
+            sample.grid.get(2).and_then(|row| row.first()),
+            Some(&Some(Block::IronOre))
+        );
+        let view = View {
+            target: Some(TargetView {
+                cell: (0, 2),
+                ratio: 0.5,
+            }),
+            ..View::sample()
+        };
+        let frame = whole_frame(&render_view(&view, 80, 24));
+        assert!(frame.contains("Break  50%  Iron Ore"), "{frame}");
+    }
+
+    /// A target on a hole draws its percentage and drops the name, rather than
+    /// refusing to draw.
+    ///
+    /// The rules cannot produce this — a dig targets a standing cell — but a
+    /// renderer handed an impossible state should degrade, not disappear. Kept as a
+    /// test because the fallback is invisible in ordinary play and would otherwise
+    /// rot unexecuted.
+    #[test]
+    fn a_target_that_names_no_block_still_draws_its_percentage() {
+        let sample = View::sample();
+        // (6, 0) is a hole in the live 20×10 fixture.
+        assert_eq!(sample.grid.first().and_then(|row| row.get(6)), Some(&None));
+        let view = View {
+            target: Some(TargetView {
+                cell: (6, 0),
+                ratio: 0.25,
+            }),
+            ..View::sample()
+        };
+        let frame = whole_frame(&render_view(&view, 80, 24));
+        assert!(frame.contains("Break  25%"), "{frame}");
+    }
+
+    /// With no boost running, the power line is the bare power.
+    ///
+    /// `25.0 ×1.0 boost → 25.0` is the version this rejected: a multiplication by
+    /// one, printed as though something were happening. The gauge below likewise
+    /// dashes rather than counting down from zero.
+    #[test]
+    fn an_unboosted_pickaxe_prints_no_multiplication_and_no_countdown() {
+        let view = View {
+            boost: None,
+            ..View::sample()
+        };
+        let frame = whole_frame(&render_view(&view, 80, 24));
+        assert!(frame.contains("Power  25.0"), "{frame}");
+        assert!(!frame.contains("boost →"), "the arrow survived: {frame}");
+        assert!(frame.contains("Boost  —"), "{frame}");
+        assert!(!frame.contains("Boost  0s"), "{frame}");
+    }
+
+    /// At the level cap the XP gauge reads `maxed` on a **full** bar.
+    ///
+    /// Both halves matter, and they are asserted together for the reason
+    /// `format::xp_ratio` exists: a capped player has earned every level there is,
+    /// so a word saying *finished* over an empty bar would be the screen
+    /// contradicting itself.
+    #[test]
+    fn a_capped_player_reads_maxed_on_a_filled_xp_bar() {
+        let view = View {
+            player_level: LEVEL_CAP,
+            xp_to_next: None,
+            ..View::sample()
+        };
+        let buffer = render_view(&view, 80, 24);
+        let frame = whole_frame(&buffer);
+        assert!(
+            frame.contains(&format!("XP  Lv {LEVEL_CAP}   maxed")),
+            "{frame}"
+        );
+
+        // The XP gauge is the second of the three rows under the grid panel.
+        let (_, grid_bottom) = grid_box_rows(&buffer);
+        let y = grid_bottom + 2;
+        assert!(
+            (0..buffer.area.width).all(|x| buffer[(x, y)].symbol() != "░"),
+            "the bar is not full at the cap"
         );
     }
 

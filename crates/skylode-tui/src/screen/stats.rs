@@ -23,7 +23,7 @@ use skylode_core::{tunables::LEVEL_CAP, world::World};
 
 use crate::{
     action::Action,
-    format::{grouped, justified},
+    format::{grouped, justified, xp_progress},
     screen::{panel, window},
     theme,
     view::View,
@@ -80,11 +80,7 @@ fn progression(frame: &mut Frame, area: Rect, view: &View) {
             &format!("{} / {LEVEL_CAP}", view.player_level),
             width,
         ),
-        stat(
-            "XP",
-            &format!("{} / {}", grouped(view.xp), grouped(view.xp_to_next)),
-            width,
-        ),
+        stat("XP", &xp_progress(view.xp, view.xp_to_next), width),
         Line::from(""),
     ];
 

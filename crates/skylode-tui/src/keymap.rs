@@ -73,6 +73,8 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
 
 #[cfg(test)]
 mod tests {
+    use skylode_core::game::GameState;
+
     use super::*;
     use crate::screen::Screen;
 
@@ -81,9 +83,18 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// A session to resolve keys against.
+    ///
+    /// `resolve` reads only which screen is open and whether a modal is stacked, so
+    /// the run behind it is immaterial — but it has to be *some* run, and a fixed
+    /// seed keeps it from being a different one each time the suite is run.
+    fn session() -> App {
+        App::new(GameState::new(0x5B1_0DE, std::time::UNIX_EPOCH))
+    }
+
     #[test]
     fn tab_advances_the_ring_and_backtab_reverses_it() {
-        let app = App::new();
+        let app = session();
         assert_eq!(resolve(&app, press(KeyCode::Tab)), Some(Action::NextScreen));
         assert_eq!(
             resolve(&app, press(KeyCode::BackTab)),
@@ -93,7 +104,7 @@ mod tests {
 
     #[test]
     fn the_digit_keys_are_zero_based_tab_indices() {
-        let app = App::new();
+        let app = session();
         assert_eq!(
             resolve(&app, press(KeyCode::Char('1'))),
             Some(Action::SelectScreen(0))
@@ -106,7 +117,7 @@ mod tests {
 
     #[test]
     fn every_tab_digit_resolves_to_a_real_screen() {
-        let app = App::new();
+        let app = session();
         for (position, _) in Screen::ALL.iter().enumerate() {
             // Built by arithmetic rather than `from_digit` so the test needs no
             // `unwrap`: the ring is six long, so this never leaves '1'..='6'.
@@ -118,13 +129,13 @@ mod tests {
 
     #[test]
     fn a_seventh_digit_is_not_bound() {
-        let app = App::new();
+        let app = session();
         assert_eq!(resolve(&app, press(KeyCode::Char('7'))), None);
     }
 
     #[test]
     fn q_and_ctrl_c_both_quit() {
-        let app = App::new();
+        let app = session();
         assert_eq!(resolve(&app, press(KeyCode::Char('q'))), Some(Action::Quit));
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(resolve(&app, ctrl_c), Some(Action::Quit));
@@ -132,13 +143,13 @@ mod tests {
 
     #[test]
     fn an_unbound_key_is_declined_rather_than_swallowed() {
-        let app = App::new();
+        let app = session();
         assert_eq!(resolve(&app, press(KeyCode::Char('z'))), None);
     }
 
     #[test]
     fn question_mark_opens_help_from_a_screen() {
-        let app = App::new();
+        let app = session();
         assert_eq!(
             resolve(&app, press(KeyCode::Char('?'))),
             Some(Action::OpenHelp)
@@ -147,7 +158,7 @@ mod tests {
 
     #[test]
     fn while_help_is_up_it_captures_the_keys_and_closes_on_question_or_esc() {
-        let mut app = App::new();
+        let mut app = session();
         app.modal = Some(Modal::Help);
         // Its own key and `Esc` both close it.
         assert_eq!(
@@ -170,7 +181,7 @@ mod tests {
         // Pinned rather than left untested for exactly that reason — a temporary
         // binding nothing asserts is one that quietly becomes permanent, and this
         // test is where its removal gets noticed.
-        let app = App::new();
+        let app = session();
         assert_eq!(
             resolve(&app, press(KeyCode::Char('t'))),
             Some(Action::ShowToast(
@@ -181,7 +192,7 @@ mod tests {
         // Global, so every tab answers the same — it is decided before the screens
         // are consulted, and the fall-through below it must not change that.
         for screen in Screen::ALL {
-            let mut app = App::new();
+            let mut app = session();
             app.screen = screen;
             assert!(
                 matches!(

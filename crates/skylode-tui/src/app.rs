@@ -16,6 +16,7 @@ use ratatui::{
     style::{Modifier, Style},
     widgets::Tabs,
 };
+use skylode_core::game::GameState;
 
 use crate::{
     action::Action,
@@ -60,23 +61,61 @@ pub struct App {
     pub modal: Option<Modal>,
     /// Live announcements, drawn over everything.
     pub toasts: Toasts,
-    /// What the screens render. Hand-filled until the core can produce it.
+    /// The run itself — the rules, and every number the screens report.
+    ///
+    /// **`App` owns it rather than borrowing it**, because the run has no other
+    /// home: `main` builds one and hands it over, and phase 7's tick will mutate it
+    /// from inside the loop. The boundary this crate keeps is not "the front-end
+    /// may not hold game state" — it is that the front-end holds no game *rules*.
+    /// Every field of `GameState` is private and every mutation goes through a
+    /// method that can refuse.
+    pub state: GameState,
+    /// What the screens render — [`View::from_state`]'s answer, cached.
+    ///
+    /// Rebuilt by [`sync_view`](App::sync_view) before each draw rather than inside
+    /// `render`, for two reasons. `render` takes `&self` and stays a pure read, which
+    /// is what lets a test draw an `App` it does not own; and the projection still
+    /// rebuilds `View::sample`'s fixture for the five screens phases 4-7 have not
+    /// wired, which is worth doing when the state changes and not thirty times a
+    /// second.
     pub view: View,
     /// Front-end preferences — read while drawing, edited by Settings (phase 7).
     pub config: Config,
 }
 
 impl App {
-    /// A fresh session, opened on the Mine tab.
-    pub fn new() -> Self {
+    /// A fresh session over `state`, opened on the Mine tab.
+    ///
+    /// **Takes the run rather than starting one**, and that is what keeps this
+    /// testable. `GameState::new` needs a seed and a `now`, and the only honest
+    /// source for both is the wall clock — which would make every assertion about a
+    /// rendered frame depend on when the test ran. `main` reads the clock;
+    /// tests pass a fixed seed and a fixed instant, and get the same grid every
+    /// time.
+    ///
+    /// It is also the shape the save wants: phase 7 loads a `GameState` from disk
+    /// and hands it here, where today's caller builds a new one.
+    pub fn new(state: GameState) -> Self {
+        let view = View::from_state(&state);
         Self {
             should_quit: false,
             screen: Screen::Mine,
             modal: None,
             toasts: Toasts::new(),
-            view: View::sample(),
+            state,
+            view,
             config: Config::default(),
         }
+    }
+
+    /// Rebuilds the read model from the run.
+    ///
+    /// Called once per frame, before drawing. It is unconditional today because
+    /// nothing yet changes the state — with no tick, a session is a still image —
+    /// and phase 7 is where "redraw on change" earns its keep and this gains a
+    /// guard.
+    fn sync_view(&mut self) {
+        self.view = View::from_state(&self.state);
     }
 
     /// Draws, then blocks for the next event, until asked to quit.
@@ -118,6 +157,10 @@ impl App {
         E: Events,
     {
         while !self.should_quit {
+            // Before the draw, not after the event: the first frame must show the
+            // run as it stands, and `new` has already projected it once so this is
+            // the identity on the opening pass.
+            self.sync_view();
             terminal.draw(|frame| self.render(frame))?;
 
             match events.next()? {
@@ -249,12 +292,6 @@ impl App {
     }
 }
 
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -266,6 +303,23 @@ mod tests {
     };
 
     use super::*;
+
+    /// The seed every test session starts from.
+    ///
+    /// Any value would do; what matters is that it is *fixed*. `GameState::new`
+    /// draws the opening mine's whole grid from it, so a seed off the clock would
+    /// hand each run of the suite a different picture and make "did anything get
+    /// painted" the strongest assertion anyone could write about the grid.
+    const SEED: u64 = 0x5B1_0DE;
+
+    /// A session over a fixed run — what every test below opens with.
+    ///
+    /// `UNIX_EPOCH` as `now` for the seed's reason: it is the offline accrual's
+    /// reference point, and phase 7's `resume` credits the span since it. A test
+    /// that read the clock would be measuring how long ago the file was written.
+    fn session() -> App {
+        App::new(GameState::new(SEED, std::time::UNIX_EPOCH))
+    }
 
     /// Draws `app` into an off-screen 80×24 terminal and hands back the cells.
     ///
@@ -331,7 +385,7 @@ mod tests {
         // The identity case, and the one that matters most: `Max` above the actual
         // width leaves `Flex::Center` nothing to centre, so 80×24 is untouched and
         // every counted wireframe in UI-EN.md §5 still describes what is drawn.
-        let buffer = render_to_buffer(&App::new());
+        let buffer = render_to_buffer(&session());
         assert_eq!(box_span(&buffer), Some((0, 79)));
     }
 
@@ -339,7 +393,7 @@ mod tests {
     fn a_terminal_past_the_caps_is_a_centred_band_with_bare_margins() {
         // 250×80, capped to 160×48: the interface is 160 wide however much room it
         // is given, and the leftover 90 columns become equal margins.
-        let buffer = render_to_sized_buffer(&App::new(), 250, 80);
+        let buffer = render_to_sized_buffer(&session(), 250, 80);
         let margin = (250 - MAX_WIDTH) / 2;
         assert_eq!(
             box_span(&buffer),
@@ -360,13 +414,13 @@ mod tests {
     fn between_the_minimum_and_the_caps_the_interface_takes_the_whole_terminal() {
         // The band only bites past the caps. At 120×40 — a very ordinary window —
         // nothing is centred and no column is wasted.
-        let buffer = render_to_sized_buffer(&App::new(), 120, 40);
+        let buffer = render_to_sized_buffer(&session(), 120, 40);
         assert_eq!(box_span(&buffer), Some((0, 119)));
     }
 
     #[test]
     fn a_new_session_opens_on_the_mine_tab_with_nothing_stacked() {
-        let app = App::new();
+        let app = session();
         assert_eq!(app.screen, Screen::Mine);
         assert!(app.modal.is_none());
         assert!(!app.should_quit);
@@ -374,7 +428,7 @@ mod tests {
 
     #[test]
     fn next_and_prev_walk_the_ring() {
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::NextScreen);
         assert_eq!(app.screen, Screen::Mines);
         app.update(Action::PrevScreen);
@@ -383,7 +437,7 @@ mod tests {
 
     #[test]
     fn the_ring_wraps_in_both_directions() {
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::PrevScreen);
         assert_eq!(app.screen, Screen::Levels);
         app.update(Action::NextScreen);
@@ -392,28 +446,28 @@ mod tests {
 
     #[test]
     fn selecting_a_tab_jumps_straight_to_it() {
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::SelectScreen(3));
         assert_eq!(app.screen, Screen::Upgrades);
     }
 
     #[test]
     fn selecting_a_tab_that_does_not_exist_leaves_the_screen_alone() {
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::SelectScreen(99));
         assert_eq!(app.screen, Screen::Mine);
     }
 
     #[test]
     fn quit_raises_the_flag_the_loop_watches() {
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::Quit);
         assert!(app.should_quit);
     }
 
     #[test]
     fn showing_a_toast_queues_it() {
-        let mut app = App::new();
+        let mut app = session();
         assert!(app.toasts.is_empty());
         app.update(Action::ShowToast("Mine refilled".to_owned()));
         assert_eq!(app.toasts.len(), 1);
@@ -421,7 +475,7 @@ mod tests {
 
     #[test]
     fn the_tab_bar_shows_all_six_tabs_with_their_digits() {
-        let buffer = render_to_buffer(&App::new());
+        let buffer = render_to_buffer(&session());
         let bar = row(&buffer, 0);
         for (position, screen) in Screen::ALL.iter().enumerate() {
             let label = format!("{} {}", position + 1, screen.title());
@@ -438,7 +492,7 @@ mod tests {
         // empty area, or that forgets to mark itself selected, fails here rather
         // than the first time someone presses its digit.
         for (position, screen) in Screen::ALL.iter().enumerate() {
-            let mut app = App::new();
+            let mut app = session();
             app.update(Action::SelectScreen(position));
             assert_eq!(app.screen, *screen);
 
@@ -457,14 +511,14 @@ mod tests {
         // UI-EN.md §5.7.5 counts the six-tab bar at 65 columns, which is what
         // dropping the prestige readout bought. If a renamed tab ever pushes it
         // past 80 this fails rather than silently truncating on a real terminal.
-        let buffer = render_to_buffer(&App::new());
+        let buffer = render_to_buffer(&session());
         let bar = row(&buffer, 0);
         assert!(bar.trim_end().chars().count() <= 80);
     }
 
     #[test]
     fn the_selected_screen_is_the_one_drawn() {
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::SelectScreen(2));
         let frame = whole_frame(&render_to_buffer(&app));
         // The Inventory placeholder prints the held counts from the snapshot.
@@ -479,7 +533,7 @@ mod tests {
         // not a tautology: every other widget leaves `bg` at `Reset`.
         use ratatui::style::Color;
 
-        let buffer = render_to_buffer(&App::new());
+        let buffer = render_to_buffer(&session());
         let painted = buffer.content().iter().any(|cell| cell.bg != Color::Reset);
         assert!(
             painted,
@@ -492,7 +546,7 @@ mod tests {
     fn a_cramped_terminal_shows_the_filter_instead_of_the_open_screen() {
         // Sitting on a non-default tab, under the budget: the filter must win over
         // whatever was up, drawing its message and none of the tab bar.
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::SelectScreen(2));
         let frame = whole_frame(&render_to_sized_buffer(&app, 54, 18));
         assert!(frame.contains("Skylode needs 80 x 24"), "{frame}");
@@ -504,7 +558,7 @@ mod tests {
 
     #[test]
     fn opening_and_closing_help_stacks_then_clears_the_modal() {
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::OpenHelp);
         assert_eq!(app.modal, Some(Modal::Help));
         app.update(Action::CloseModal);
@@ -513,7 +567,7 @@ mod tests {
 
     #[test]
     fn help_draws_over_the_screen_it_was_opened_on() {
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::OpenHelp);
         let frame = whole_frame(&render_to_buffer(&app));
         // The right pane's title is Help-only, so its presence is Help on top.
@@ -522,7 +576,7 @@ mod tests {
 
     #[test]
     fn a_toast_is_drawn_over_the_screen_underneath() {
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::ShowToast("Mine refilled".to_owned()));
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Mine refilled"), "{frame}");
@@ -539,7 +593,7 @@ mod tests {
         // `on_tick` reads `Instant::now()` itself, so the clock is not the test's to
         // choose: it ticks once against the live clock to prove the heartbeat spares
         // a live toast, then prunes past the deadline by hand for the other half.
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::ShowToast("Excavator!".to_owned()));
         assert_eq!(app.toasts.len(), 1);
 
@@ -605,7 +659,7 @@ mod tests {
             Ok(terminal) => terminal,
             Err(infallible) => match infallible {},
         };
-        let result = App::new().run(&mut terminal, Script::new(events));
+        let result = session().run(&mut terminal, Script::new(events));
         (result, terminal.backend().buffer().clone())
     }
 
@@ -677,23 +731,25 @@ mod tests {
     }
 
     #[test]
-    fn the_default_session_is_the_one_new_builds() {
-        // `Default` exists because clippy asks for it beside an argument-less `new`,
-        // and it must stay a synonym rather than acquiring a second opinion about
-        // which tab a session opens on.
-        let default = App::default();
-        let new = App::new();
-        assert_eq!(default.screen, new.screen);
-        assert_eq!(default.should_quit, new.should_quit);
-        assert_eq!(default.modal, new.modal);
-        assert_eq!(default.toasts.len(), new.toasts.len());
+    fn a_session_opens_on_the_run_it_was_handed() {
+        // `Default` used to live here — clippy asks for one beside an argument-less
+        // `new` — and went with the argument: there is no default run, because there
+        // is no default seed a front-end could invent without reading a clock.
+        //
+        // What replaces it is the assertion that actually matters now: the view the
+        // session opens with describes the state it was given, and not the fixture.
+        // `GameState::new` starts every run in the Stone mine at level 1.
+        let app = session();
+        assert_eq!(app.view.mine_name, "Stone Mine");
+        assert_eq!(app.view.player_level, 1);
+        assert_eq!(app.view.mine_kind, app.state.current_mine().kind());
     }
 
     #[test]
     fn no_toast_means_nothing_is_overlaid() {
-        let plain = whole_frame(&render_to_buffer(&App::new()));
+        let plain = whole_frame(&render_to_buffer(&session()));
 
-        let mut app = App::new();
+        let mut app = session();
         app.update(Action::ShowToast("Mine refilled".to_owned()));
         let toasted = whole_frame(&render_to_buffer(&app));
 

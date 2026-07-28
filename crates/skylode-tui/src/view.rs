@@ -10,9 +10,26 @@
 //! Keep it plain data: no methods that decide anything, no `Option`s standing in
 //! for rules. A computation that belongs to the game belongs to the core.
 
-use skylode_core::{block::Block, mine_kind::MineKind, pickaxe::PickaxeTier, tunables::LEVEL_CAP};
+use skylode_core::{
+    block::Block,
+    enchant::EnchantType,
+    game::GameState,
+    inventory::Inventory,
+    material::{Item, Material},
+    mine::MAX_RICHNESS_LEVEL,
+    mine_kind::MineKind,
+    pickaxe::PickaxeTier,
+    tunables::{BOOST_DURATION_TICKS, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND},
+};
 
 use crate::palette::ColourMode;
+
+/// What a readout with nothing to report prints.
+///
+/// The same em dash the Mine screen's empty gauges use, and for the same reason: a
+/// `Fortune 0` or an `Efficiency 0` states a level the player owns, where the truth
+/// is that they own no such enchant at all.
+const NOTHING: &str = "—";
 
 /// One row of the Levels roadmap (UI.md §5.6).
 ///
@@ -327,15 +344,89 @@ pub struct PickaxeView {
 /// The temporary Redstone boost, shown as the third status gauge (UI.md §5.1).
 ///
 /// The permanent Haste enchant has no countdown and is deliberately absent here;
-/// this is the one with a timer. `ratio` is a placeholder until the tick owns the
-/// countdown (phase 7) — there is no clock in the core to derive it from yet.
+/// this is the one with a timer.
+///
+/// **Only ever held as an `Option`**, because
+/// [`GameState::active_boost`](skylode_core::game::GameState::active_boost) is one:
+/// a boost either runs or does not exist, and a `BoostView { seconds: 0 }` would be
+/// a second way to spell the second case. The screen branches on the `Option` and
+/// draws a dash, so "no boost" is a shape the compiler checks rather than a
+/// convention about a zero.
 #[derive(Clone, Debug)]
 pub struct BoostView {
     /// Seconds left on the boost.
     pub seconds: u32,
     /// The multiplier it applies to mining power, e.g. `1.5`.
     pub multiplier: f64,
-    /// How full the countdown gauge is, in `0.0..=1.0` (placeholder; phase 7).
+    /// How full the countdown gauge is, in `0.0..=1.0`.
+    pub ratio: f32,
+}
+
+/// One material's holdings, as the Haul strip quotes them (UI.md §5.1).
+///
+/// **Both denominations, never a total**, for the reason `Inventory` keeps them
+/// apart: costs are paid in the denomination they are quoted in, so a player short
+/// of Compressed Iron while holding six hundred raw is short — and a single summed
+/// number would hide exactly the fact the strip exists to show.
+#[derive(Clone, Copy, Debug)]
+pub struct HaulEntry {
+    /// The material's display name.
+    pub material: &'static str,
+    /// Raw units held.
+    pub raw: u32,
+    /// Compressed units held.
+    pub compressed: u32,
+}
+
+impl HaulEntry {
+    /// What the two denominations come to in raw units.
+    ///
+    /// The same arithmetic
+    /// [`Inventory::raw_value`](skylode_core::inventory::Inventory::raw_value)
+    /// performs, done here because it is a **display sum** and not a rule: nothing
+    /// in the game may be *paid for* with this number, which is precisely why the
+    /// strip is free to show it.
+    pub fn value(self) -> u32 {
+        self.raw + self.compressed * RAW_PER_COMPRESSED
+    }
+}
+
+/// The Haul strip: what the standing mine produces, in both denominations.
+///
+/// **`value` is an [`Option`], and that is the two-material test made structural.**
+/// Nine of the twelve mines drop one material — their
+/// [`common_material`](MineKind::common_material) and
+/// [`value_material`](MineKind::value_material) are the same — and printing it
+/// twice would tell the player their Iron mine produces Iron and also Iron. The
+/// three that genuinely produce two (Quartz, Obsidian, End) are the three where
+/// [`None`] would be wrong, and they are the same three whose richness dial is a
+/// real choice. One `Option`, both facts.
+#[derive(Clone, Copy, Debug)]
+pub struct HaulView {
+    /// The material the mine is mostly made of — its growth currency.
+    pub common: HaulEntry,
+    /// The material it exists to produce, when that is a *different* one.
+    pub value: Option<HaulEntry>,
+}
+
+/// The cell being dug, and how far it is from breaking (UI.md §5.1).
+///
+/// **The pair travels together, and that is the whole reason this type exists.**
+/// They used to be two fields — a `target: Option<(u8, u8)>` beside a bare
+/// `break_ratio: f32` — which let a ratio of 0.61 sit next to no target at all, a
+/// state the rules cannot produce and the screen had to decide what to do about.
+/// [`MineGrid`](crate::widget::MineGrid) already models it this way: `.target()` is
+/// simply not called when nothing is being dug, so the ratio has nowhere to be.
+///
+/// There is deliberately **no name field**. The block being dug is the grid cell
+/// this points at, and [`Block::name`](skylode_core::block::Block::name) turns it
+/// into "Iron Block" at the moment of drawing — so the Break gauge's label cannot
+/// disagree with the crack the player is watching, the way a stored name could.
+#[derive(Clone, Copy, Debug)]
+pub struct TargetView {
+    /// The grid cell under the pickaxe, as `(x, y)`.
+    pub cell: (u8, u8),
+    /// How far that cell is from breaking, in `0.0..=1.0`.
     pub ratio: f32,
 }
 
@@ -353,8 +444,13 @@ pub struct MinePanelView {
     pub size_level: u32,
     /// The richness level the player has bought, `0..=richness_max`.
     pub richness_level: u32,
-    /// The richness ceiling — 9 in today's rules, carried so the tui need not
-    /// mirror the core's `pub(crate)` constant.
+    /// The richness ceiling, from the core's
+    /// [`MAX_RICHNESS_LEVEL`].
+    ///
+    /// A field rather than a constant read at the point of drawing, because the
+    /// Mines detail pane carries the same ceiling for a mine the player is *not*
+    /// standing in — so the two panes ask the same question of two different mines
+    /// and both need somewhere to put the answer.
     pub richness_max: u32,
     /// The value cells' weight, as a percentage (placeholder; phase 3 derives it
     /// from `Mine::value_weight_percent()`).
@@ -368,20 +464,25 @@ pub struct View {
     pub player_level: u32,
     /// XP banked toward the next level, counted from zero (UI.md §6.5).
     pub xp: u32,
-    /// XP the current level requires in total.
-    pub xp_to_next: u32,
+    /// XP the current level requires in total, or [`None`] at the level cap.
+    ///
+    /// The `Option` is
+    /// [`Player::experience_to_next_level`](skylode_core::player::Player::experience_to_next_level)'s,
+    /// carried through rather than flattened: a `0` here would divide the XP gauge
+    /// by zero, which is precisely the sentinel the core refused to return.
+    /// [`format::xp_progress`](crate::format::xp_progress) is where all three
+    /// screens turn it into words.
+    pub xp_to_next: Option<u32>,
     /// Display name of the mine the player is standing in.
     pub mine_name: String,
     /// The Pickaxe panel's figures.
     pub pickaxe: PickaxeView,
     /// The Mine panel's figures.
     pub mine_panel: MinePanelView,
-    /// The Redstone boost gauge.
-    pub boost: BoostView,
-    /// Raw units of the current mine's material that the player holds.
-    pub raw_held: u32,
-    /// Compressed units of the same material.
-    pub compressed_held: u32,
+    /// The Redstone boost gauge, or [`None`] when no boost is running.
+    pub boost: Option<BoostView>,
+    /// The Haul strip: what the standing mine produces, and how much is held.
+    pub haul: HaulView,
     /// Which of the twelve mines the grid below belongs to — the only thing that
     /// answers what colour its cells take.
     pub mine_kind: MineKind,
@@ -393,16 +494,8 @@ pub struct View {
     /// nothing. Phase 3 wires this to a real `Mine` and is the right place to
     /// revisit it, with a measurement rather than a guess.
     pub grid: Vec<Vec<Option<Block>>>,
-    /// The cell being dug, `None` before the first swing.
-    pub target: Option<(u8, u8)>,
-    /// How far that cell is from breaking, in `0.0..=1.0`.
-    pub break_ratio: f32,
-    /// The name of the block being dug, for the Break gauge label: `Iron Block`.
-    ///
-    /// A placeholder string, because `Block` exposes its `material` but not a
-    /// display name of its own — "Iron Block" is not derivable from the grid cell
-    /// without a table the core does not yet own.
-    pub target_name: String,
+    /// The cell being dug and its progress, [`None`] before the first swing.
+    pub target: Option<TargetView>,
     /// The **whole** Levels roadmap, `1..=LEVEL_CAP` (UI.md §5.6).
     ///
     /// It was the visible window until the screens learned to window their own
@@ -428,6 +521,81 @@ pub struct View {
 }
 
 impl View {
+    /// Everything TUI phase 3 can derive from a real run; the rest is still
+    /// [`sample`](View::sample)'s fixture.
+    ///
+    /// **This is the wire the whole `View` indirection existed for.** The Mine
+    /// screen's every figure now comes from `GameState`, and nothing under
+    /// `screen/` changed to make that true — which is what the module header
+    /// promised while the rules were still being written.
+    ///
+    /// The `..Self::sample()` at the bottom is not laziness, it is the **progress
+    /// marker**. Rust's *functional update syntax* — `Self { a, b, ..other }`, "these
+    /// fields explicitly, the remainder taken from `other`" — makes that one line the
+    /// literal list of what phases 4 to 7 still owe: the Mines list, the Inventory
+    /// table, the Upgrades ladders, the Stats panels and the Levels roadmap. Each
+    /// phase lifts its own fields above the `..`, and when the last one goes, the line
+    /// goes with it and the compiler resumes checking that every field is accounted
+    /// for. A comment would have said the same and never failed.
+    ///
+    /// It does mean a redraw builds the whole fixture and throws most of it away.
+    /// That is why [`App`](crate::app::App) caches the result in a field rather than
+    /// projecting inside its `render`: the cost is paid when the state changes, not
+    /// thirty times a second.
+    pub fn from_state(state: &GameState) -> Self {
+        let player = state.player();
+        let pickaxe = player.get_pickaxe();
+        let enchants = pickaxe.enchants();
+        let mine = state.current_mine();
+        let kind = mine.kind();
+
+        Self {
+            player_level: player.get_level(),
+            xp: player.get_experience(),
+            xp_to_next: player.experience_to_next_level(),
+            mine_name: format!("{} Mine", kind.name()),
+            pickaxe: PickaxeView {
+                summary: pickaxe_summary(
+                    pickaxe.get_tier(),
+                    enchants.get_level(EnchantType::Efficiency),
+                ),
+                // `f64` because the panel multiplies it by the boost and prints the
+                // product; the core computes power in `f32`, and the widening is
+                // exact — every `f32` is a `f64`.
+                power: f64::from(pickaxe.mining_power()),
+                fortune: fortune_line(
+                    enchants.get_level(EnchantType::Fortune),
+                    pickaxe.fortune_multiplier(),
+                ),
+                enchants: enchant_roster(&enchants.iter().collect::<Vec<_>>()),
+            },
+            mine_panel: MinePanelView {
+                size_level: mine.get_size_level(),
+                richness_level: mine.get_richness_level(),
+                richness_max: MAX_RICHNESS_LEVEL,
+                value_percent: mine.value_weight_percent(),
+            },
+            boost: state
+                .active_boost()
+                .map(|boost| boost_view(boost.remaining_ticks(), boost.multiplier())),
+            haul: haul_view(kind, player.get_inventory()),
+            mine_kind: kind,
+            // Cloned, not borrowed. A borrow would put a lifetime parameter on
+            // `View` and therefore on all six screen signatures, to save copying at
+            // most 200 `Option<Block>` — and the copy happens when the state
+            // changes, not per frame, because `App` caches this whole struct.
+            grid: mine.get_grid().to_vec(),
+            target: mine.get_target().map(|cell| TargetView {
+                cell,
+                ratio: mine.break_ratio(),
+            }),
+
+            // Everything below is still the fixture. Phases 4-7 own these, one
+            // screen at a time; see this function's own note on the `..`.
+            ..Self::sample()
+        }
+    }
+
     /// The placeholder save drawn throughout UI.md §5: level 23, Diamond
     /// pickaxe, standing in the Iron Mine.
     ///
@@ -450,11 +618,11 @@ impl View {
         // screen at another mine size; the `#[expect(dead_code)]` on whichever two
         // are dormant then turns into a build error naming the one you just woke up,
         // which is the reminder to clean the attribute off it.
-        let (grid, target) = sample_grid_full_20x10();
+        let (grid, cell) = sample_grid_full_20x10();
         Self {
             player_level: 23,
             xp: 1_240,
-            xp_to_next: 2_300,
+            xp_to_next: Some(2_300),
             mine_name: "Iron Mine".to_owned(),
             pickaxe: PickaxeView {
                 summary: "Diamond Pickaxe  Efficiency IV".to_owned(),
@@ -469,21 +637,28 @@ impl View {
                 // it is set to the ceiling here to stay consistent with a 20×10 mine.
                 size_level: 9,
                 richness_level: 0,
-                richness_max: 9,
+                richness_max: MAX_RICHNESS_LEVEL,
                 value_percent: 10,
             },
-            boost: BoostView {
+            boost: Some(BoostView {
                 seconds: 12,
                 multiplier: 1.5,
                 ratio: 0.68,
+            }),
+            // The Iron mine drops Iron from both its cells, so the strip has one
+            // segment — the wireframe's own case. `sample_two_material_haul` below
+            // is the other one, for the tests that need it.
+            haul: HaulView {
+                common: HaulEntry {
+                    material: "Iron",
+                    raw: 480,
+                    compressed: 2,
+                },
+                value: None,
             },
-            raw_held: 480,
-            compressed_held: 2,
             mine_kind: MineKind::Iron,
             grid,
-            target: Some(target),
-            break_ratio: 0.61,
-            target_name: "Iron Block".to_owned(),
+            target: Some(TargetView { cell, ratio: 0.61 }),
             levels: sample_levels(),
             levels_offset: LEVELS_OFFSET,
             stats: sample_stats(),
@@ -500,6 +675,142 @@ impl View {
 const ROMAN: [&str; 15] = [
     "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV",
 ];
+
+/// `level` as a Roman numeral, or `"?"` past the table.
+///
+/// The fallback is unreachable in play — [`ROMAN`] spans every level any cap allows —
+/// but it exists so the lookup is total: this crate's lints forbid the `unwrap` that
+/// would be the alternative, and a panic while drawing a frame is the worst way for a
+/// front-end to report that a cap moved.
+fn roman(level: u8) -> &'static str {
+    // `level - 1` cannot underflow: zero is filtered here rather than by the callers,
+    // each of which would otherwise repeat the guard.
+    if level == 0 {
+        return "?";
+    }
+    ROMAN.get(usize::from(level) - 1).copied().unwrap_or("?")
+}
+
+/// The Pickaxe panel's first line: `Diamond Pickaxe  Efficiency IV`.
+///
+/// **Takes the tier and the level, not the [`Pickaxe`](skylode_core::pickaxe::Pickaxe)**,
+/// and that is a testability constraint rather than a style: `Enchants::upgrade` is
+/// `pub(crate)` — deliberately, since a front-end that could call it would enchant for
+/// free — so this crate cannot *build* an enchanted pickaxe, and a helper taking one
+/// could only ever be exercised at Efficiency 0. The reading belongs to
+/// [`View::from_state`]; the wording belongs here.
+///
+/// An unenchanted pickaxe drops the clause entirely rather than printing
+/// `Efficiency 0`: a level of zero is the absence of the enchant, and the panel says
+/// so by not mentioning it.
+fn pickaxe_summary(tier: PickaxeTier, efficiency: u8) -> String {
+    let name = format!("{} Pickaxe", tier.name());
+    if efficiency == 0 {
+        name
+    } else {
+        format!("{name}  Efficiency {}", roman(efficiency))
+    }
+}
+
+/// The Fortune line: `Fortune III   drops ×4`, or [`NOTHING`] at level 0.
+///
+/// Both numbers, because they answer different questions: the level is what the
+/// player bought and what the Upgrades screen prices, the multiplier is what it does
+/// to a drop. The core keeps them one apart (`1 + level`), and printing only one
+/// would make the panel a place to do arithmetic.
+fn fortune_line(level: u8, multiplier: u32) -> String {
+    if level == 0 {
+        return format!("Fortune {NOTHING}");
+    }
+    format!("Fortune {}   drops ×{multiplier}", roman(level))
+}
+
+/// The special-enchant roster: `Exp II   Jck I   Exc I`, or [`NOTHING`] when bare.
+///
+/// **Only the five specials, and only the non-zero ones** (UI.md §5.1). Efficiency
+/// and Fortune have lines of their own above, so repeating them here would spend a
+/// 36-column panel saying the same thing twice; a special at level 0 is one the
+/// player has not bought, and listing it would fill the line with absences.
+///
+/// The abbreviations live in the front-end and not beside
+/// [`EnchantType::name`](skylode_core::enchant::EnchantType::name), because they
+/// exist for *this panel's width* and nothing else — the Upgrades screen has room
+/// for `Jackhammer` and prints it in full. A core that shipped `Jck` would be
+/// shipping one screen's layout to every caller.
+///
+/// The order is [`Enchants::iter`](skylode_core::enchant::Enchants::iter)'s, which
+/// is the enum's own declaration order — it iterates a `BTreeMap` — so the roster
+/// does not reshuffle itself as levels are bought.
+fn enchant_roster(levels: &[(EnchantType, u8)]) -> String {
+    let short = |kind: EnchantType| match kind {
+        EnchantType::Explosive => Some("Exp"),
+        EnchantType::Jackhammer => Some("Jck"),
+        EnchantType::Nuke => Some("Nuke"),
+        EnchantType::Excavator => Some("Exc"),
+        EnchantType::Haste => Some("Hst"),
+        // The two with their own lines: not abbreviated because not listed.
+        EnchantType::Efficiency | EnchantType::Fortune => None,
+    };
+    let roster: Vec<String> = levels
+        .iter()
+        .filter(|(_, level)| *level > 0)
+        .filter_map(|(kind, level)| short(*kind).map(|tag| format!("{tag} {}", roman(*level))))
+        .collect();
+    if roster.is_empty() {
+        NOTHING.to_owned()
+    } else {
+        roster.join("   ")
+    }
+}
+
+/// The Boost gauge's figures, from a running boost's two numbers.
+///
+/// **Takes the numbers and not the [`Boost`](skylode_core::boost::Boost)**, for
+/// [`pickaxe_summary`]'s reason
+/// exactly: `Boost::new` is `pub(crate)` — minting the game's strongest multiplier
+/// is not a front-end's business — and a helper taking one could not be tested from
+/// this crate at all, since no legal sequence of public calls reaches a boost from a
+/// level-1 run. `from_state` unwraps the boost; this formats it.
+///
+/// `div_ceil` on the seconds, because this is a **countdown**: one tick left is a
+/// boost the player still has, and flooring would show `0s` for a twentieth of a
+/// second before the gauge vanished. The ratio is against
+/// [`BOOST_DURATION_TICKS`] and can exceed 1 — firing a second charge *extends* the
+/// timer rather than refreshing it — which the gauge clamps, so an over-long boost
+/// reads as a full bar instead of panicking `LineGauge`.
+fn boost_view(remaining: u32, multiplier: f32) -> BoostView {
+    // Widened, divided, then narrowed. `TICKS_PER_SECOND` is a `u64` because the
+    // offline accrual multiplies by it across days, while a tick counter is a `u32`;
+    // dividing in the wider type and converting back keeps the whole thing total,
+    // where a cast either way would be the compiler taking the programmer's word for
+    // it. The `unwrap_or` is unreachable — a `u32` of ticks over twenty is always a
+    // `u32` of seconds — and is here because this crate's lints leave no `unwrap`.
+    let seconds = u64::from(remaining).div_ceil(TICKS_PER_SECOND);
+    BoostView {
+        seconds: u32::try_from(seconds).unwrap_or(u32::MAX),
+        multiplier: f64::from(multiplier),
+        ratio: remaining as f32 / BOOST_DURATION_TICKS as f32,
+    }
+}
+
+/// The Haul strip's holdings for the mine the player is standing in.
+///
+/// The two-material test is `common != value`, asked of the core rather than kept as
+/// a list here — see [`HaulView`] for why the answer is an [`Option`] and not a
+/// second entry.
+fn haul_view(kind: MineKind, inventory: &Inventory) -> HaulView {
+    let entry = |material: Material| HaulEntry {
+        material: material.name(),
+        raw: inventory.count(Item::Raw(material)),
+        compressed: inventory.count(Item::Compressed(material)),
+    };
+    let common = kind.common_material();
+    let value = kind.value_material();
+    HaulView {
+        common: entry(common),
+        value: (value != common).then(|| entry(value)),
+    }
+}
 
 /// The rung the fixture's player stands on — dotted `●` in the list.
 const CURRENT_RUNG: &str = "Diamond Eff IV";
@@ -527,24 +838,16 @@ const PICKAXE_OFFSET: usize = 27;
 /// They honour the ladder invariant by construction: `""` while owned, then a
 /// contiguous `✓` run, then `~`, then `✗` — never a `✓` after a `✗`.
 fn pickaxe_ladder() -> Vec<UpgradeRow> {
-    let name = |tier: PickaxeTier| match tier {
-        PickaxeTier::Wooden => "Wooden",
-        PickaxeTier::Stone => "Stone",
-        PickaxeTier::Iron => "Iron",
-        PickaxeTier::Gold => "Gold",
-        PickaxeTier::Diamond => "Diamond",
-        PickaxeTier::Netherite => "Netherite",
-    };
-
+    // The tier names come from the core now — a private table here was a second copy
+    // of `PickaxeTier::name`, and the rung labels below are the reason that table
+    // returns the bare material: this list writes "Pickaxe" once per tier and never
+    // on the thirty Efficiency rungs between.
     let mut labels = Vec::new();
     let mut tier = Some(PickaxeTier::Wooden);
     while let Some(current) = tier {
-        labels.push(format!("{} Pickaxe", name(current)));
-        for level in 1..=usize::from(current.efficiency_cap()) {
-            // `level - 1` cannot underflow: the range starts at one, and a cap of
-            // zero would make the loop body unreachable rather than index at -1.
-            let numeral = ROMAN.get(level - 1).copied().unwrap_or("?");
-            labels.push(format!("{} Eff {numeral}", name(current)));
+        labels.push(format!("{} Pickaxe", current.name()));
+        for level in 1..=current.efficiency_cap() {
+            labels.push(format!("{} Eff {}", current.name(), roman(level)));
         }
         tier = current.next();
     }
@@ -782,7 +1085,7 @@ fn sample_mines() -> MinesView {
             blocks_standing: 31,
             blocks_total: 40,
             richness_level: 6,
-            richness_max: 9,
+            richness_max: MAX_RICHNESS_LEVEL,
             value_percent: 64,
             dial_split: "Crying 64%   Obsidian 36%".to_owned(),
             note,
@@ -1124,7 +1427,249 @@ fn sample_grid_wireframe_12x7() -> GridFixture {
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
+    use skylode_core::tunables::BOOST_MULTIPLIER;
+
     use super::*;
+
+    /// A fresh run to project, on a fixed seed.
+    ///
+    /// The seed is arbitrary and *fixed*: `GameState::new` draws the opening mine's
+    /// whole grid from it, so a clock-derived one would give every run of the suite
+    /// a different picture. `UNIX_EPOCH` is `now` because it is the reference the
+    /// offline accrual counts from, and a test that read the clock would be
+    /// measuring how long ago it was written.
+    fn fresh_run() -> GameState {
+        GameState::new(0x5B1_0DE, UNIX_EPOCH)
+    }
+
+    #[test]
+    fn a_fresh_run_projects_to_a_bare_level_one_session() {
+        // Everything a run has before anything has happened to it, asserted together
+        // because *this* is the frame `cargo run` opens on until the phase-7 tick
+        // exists — the five states the level-23 fixture never had.
+        let view = View::from_state(&fresh_run());
+
+        assert_eq!(view.player_level, 1);
+        assert_eq!(view.xp, 0);
+        assert_eq!(view.xp_to_next, Some(100));
+        assert_eq!(view.mine_name, "Stone Mine");
+        assert_eq!(view.mine_kind, MineKind::Stone);
+        assert_eq!(view.pickaxe.summary, "Wooden Pickaxe");
+        // A bare Wooden pickaxe is its tier and nothing else — the floor the whole
+        // game's pacing is measured from (`Pickaxe::mining_power`).
+        assert!((view.pickaxe.power - 2.0).abs() < f64::EPSILON);
+        assert_eq!(view.pickaxe.fortune, "Fortune —");
+        assert_eq!(view.pickaxe.enchants, "—");
+        assert!(
+            view.boost.is_none(),
+            "a fresh run cannot have fired a boost"
+        );
+        assert!(
+            view.target.is_none(),
+            "nothing is dug before the first swing"
+        );
+        assert_eq!(view.haul.common.raw, 0);
+        assert!(
+            view.haul.value.is_none(),
+            "the Stone mine drops one material"
+        );
+    }
+
+    #[test]
+    fn the_projected_grid_is_the_standing_mines_own() {
+        // The grid is *copied*, not invented, and it is the one the run is standing
+        // in. Compared cell for cell rather than by size, because a projection that
+        // built a fresh grid of the right dimensions would pass any shape check and
+        // still be showing the player a mine that is not theirs.
+        let state = fresh_run();
+        let view = View::from_state(&state);
+        assert_eq!(view.grid, state.current_mine().get_grid());
+
+        // And it is genuinely mixed — `draw_cell` weights each cell by the richness
+        // dial — so the palette has both of the mine's blocks to colour. `Block` is
+        // `PartialEq` but not `Ord`, so the distinct count is a linear scan rather
+        // than a set; twenty-four possible values makes that free.
+        let mut distinct: Vec<Block> = Vec::new();
+        for cell in view.grid.iter().flatten().flatten() {
+            if !distinct.contains(cell) {
+                distinct.push(*cell);
+            }
+        }
+        assert!(
+            distinct.len() >= 2,
+            "the grid came out uniform: {distinct:?}"
+        );
+    }
+
+    #[test]
+    fn the_mine_panels_figures_come_from_the_mine() {
+        let state = fresh_run();
+        let view = View::from_state(&state);
+        let mine = state.current_mine();
+
+        assert_eq!(view.mine_panel.size_level, mine.get_size_level());
+        assert_eq!(view.mine_panel.richness_level, mine.get_richness_level());
+        assert_eq!(view.mine_panel.value_percent, mine.value_weight_percent());
+        // The ceiling is the core's, not a `9` this crate remembers.
+        assert_eq!(view.mine_panel.richness_max, MAX_RICHNESS_LEVEL);
+    }
+
+    #[test]
+    fn an_unenchanted_pickaxe_says_so_by_omission() {
+        // Level 0 is the *absence* of an enchant, so the panel drops the clause
+        // rather than printing `Efficiency 0` — which would name a level the player
+        // does not own, on a line four rows tall that has no room for absences.
+        assert_eq!(pickaxe_summary(PickaxeTier::Wooden, 0), "Wooden Pickaxe");
+        assert_eq!(fortune_line(0, 1), "Fortune —");
+        assert_eq!(enchant_roster(&[]), "—");
+        assert_eq!(
+            enchant_roster(&[(EnchantType::Explosive, 0), (EnchantType::Nuke, 0)]),
+            "—",
+            "a track at zero is one the player has not bought"
+        );
+    }
+
+    #[test]
+    fn an_enchanted_pickaxe_reads_as_the_wireframe_drew_it() {
+        // The counted frame's own pickaxe: `Diamond Pickaxe  Efficiency IV`,
+        // `Fortune III   drops ×4`, `Exp II   Jck I   Exc I`.
+        assert_eq!(
+            pickaxe_summary(PickaxeTier::Diamond, 4),
+            "Diamond Pickaxe  Efficiency IV"
+        );
+        assert_eq!(fortune_line(3, 4), "Fortune III   drops ×4");
+        assert_eq!(
+            enchant_roster(&[
+                (EnchantType::Explosive, 2),
+                (EnchantType::Jackhammer, 1),
+                (EnchantType::Excavator, 1),
+            ]),
+            "Exp II   Jck I   Exc I"
+        );
+    }
+
+    #[test]
+    fn the_roster_lists_the_five_specials_and_only_them() {
+        // Walks the whole enum, because the split is the point: the five specials
+        // are abbreviated and listed, and Efficiency and Fortune are not — they
+        // ride in the summary and on the Fortune line, and repeating either would
+        // spend a 36-column panel saying it twice.
+        //
+        // Handing every enchant a level at once is what makes the negative half
+        // testable at all: a roster built from only the specials would pass on a
+        // table that abbreviated all seven.
+        let all = [
+            (EnchantType::Efficiency, 4),
+            (EnchantType::Fortune, 3),
+            (EnchantType::Explosive, 2),
+            (EnchantType::Jackhammer, 1),
+            (EnchantType::Nuke, 3),
+            (EnchantType::Excavator, 1),
+            (EnchantType::Haste, 2),
+        ];
+        // Bound rather than called inline below, because `split` borrows *from* the
+        // `String` it is given: called on a temporary, the roster would be dropped at
+        // the end of that statement and `tags` would be pointing into freed memory —
+        // which the borrow checker refuses rather than letting through.
+        let roster = enchant_roster(&all);
+        assert_eq!(roster, "Exp II   Jck I   Nuke III   Exc I   Hst II");
+
+        // And the abbreviations are distinct, or two enchants would read as one.
+        let tags: Vec<&str> = roster.split("   ").collect();
+        let mut unique = tags.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            tags.len(),
+            "two specials share a tag: {tags:?}"
+        );
+    }
+
+    #[test]
+    fn a_roman_numeral_is_total_over_every_level_a_cap_allows() {
+        // `ROMAN` spans 1..=15, which is Netherite's Efficiency cap — the highest
+        // any enchant can reach. The two ends are the interesting ones, and `0` is
+        // the guard that keeps `level - 1` from underflowing rather than a level the
+        // game ever asks about.
+        assert_eq!(roman(1), "I");
+        assert_eq!(roman(15), "XV");
+        assert_eq!(roman(0), "?");
+        assert_eq!(roman(16), "?", "past the table, not a panic");
+    }
+
+    #[test]
+    fn a_boost_rounds_its_countdown_up_and_measures_against_the_full_duration() {
+        // **`div_ceil`, not `/`.** One tick left is a boost the player still holds,
+        // and flooring would print `0s` for a twentieth of a second — the gauge
+        // announcing an expiry that has not happened.
+        let one_tick = boost_view(1, BOOST_MULTIPLIER);
+        assert_eq!(one_tick.seconds, 1);
+
+        let full = boost_view(BOOST_DURATION_TICKS, BOOST_MULTIPLIER);
+        assert_eq!(
+            u64::from(full.seconds),
+            u64::from(BOOST_DURATION_TICKS) / TICKS_PER_SECOND
+        );
+        assert!((full.ratio - 1.0).abs() < f32::EPSILON);
+
+        // Firing a second charge *extends* rather than refreshes, so the ratio can
+        // exceed one. It is left that way here and clamped at the gauge, which is
+        // the one place that must never be handed an out-of-range value.
+        let extended = boost_view(2 * BOOST_DURATION_TICKS, BOOST_MULTIPLIER);
+        assert!(extended.ratio > 1.0);
+    }
+
+    #[test]
+    fn the_haul_carries_one_entry_or_two_according_to_the_mine() {
+        // The test is `common != value`, asked of the core. Walked over all twelve
+        // so the count is the rules' answer and not a list remembered here: exactly
+        // three mines produce two materials, and they are the three whose richness
+        // dial is a real choice.
+        let mut inventory = Inventory::new();
+        inventory.add(Item::Raw(Material::Quartz), 73);
+        inventory.add(Item::Compressed(Material::Netherrack), 2);
+
+        let two = haul_view(MineKind::Quartz, &inventory);
+        assert_eq!(two.common.material, "Netherrack");
+        assert_eq!(two.common.compressed, 2);
+        assert_eq!(two.value.map(|entry| entry.material), Some("Quartz"));
+        assert_eq!(two.value.map(|entry| entry.raw), Some(73));
+
+        let one = haul_view(MineKind::Iron, &inventory);
+        assert_eq!(one.common.material, "Iron");
+        assert!(one.value.is_none());
+
+        let two_material = ALL_MINE_KINDS
+            .iter()
+            .filter(|kind| haul_view(**kind, &inventory).value.is_some())
+            .count();
+        assert_eq!(
+            two_material, 3,
+            "the two-material mines are Quartz, Obsidian and End"
+        );
+    }
+
+    /// Every [`MineKind`], for the walks that must cover all twelve.
+    ///
+    /// Test-only and spelled out, for the reason `block`'s `ALL_BLOCKS` is: an enum
+    /// cannot enumerate itself, and the core keeps its own list `pub(crate)`.
+    const ALL_MINE_KINDS: [MineKind; 12] = [
+        MineKind::Stone,
+        MineKind::Coal,
+        MineKind::Iron,
+        MineKind::Gold,
+        MineKind::Lapis,
+        MineKind::Redstone,
+        MineKind::Emerald,
+        MineKind::Diamond,
+        MineKind::Quartz,
+        MineKind::AncientDebris,
+        MineKind::Obsidian,
+        MineKind::Amethyst,
+    ];
 
     /// Every grid fixture, live or dormant, so the assertions below hold for
     /// whichever one `View::sample` currently names.

@@ -26,7 +26,7 @@ use ratatui::{
 
 use crate::{
     action::Action,
-    format::{grouped, justified},
+    format::{MAXED, grouped, justified, xp_progress},
     screen::{panel, scrollbar, window},
     theme,
     view::View,
@@ -40,13 +40,19 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
 
     // The distance to the next level rides in the title, so no content row pays
     // for it: `Lv 23 · 1 240 / 2 300 XP to Lv 24`.
-    let title = format!(
-        " Levels — Lv {} · {} / {} XP to Lv {} ",
-        view.player_level,
-        grouped(view.xp),
-        grouped(view.xp_to_next),
-        view.player_level + 1,
-    );
+    //
+    // At the cap the trailing clause has to go rather than be filled in: there is no
+    // level 51, so `XP to Lv 51` would name a rung the ladder below does not draw and
+    // the core refuses to price.
+    let title = match view.xp_to_next {
+        Some(_) => format!(
+            " Levels — Lv {} · {} XP to Lv {} ",
+            view.player_level,
+            xp_progress(view.xp, view.xp_to_next),
+            view.player_level + 1,
+        ),
+        None => format!(" Levels — Lv {} · {MAXED} ", view.player_level),
+    };
     let block = panel(&title);
     let inner = block.inner(roadmap_area);
     frame.render_widget(block, roadmap_area);
@@ -146,14 +152,18 @@ mod tests {
 
     /// The same, at an arbitrary size — for the responsive assertions.
     fn render_sized(width: u16, height: u16) -> Buffer {
-        let view = View::sample();
+        render_view(&View::sample(), width, height)
+    }
+
+    /// Renders an arbitrary view — for the capped ladder, which the fixture is not.
+    fn render_view(view: &View, width: u16, height: u16) -> Buffer {
         let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
             Ok(terminal) => terminal,
             Err(infallible) => match infallible {},
         };
         if let Err(infallible) = terminal.draw(|frame| {
             let area = frame.area();
-            render(frame, area, &view);
+            render(frame, area, view);
         }) {
             match infallible {}
         }
@@ -180,6 +190,33 @@ mod tests {
             .filter(|line| line.starts_with('│'))
             .filter(|line| line.contains("+") || line.contains("opens"))
             .count()
+    }
+
+    /// At the cap the title drops its "XP to Lv N" clause instead of filling it in.
+    ///
+    /// The negative assertion is the one that matters: `LEVEL_CAP + 1` names a rung
+    /// the ladder below does not draw and
+    /// [`Player::xp_for_level`](skylode_core::player::Player::xp_for_level) refuses
+    /// to price, so a title still promising it would be the screen advertising a
+    /// level the core says does not exist.
+    #[test]
+    fn a_capped_player_gets_a_title_with_no_next_level_in_it() {
+        use skylode_core::tunables::LEVEL_CAP;
+
+        let view = View {
+            player_level: LEVEL_CAP,
+            xp_to_next: None,
+            ..View::sample()
+        };
+        let frame = whole_frame(&render_view(&view, 80, 24));
+        assert!(
+            frame.contains(&format!("Lv {LEVEL_CAP} · maxed")),
+            "{frame}"
+        );
+        assert!(
+            !frame.contains(&format!("XP to Lv {}", LEVEL_CAP + 1)),
+            "the title promised a level past the cap: {frame}"
+        );
     }
 
     #[test]
