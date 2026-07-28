@@ -14,7 +14,7 @@
 
 use ratatui::{
     Frame,
-    crossterm::event::KeyEvent,
+    crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
@@ -171,9 +171,21 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// No contextual bindings yet; `↑↓`, `Enter` and the dial's `←→` come later.
-pub fn map_key(_key: KeyEvent) -> Option<Action> {
-    None
+/// `↑↓` walk the list, `←→` move the richness dial, `Enter` enters the mine.
+///
+/// Every arm is a plain translation, because this function has no state to consult:
+/// *which* mine `Enter` selects is decided in [`crate::app::App::update`], which is
+/// where the cursor lives. Anything else is `None` — "not mine" — so
+/// [`crate::keymap`] can fall through rather than swallowing the key.
+pub fn map_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Up => Some(Action::CursorUp),
+        KeyCode::Down => Some(Action::CursorDown),
+        KeyCode::Left => Some(Action::AdjustLeft),
+        KeyCode::Right => Some(Action::AdjustRight),
+        KeyCode::Enter => Some(Action::Confirm),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

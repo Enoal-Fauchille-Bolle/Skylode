@@ -319,17 +319,17 @@ mod tests {
     }
 
     #[test]
-    fn every_screen_declines_every_key_it_is_offered() {
-        // The contextual bindings arrive with the screens themselves, so today the
-        // right answer everywhere is `None` — "not mine", which lets `keymap` fall
-        // through instead of swallowing the key. Asserted through the dispatch rather
-        // than on each module's `map_key` directly, because the dispatch is the part
-        // that can go wrong: a seventh screen wired to the wrong arm would return
-        // another screen's answer, and `match` exhaustiveness cannot catch a swap.
+    fn only_the_screens_with_bindings_claim_a_key() {
+        // Asserted through the dispatch rather than on each module's `map_key`
+        // directly, because the dispatch is the part that can go wrong: a seventh
+        // screen wired to the wrong arm would return another screen's answer, and
+        // `match` exhaustiveness cannot catch a swap.
         //
-        // The keys are the ones a screen will *want* one day (`↑↓`, `Enter`, `c`) plus
-        // one it never will, so when the first screen does claim a key this test fails
-        // on that screen and that key rather than passing vacuously.
+        // This test used to read `every_screen_declines_every_key_it_is_offered`, and
+        // it was written to fail on the first screen that claimed one — which is what
+        // it did when Mines grew its list bindings. The table below is what replaced
+        // it: every screen still has a row, so the next screen to be wired fails here
+        // in the same way rather than silently joining a blanket exception.
         let keys = [
             KeyCode::Up,
             KeyCode::Down,
@@ -339,13 +339,30 @@ mod tests {
             KeyCode::Char('c'),
             KeyCode::Char('\u{1}'),
         ];
+        // What each screen answers, in the order of `keys` above.
+        let claimed = |screen: Screen| -> [Option<Action>; 7] {
+            match screen {
+                Screen::Mines => [
+                    Some(Action::CursorUp),
+                    Some(Action::CursorDown),
+                    Some(Action::AdjustLeft),
+                    Some(Action::AdjustRight),
+                    Some(Action::Confirm),
+                    None,
+                    None,
+                ],
+                // Phases 5-7 own the rest; `None` is "not mine", which lets `keymap`
+                // fall through instead of swallowing the key.
+                _ => [const { None }; 7],
+            }
+        };
         for screen in Screen::ALL {
-            for code in keys {
+            for (code, expected) in keys.into_iter().zip(claimed(screen)) {
                 let key = KeyEvent::new(code, KeyModifiers::NONE);
                 assert_eq!(
                     screen.map_key(key),
-                    None,
-                    "{screen:?} claimed {code:?} without a case here saying so"
+                    expected,
+                    "{screen:?} answered {code:?} differently from the table here"
                 );
             }
         }

@@ -16,6 +16,7 @@
 mod action;
 mod app;
 mod config;
+mod cursor;
 mod event;
 mod format;
 mod keymap;

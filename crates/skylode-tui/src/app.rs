@@ -16,11 +16,12 @@ use ratatui::{
     style::{Modifier, Style},
     widgets::Tabs,
 };
-use skylode_core::game::GameState;
+use skylode_core::{game::GameState, mine::Mine, mine_kind::MineKind};
 
 use crate::{
     action::Action,
     config::Config,
+    cursor::Cursors,
     event::{Event, Events},
     keymap,
     overlay::{Modal, help, too_small},
@@ -79,6 +80,12 @@ pub struct App {
     /// wired, which is worth doing when the state changes and not thirty times a
     /// second.
     pub view: View,
+    /// Where the player is pointing on each list — front-end state, never the run's.
+    ///
+    /// Held beside [`state`](App::state) rather than inside it, because a highlighted
+    /// row is not something a save should carry and not something the rules may
+    /// consult. [`View::from_state`] reads both to build one snapshot.
+    pub cursors: Cursors,
     /// Front-end preferences — read while drawing, edited by Settings (phase 7).
     pub config: Config,
 }
@@ -96,7 +103,10 @@ impl App {
     /// It is also the shape the save wants: phase 7 loads a `GameState` from disk
     /// and hands it here, where today's caller builds a new one.
     pub fn new(state: GameState) -> Self {
-        let view = View::from_state(&state);
+        // Seeded from the run, so opening the Mines tab highlights where the player
+        // actually is rather than the top of the list.
+        let cursors = Cursors::new(state.current_mine().kind());
+        let view = View::from_state(&state, cursors);
         Self {
             should_quit: false,
             screen: Screen::Mine,
@@ -104,6 +114,7 @@ impl App {
             toasts: Toasts::new(),
             state,
             view,
+            cursors,
             config: Config::default(),
         }
     }
@@ -115,7 +126,7 @@ impl App {
     /// and phase 7 is where "redraw on change" earns its keep and this gains a
     /// guard.
     fn sync_view(&mut self) {
-        self.view = View::from_state(&self.state);
+        self.view = View::from_state(&self.state, self.cursors);
     }
 
     /// Draws, then blocks for the next event, until asked to quit.
@@ -202,6 +213,108 @@ impl App {
             // buries one modal under another.
             Action::OpenHelp => self.modal = Some(Modal::Help),
             Action::CloseModal => self.modal = None,
+            // The list gestures are decoded without a screen in mind, so this is
+            // where one is chosen. Only Mines answers today; phases 5-7 add arms.
+            Action::CursorUp => {
+                if self.screen == Screen::Mines {
+                    self.step_mine_cursor(-1);
+                }
+            }
+            Action::CursorDown => {
+                if self.screen == Screen::Mines {
+                    self.step_mine_cursor(1);
+                }
+            }
+            Action::AdjustLeft => {
+                if self.screen == Screen::Mines {
+                    self.step_richness_dial(-1);
+                }
+            }
+            Action::AdjustRight => {
+                if self.screen == Screen::Mines {
+                    self.step_richness_dial(1);
+                }
+            }
+            Action::Confirm => {
+                if self.screen == Screen::Mines {
+                    self.enter_selected_mine();
+                }
+            }
+        }
+    }
+
+    /// Moves the Mines cursor one row, **stopping at the ends rather than wrapping**.
+    ///
+    /// Wrapping is what the tab ring does, and it is right there because the ring is
+    /// six equivalent destinations. This list is not: it is twelve mines in
+    /// progression order under three world headers, so a `↑` on the Stone mine that
+    /// landed on the End one would be a jump across the whole game. Lists clamp,
+    /// rings wrap.
+    ///
+    /// `position` cannot fail — the cursor is a [`MineKind`] and [`MineKind::ALL`]
+    /// holds every one — but it returns an [`Option`] all the same, and this crate's
+    /// lints leave no `unwrap` to spend on it. `unwrap_or(0)` keeps the function
+    /// total without adding a branch nothing can reach.
+    fn step_mine_cursor(&mut self, delta: isize) {
+        let mines = MineKind::ALL;
+        let index = mines
+            .iter()
+            .position(|&kind| kind == self.cursors.mine)
+            .unwrap_or(0);
+        // Signed arithmetic, then clamped back into the list: `index - 1` on a
+        // `usize` at row zero would wrap to `usize::MAX` and index far past the end.
+        let next = (index as isize + delta).clamp(0, mines.len() as isize - 1);
+        if let Some(&kind) = mines.get(next as usize) {
+            self.cursors.mine = kind;
+        }
+    }
+
+    /// Slides the selected mine's richness dial one step, silently at its bounds.
+    ///
+    /// **The upper bound is the core's refusal, and it is deliberately dropped.**
+    /// The obvious alternative — read the ceiling, clamp here, and only call when
+    /// the step is legal — puts a second copy of "a dial may not pass its bought
+    /// ceiling" in the front-end, where it can fall out of step with the one rule
+    /// that matters. Asking and being told no is how this finds the edge.
+    ///
+    /// Dropping the answer is the part that needs justifying, since nothing else in
+    /// this crate discards a [`Result`]. A player holding `→` at the ceiling has not
+    /// made a mistake; they have reached the end of the slider, and the bar visibly
+    /// stops. A toast per repeat of a held key would bury the announcements that
+    /// matter under one the player can already see. Every *other* refusal on this
+    /// screen — a locked mine — still toasts, because that one the player cannot see.
+    ///
+    /// The lower bound has no refusal to lean on, because there is nothing below
+    /// zero for the core to object to, so it is a saturating subtraction here.
+    ///
+    /// A mine this run has never entered reads as dial 0 and is refused above it,
+    /// which is what it would be created at — so the arrows do nothing there,
+    /// correctly, and without a special case.
+    fn step_richness_dial(&mut self, delta: i32) {
+        let kind = self.cursors.mine;
+        let setting = self
+            .state
+            .mine(kind)
+            .map_or(0, Mine::get_richness_setting)
+            .saturating_add_signed(delta);
+        let _ = self.state.set_mine_richness_setting(kind, setting);
+    }
+
+    /// Enters the selected mine, or says why it will not open.
+    ///
+    /// The jump to the Mine screen is the **only screen-to-screen edge** in
+    /// UI-EN.md §6.1's graph, and it is worth the exception: choosing a mine and then
+    /// having to press `1` to go look at it is a chore with no decision in it.
+    ///
+    /// A refusal becomes a toast rather than a modal because
+    /// [`CoreError`](skylode_core::error::CoreError)'s own wording already names both
+    /// axes — *"the End mine needs level 30 and a Netherite pickaxe"* — and the player
+    /// is looking at the row that says so. The screen does not change, which is the
+    /// other half of the answer.
+    fn enter_selected_mine(&mut self) {
+        match self.state.select_mine(self.cursors.mine) {
+            Ok(()) => self.screen = Screen::Mine,
+            Err(refusal) => self.toasts.push(refusal.to_string(), TOAST_TTL),
         }
     }
 
@@ -755,5 +868,175 @@ mod tests {
 
         // The toast borrows cells for a frame; without one the frame is untouched.
         assert_ne!(plain, toasted);
+    }
+
+    /// A session on the Mines tab — where the list gestures are answered.
+    fn browsing_mines() -> App {
+        let mut app = session();
+        app.screen = Screen::Mines;
+        app
+    }
+
+    #[test]
+    fn a_fresh_session_points_at_the_mine_it_is_standing_in() {
+        let app = session();
+        assert_eq!(app.cursors.mine, app.state.current_mine().kind());
+    }
+
+    #[test]
+    fn the_mines_cursor_walks_the_list_and_stops_at_both_ends() {
+        let mut app = browsing_mines();
+        // A fresh run stands in the Stone mine, which is row zero.
+        assert_eq!(app.cursors.mine, MineKind::Stone);
+
+        app.update(Action::CursorDown);
+        assert_eq!(app.cursors.mine, MineKind::Coal);
+        app.update(Action::CursorUp);
+        assert_eq!(app.cursors.mine, MineKind::Stone);
+
+        // Off the top: it stops rather than wrapping to the End mine. Lists clamp,
+        // rings wrap — a `↑` that jumped across the whole game would be a surprise.
+        app.update(Action::CursorUp);
+        assert_eq!(app.cursors.mine, MineKind::Stone);
+
+        // And off the bottom, walked the whole way to prove the clamp is the list's
+        // length rather than a number written down here.
+        for _ in MineKind::ALL {
+            app.update(Action::CursorDown);
+        }
+        assert_eq!(app.cursors.mine, MineKind::Amethyst);
+    }
+
+    #[test]
+    fn the_list_gestures_are_ignored_on_every_other_screen() {
+        // They are decoded without a screen in mind, so `update` is what decides who
+        // answers. A screen phases 5-7 have not wired must leave the cursor alone.
+        for screen in Screen::ALL {
+            if screen == Screen::Mines {
+                continue;
+            }
+            let mut app = session();
+            app.screen = screen;
+            app.update(Action::CursorDown);
+            assert_eq!(
+                app.cursors.mine,
+                MineKind::Stone,
+                "{screen:?} moved the Mines cursor"
+            );
+        }
+    }
+
+    #[test]
+    fn entering_an_open_mine_switches_the_run_and_jumps_to_the_mine_screen() {
+        let mut app = browsing_mines();
+        app.update(Action::CursorDown);
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.current_mine().kind(), MineKind::Coal);
+        // The one screen-to-screen edge in the graph (UI-EN.md §6.1): picking a mine
+        // and then having to press `1` to look at it is a chore with no decision.
+        assert_eq!(app.screen, Screen::Mine);
+        assert!(app.toasts.is_empty(), "an accepted mine announced itself");
+    }
+
+    #[test]
+    fn a_locked_mine_is_refused_with_its_reason_and_does_not_move_the_player() {
+        let mut app = browsing_mines();
+        // The End mine, shut on both axes for a level-1 run with a Wooden pickaxe.
+        app.cursors.mine = MineKind::Amethyst;
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.current_mine().kind(), MineKind::Stone);
+        assert_eq!(app.screen, Screen::Mines, "a refusal changed the screen");
+        assert_eq!(app.toasts.len(), 1, "the refusal was swallowed");
+    }
+
+    #[test]
+    fn the_dial_does_not_move_past_a_ceiling_nobody_has_bought() {
+        // A fresh run has bought no richness on any mine, so both arrows are no-ops
+        // — and silent ones. The bar visibly stops; a toast on every repeat of a held
+        // key would bury the announcements that matter.
+        let mut app = browsing_mines();
+
+        app.update(Action::AdjustRight);
+        app.update(Action::AdjustLeft);
+
+        assert_eq!(app.state.current_mine().get_richness_setting(), 0);
+        assert!(app.toasts.is_empty(), "the dial's own bounds toasted");
+    }
+
+    /// The arrows address the mine under the *cursor*, and touch nothing else.
+    ///
+    /// A run cannot buy a richness ceiling from this crate — there is no public path
+    /// to the inventory, which is why `View::sample` is a fixture at all — so what a
+    /// front-end test can prove is not that the dial *moved* (the core's
+    /// `the_dial_reaches_a_mine_the_player_is_not_standing_in` does that) but that
+    /// the arrows are not quietly doing something else. Two things they must not do:
+    /// walk the player into the mine they are pointing at, and create its grid.
+    #[test]
+    fn the_dial_leaves_the_run_where_it_found_it() {
+        let mut app = browsing_mines();
+        app.cursors.mine = MineKind::Coal;
+        assert!(app.state.mine(MineKind::Coal).is_none());
+
+        app.update(Action::AdjustRight);
+        app.update(Action::AdjustLeft);
+
+        assert_eq!(
+            app.state.current_mine().kind(),
+            MineKind::Stone,
+            "the dial moved the player"
+        );
+        assert!(
+            app.state.mine(MineKind::Coal).is_none(),
+            "the dial built a grid for a mine nobody entered"
+        );
+    }
+
+    /// What a fresh run's Mines screen actually says — the frame `cargo run` opens
+    /// on, drawn from `GameState` rather than from `View::sample`.
+    ///
+    /// The frame tests under `screen/` render the level-23 fixture, which is a save
+    /// with eleven mines visited and upgrades bought. This is the other end: a
+    /// level-1 run with a Wooden pickaxe, where eleven of the twelve mines have no
+    /// grid at all and most are shut. Both are worth pinning, and only this one can
+    /// catch a projection that quietly needs a mine to exist before it can list it.
+    #[test]
+    fn a_fresh_runs_mines_screen_lists_all_twelve_and_shuts_the_right_ones() {
+        let mut app = browsing_mines();
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+
+        // Every mine is listed, visited or not.
+        for mine in MineKind::ALL {
+            assert!(
+                frame.contains(mine.name()),
+                "{} is missing: {frame}",
+                mine.name()
+            );
+        }
+        // The one the player is in carries the `●`, and the cursor starts on it, so
+        // the `▸` wins the column — which is the rule the list applies when they
+        // coincide.
+        assert!(frame.contains("▸ Stone"), "{frame}");
+        assert!(
+            !frame.contains('●'),
+            "the cursor did not win the column: {frame}"
+        );
+
+        // A level-1 run with a Wooden pickaxe: the Nether and the End are both shut,
+        // and so is every mine past the Wooden gate.
+        assert!(frame.contains("Lv 15  ✗"), "{frame}");
+        assert!(frame.contains("Lv 30  ✗"), "{frame}");
+        assert!(frame.contains("locked"), "{frame}");
+
+        // Eleven mines have never been entered, so the pane for a mine other than
+        // the standing one has no block count to give.
+        app.update(Action::CursorDown);
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("never entered"), "{frame}");
     }
 }

@@ -12,6 +12,14 @@
 /// New screens and modals add variants here; the exhaustive `match` in
 /// [`crate::app::App::update`] then refuses to compile until each one is handled,
 /// so the compiler keeps the reducer complete.
+///
+/// **The list gestures name a movement, not a screen** — [`Action::CursorUp`], not
+/// a `MinesCursorUp` — and that is forced rather than chosen. [`crate::keymap`]
+/// decodes a key with no access to the run, so it *cannot* produce a
+/// `SelectMine(kind)`: it does not know where the cursor is. Which screen a gesture
+/// lands on is therefore resolved in `update`, where the state is. The payoff is
+/// that the Inventory table, the Upgrades ladders and the Levels roadmap all reuse
+/// these five instead of adding five apiece.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     /// Leave the game (also the target of `Ctrl-C`). For now it exits the
@@ -34,4 +42,14 @@ pub enum Action {
     /// not the modal, so a second modal reuses it rather than adding a close per
     /// variant.
     CloseModal,
+    /// Move the active screen's list selection up one row.
+    CursorUp,
+    /// Move it down one row.
+    CursorDown,
+    /// Turn the active screen's value down one step — the richness dial, today.
+    AdjustLeft,
+    /// Turn it up one step.
+    AdjustRight,
+    /// Act on whatever the cursor is sitting on (`Enter`).
+    Confirm,
 }
