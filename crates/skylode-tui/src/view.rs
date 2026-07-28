@@ -495,13 +495,6 @@ impl View {
     }
 }
 
-/// The three Upgrades sub-tabs drawn in UI.md §5.4, transcribed from the frames.
-///
-/// Pickaxe is active. Every row's marks and every detail pane are fixture data:
-/// the reachability marks are a phase-6 core read, and the dip numbers, costs and
-/// affordability the panes quote are phases 5–6 too. The Pickaxe marks are laid
-/// out to honour the ladder invariant — the `✓` region is a contiguous prefix from
-/// the current rung — so the fixture is a legal ladder, not an arbitrary one.
 /// Roman numerals `I`..=`XV` — exactly the range an Efficiency level can take, since
 /// [`PickaxeTier::efficiency_cap`] tops out at 15 on Netherite.
 const ROMAN: [&str; 15] = [
@@ -582,6 +575,13 @@ fn pickaxe_ladder() -> Vec<UpgradeRow> {
         .collect()
 }
 
+/// The three Upgrades sub-tabs drawn in UI.md §5.4, transcribed from the frames.
+///
+/// Pickaxe is active. Every row's marks and every detail pane are fixture data:
+/// the reachability marks are a phase-6 core read, and the dip numbers, costs and
+/// affordability the panes quote are phases 5–6 too. The Pickaxe marks are laid
+/// out to honour the ladder invariant — the `✓` region is a contiguous prefix from
+/// the current rung — so the fixture is a legal ladder, not an arbitrary one.
 fn sample_upgrades() -> UpgradesView {
     /// `(text, mark, cursor, current)` → one row.
     fn r(text: &str, mark: &str, cursor: bool, current: bool) -> UpgradeRow {
@@ -1043,13 +1043,13 @@ type GridFixture = (Vec<Vec<Option<Block>>>, (u8, u8));
 
 /// A **full-size** 20×10 mine — the reserve at capacity.
 ///
-/// This is the live fixture, and it is not the one the wireframes drew. UI-EN.md
-/// §5.2 counted a 12×7 mine, which is honest about what a level-5 mine looks like
-/// and dishonest about what the *panel* has to hold: the grid area is sized for the
-/// largest mine in the game, 20 cells by 10, and a fixture that never fills it
-/// leaves the one thing worth eyeballing — does a maxed mine still fit — untested by
-/// eye. [`sample_grid_wireframe_12x7`] is one line away when the comparison against
-/// the document is what is wanted.
+/// This is the live fixture, and it is not the one the wireframes drew. UI.md §5.1
+/// counted a 12×7 mine, which is honest about what a level-5 mine looks like and
+/// dishonest about what the *panel* has to hold: the grid area is sized for the
+/// largest mine in the game, 20 cells by 10 (UI.md §1's arithmetic), and a fixture
+/// that never fills it leaves the one thing worth eyeballing — does a maxed mine
+/// still fit — untested by eye. [`sample_grid_wireframe_12x7`] is one line away when
+/// the comparison against the document is what is wanted.
 fn sample_grid_full_20x10() -> GridFixture {
     let grid = vec![
         vec![O, O, O, B, O, O, X, O, O, O, O, O, O, B, O, O, O, O, X, O],
@@ -1069,10 +1069,10 @@ fn sample_grid_full_20x10() -> GridFixture {
 /// A **small** 5×5 mine — the worst case for centring in the reserve.
 ///
 /// Twenty-five cells in an area sized for two hundred, so the margin around it is
-/// larger than the mine: this is what "a small mine does not grow its panel, it
-/// leaves the reserved area partly empty" (UI-EN.md §5.2) looks like taken to its
-/// limit. Swap it in to check that the grid still lands centred and that the panels
-/// beside it do not shift.
+/// larger than the mine: this is what "a mine smaller than 20x10 does not grow its
+/// panel; it leaves the reserved area partly empty" (UI.md §1) looks like taken to
+/// its limit. Swap it in to check that the grid still lands centred and that the
+/// panels beside it do not shift.
 // `cfg_attr(not(test), …)` rather than a bare `expect`: the tests *do* call this, so
 // under `cfg(test)` it is not dead at all and an unconditional expectation would go
 // unfulfilled — which `-D warnings` turns into a build error. Dead for the binary,
@@ -1095,7 +1095,7 @@ fn sample_grid_small_5x5() -> GridFixture {
     (grid, (2, 1))
 }
 
-/// The 12×7 grid drawn in UI.md §5.2, cell for cell.
+/// The 12×7 grid drawn in UI.md §5.1, cell for cell.
 ///
 /// Transcribed rather than generated: `Mine::new` would need a seed, and the figure
 /// the frame shows — five value cells, seven holes, a target three cells into row

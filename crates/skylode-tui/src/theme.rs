@@ -20,11 +20,9 @@
 //! the theme is the authority on what "grey" should be, and a hardcoded index is the
 //! thing that could turn out illegible on a light terminal.
 //!
-//! Two consequences fall out for free. The chrome needs **no 16-colour fallback**,
-//! because it never asked for more than sixteen: [`ColourMode`] stays a question
-//! about the grid alone. And these are the colours ratatui's own [`Stylize`] trait
-//! exposes (`.cyan()`, `.dark_gray()`), so call sites style with the crate's idiom
-//! rather than dropping out of it into `Color::Indexed`.
+//! One consequence falls out for free: the chrome needs **no 16-colour fallback**,
+//! because it never asked for more than sixteen — so [`ColourMode`] stays a question
+//! about the grid alone.
 //!
 //! ## Why there is no contrast gate
 //!
@@ -48,9 +46,9 @@
 //! makes it structural. It takes a line that is **already formatted and justified**
 //! and derives the styling from the marks it finds in it, which means a colour
 //! cannot contradict its glyph (it was computed from it) and cannot appear without
-//! one (there would be nothing to compute from). The same move [`Mine::grid`] makes
-//! by fusing its hole mask into `Option<Block>`: an illegal state made
-//! unrepresentable rather than merely discouraged.
+//! one (there would be nothing to compute from). The same move [`Mine`] makes by
+//! holding its grid as `Option<Block>` instead of a block table beside a hole mask:
+//! an illegal state made unrepresentable rather than merely discouraged.
 //!
 //! It also sidesteps a real hazard. Every screen builds its rows with
 //! [`format!`] and [`justified`](crate::format::justified), which counts columns
@@ -59,8 +57,7 @@
 //! six chances to get the padding wrong.
 //!
 //! [`ColourMode`]: crate::palette::ColourMode
-//! [`Mine::grid`]: skylode_core::mine::Mine
-//! [`Stylize`]: ratatui::style::Stylize
+//! [`Mine`]: skylode_core::mine::Mine
 
 use ratatui::{
     style::{Color, Modifier, Style},

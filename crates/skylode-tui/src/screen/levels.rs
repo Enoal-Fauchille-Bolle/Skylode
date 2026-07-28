@@ -8,9 +8,12 @@
 //! nothing is bought here (UI.md §6.11).
 //!
 //! The distance to the next level rides in the **Block title**, spending no row,
-//! and a `Scrollbar` on the right edge stands in for the 1..50 ladder the visible
-//! window is a slice of — its length comes from the core's `LEVEL_CAP`, not from
-//! how many rows the fixture happens to hold.
+//! and a `Scrollbar` on the right edge stands in for the whole ladder that the rows
+//! on screen are a slice of. `view.levels` carries all of it — the windowing is this
+//! screen's own decision, taken against the rows the frame actually has — so the
+//! bar's length is that list's length. Taking it from the list being drawn, rather
+//! than from the core's `LEVEL_CAP`, is what stops the thumb describing a different
+//! list from the rows beside it.
 
 use ratatui::{
     Frame,
