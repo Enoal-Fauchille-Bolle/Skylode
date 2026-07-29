@@ -297,6 +297,41 @@ impl Enchant {
 }
 
 impl EnchantType {
+    /// Every enchant, in declaration order.
+    ///
+    /// **Public for the reason [`MineKind::ALL`](crate::mine_kind::MineKind::ALL) is:
+    /// a front-end has to *list* them and an enum cannot enumerate itself.** The
+    /// Upgrades screen's Enchants sub-tab draws one row per track including the ones
+    /// the player owns nothing of (`docs/UI.md` §5.4.1 prints `Nuke 0 → I`), so
+    /// [`Enchants::iter`] cannot serve it — that iterator yields only the levels a
+    /// pickaxe actually has, and the rows would appear as they were bought.
+    ///
+    /// **All seven, [`Efficiency`](EnchantType::Efficiency) included, and the screen
+    /// filters rather than this constant.** Efficiency is not sold in the enchant
+    /// shop — it is a pickaxe upgrade priced on the tier ladder — but that is already
+    /// stated once, by [`enchant_cost`](crate::economy::enchant_cost) answering
+    /// [`None`] for it. A six-entry constant here would be a second statement of the
+    /// same rule, free to disagree with the first. Filtering on the price leaves the
+    /// six in the frame's own order (Fortune, Explosive, Jackhammer, Nuke, Excavator,
+    /// Haste), which is a property of the declaration order and worth not disturbing.
+    ///
+    /// Distinct from [`PROC_ORDER`], which is a *reproducibility contract* over the
+    /// four triggered enchants and must never be reordered. This one is a display
+    /// list; they agree today only because both follow the declaration.
+    ///
+    /// An array and not a slice, so the length is in the type.
+    /// `all_enchants_covers_every_variant` is what catches a variant added to the
+    /// enum and forgotten here, since nothing in the language ties the two together.
+    pub const ALL: [Self; 7] = [
+        Self::Efficiency,
+        Self::Fortune,
+        Self::Explosive,
+        Self::Jackhammer,
+        Self::Nuke,
+        Self::Excavator,
+        Self::Haste,
+    ];
+
     /// Returns the human-readable display name of the enchantment.
     pub fn name(self) -> &'static str {
         match self {
@@ -620,22 +655,11 @@ mod tests {
 
     use crate::world::ALL_WORLDS;
 
-    /// Every [`EnchantType`] variant.
-    const ALL_ENCHANTS: [EnchantType; 7] = [
-        EnchantType::Efficiency,
-        EnchantType::Fortune,
-        EnchantType::Explosive,
-        EnchantType::Jackhammer,
-        EnchantType::Nuke,
-        EnchantType::Excavator,
-        EnchantType::Haste,
-    ];
-
     /// The five *special* enchants: the ones whose cap is keyed by the world.
     ///
     /// Together with [`Efficiency`](EnchantType::Efficiency) (keyed by the tier)
     /// and [`Fortune`](EnchantType::Fortune) (keyed by nothing) this partitions
-    /// [`ALL_ENCHANTS`], which `the_three_cap_groups_partition_every_enchant`
+    /// [`EnchantType::ALL`], which `the_three_cap_groups_partition_every_enchant`
     /// checks — an enchant that fell out of all three would have a cap no test
     /// here ever looks at.
     const SPECIAL_ENCHANTS: [EnchantType; 5] = [
@@ -662,13 +686,56 @@ mod tests {
     /// exercise.
     const ANY_WORLD: World = World::End;
 
+    /// The one thing the compiler cannot check about [`EnchantType::ALL`]: that it
+    /// still lists *every* variant. The `match`es in this module are exhaustive, so a
+    /// new enchant already breaks the build — but nothing ties the enum to an array,
+    /// and a variant missing from the list would simply never be drawn.
+    #[test]
+    fn all_enchants_covers_every_variant() {
+        assert_eq!(
+            EnchantType::ALL.len(),
+            7,
+            "an EnchantType variant was added or removed: update EnchantType::ALL"
+        );
+    }
+
+    /// The Enchants sub-tab's six rows, in the order `docs/UI.md` §5.4.1 draws them,
+    /// obtained the way a front-end obtains them: walk
+    /// [`EnchantType::ALL`] and drop whatever the enchant shop does not price.
+    ///
+    /// Pinned here because [`EnchantType::ALL`]'s rustdoc makes the claim, and a
+    /// rustdoc claim with nothing holding it up is the kind that goes on being read
+    /// long after it stopped being true. It is also what would notice a *reordered*
+    /// declaration — legal for this constant, unlike for `PROC_ORDER`, but not free:
+    /// it would silently reshuffle a screen.
+    #[test]
+    fn dropping_what_the_shop_does_not_price_leaves_the_six_rows_in_frame_order() {
+        let shop: Vec<EnchantType> = EnchantType::ALL
+            .into_iter()
+            .filter(|&kind| crate::economy::enchant_cost(kind, 0, ANY_WORLD).is_some())
+            .collect();
+
+        assert_eq!(
+            shop,
+            vec![
+                EnchantType::Fortune,
+                EnchantType::Explosive,
+                EnchantType::Jackhammer,
+                EnchantType::Nuke,
+                EnchantType::Excavator,
+                EnchantType::Haste,
+            ],
+            "the Enchants sub-tab would draw its rows in another order"
+        );
+    }
+
     /// Names are what the pickaxe screen shows, so a blank or duplicated one
     /// would leave the player unable to tell two enchantments apart.
     #[test]
     fn enchant_names_are_present_and_unique() {
-        for (i, &a) in ALL_ENCHANTS.iter().enumerate() {
+        for (i, &a) in EnchantType::ALL.iter().enumerate() {
             assert!(!a.name().is_empty(), "{a:?} has no display name");
-            for &b in &ALL_ENCHANTS[i + 1..] {
+            for &b in &EnchantType::ALL[i + 1..] {
                 assert_ne!(
                     a.name(),
                     b.name(),
@@ -914,7 +981,7 @@ mod tests {
     /// caught it — but no test here would be watching that answer.
     #[test]
     fn the_three_cap_groups_partition_every_enchant() {
-        for kind in ALL_ENCHANTS {
+        for kind in EnchantType::ALL {
             let groups = [
                 kind == EnchantType::Efficiency,
                 kind == EnchantType::Fortune,
@@ -931,7 +998,7 @@ mod tests {
 
     #[test]
     fn every_enchant_has_a_reachable_cap() {
-        for kind in ALL_ENCHANTS {
+        for kind in EnchantType::ALL {
             assert!(
                 kind.max_level(ANY_TIER, ANY_WORLD) > 0,
                 "{} caps at 0, so it can never be earned",
@@ -1213,7 +1280,7 @@ mod tests {
     /// otherwise hand a free blast to a player with no enchant at all.
     #[test]
     fn a_level_zero_enchant_breaks_nothing() {
-        for kind in ALL_ENCHANTS {
+        for kind in EnchantType::ALL {
             assert_eq!(
                 cells(kind, 0, (7, 4), FULL_MINE),
                 0,
@@ -1229,7 +1296,7 @@ mod tests {
     /// second effect.
     #[test]
     fn only_the_spatial_enchants_break_cells() {
-        for kind in ALL_ENCHANTS {
+        for kind in EnchantType::ALL {
             let breaks = cells(kind, 10, (7, 4), FULL_MINE) > 0;
             assert_eq!(
                 breaks,
@@ -1375,7 +1442,7 @@ mod tests {
     /// resolution skips it before drawing, so it costs no entropy either.
     #[test]
     fn a_level_zero_enchant_never_procs() {
-        for kind in ALL_ENCHANTS {
+        for kind in EnchantType::ALL {
             assert_eq!(kind.proc_permille(0), 0, "{} procs at level 0", kind.name());
         }
     }
@@ -1384,7 +1451,7 @@ mod tests {
     /// passive multipliers, always on, with nothing to roll for.
     #[test]
     fn only_the_enchants_in_the_proc_order_ever_proc() {
-        for kind in ALL_ENCHANTS {
+        for kind in EnchantType::ALL {
             let procs = kind.proc_permille(10) > 0;
             assert_eq!(
                 procs,
@@ -1402,7 +1469,7 @@ mod tests {
     /// "where does a new enchant go" have an obvious answer.
     #[test]
     fn the_proc_order_follows_the_declaration_order() {
-        let declared: Vec<EnchantType> = ALL_ENCHANTS
+        let declared: Vec<EnchantType> = EnchantType::ALL
             .iter()
             .copied()
             .filter(|kind| PROC_ORDER.contains(kind))
