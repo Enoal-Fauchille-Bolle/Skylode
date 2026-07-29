@@ -168,40 +168,96 @@ fn mark_style(character: char) -> Option<Style> {
         .map(|(_, colour)| Style::default().fg(*colour))
 }
 
+/// The colour `glyph` takes as a mark, or [`None`] if it is not one.
+///
+/// The public face of the table [`marked`] scans, for a caller holding a mark
+/// *before* it becomes a character in a row — the Upgrades price block, which tints
+/// itself with the hue of the `✓ ~ ✗` that will be justified onto its last line.
+/// Reading one table is what stops a block and its own mark disagreeing.
+///
+/// **Takes the glyph and not a `Mark`, which keeps this module a leaf.**
+/// [`Mark`](crate::view::Mark) lives in the read model, and a colour table that
+/// imported it would put the projection and the palette in a cycle. It also means
+/// `Mark::Owned`'s empty string and `Mark::NoPrice`'s `—` answer `None` without a
+/// second rule: the em dash is deliberately absent from [`MARKS`], so a row that has
+/// no affordability answer gets no hue for the same reason its glyph gets none.
+///
+/// A multi-character string is never a mark. Every entry in [`MARKS`] is one column
+/// wide, so a longer glyph is prose and must not be tinted by its first letter.
+pub fn of_glyph(glyph: &str) -> Option<Color> {
+    let mut characters = glyph.chars();
+    let character = characters.next()?;
+    if characters.next().is_some() {
+        return None;
+    }
+    MARKS
+        .iter()
+        .find(|(mark, _)| *mark == character)
+        .map(|&(_, colour)| colour)
+}
+
 /// `text` as a [`Line`], with every mark in it styled and everything else left alone.
+///
+/// The plain case of [`marked_row`], and the one every screen but Upgrades' detail
+/// pane wants.
+pub fn marked(text: &str) -> Line<'static> {
+    marked_row(text, 0, None)
+}
+
+/// `text` as a [`Line`]: the first `label_columns` columns muted, the rest in `tint`,
+/// and every mark still taking its own hue.
 ///
 /// The input is a **finished** row — already formatted, already justified — and the
 /// output holds exactly the same characters in the same order. That is the contract
 /// `marking_a_line_changes_its_style_and_never_its_text` exists to hold: the frames
 /// in `docs/UI.md` are verified at 80 columns, and a styling pass that could alter a
-/// single character would put every one of those counts back in question.
+/// single character would put every one of those counts back in question. It is also
+/// why this takes two *numbers* beside the string rather than taking spans: the
+/// padding is a property of the whole row, so splitting it before measuring would move
+/// [`justified`](crate::format::justified)'s arithmetic into six files.
+///
+/// **The mark scan wins over both.** A tinted row's `✗` is still `REFUSED` and its `▸`
+/// still `ACCENT`, because `mark_style` is consulted first and the base is only the
+/// fallback. That is what keeps §4.5's *"the colour of a mark is derived from the
+/// mark"* true of a tinted row as well as a plain one — a tint can never quietly
+/// recolour an answer.
+///
+/// `label_columns` is counted in **columns and not bytes**, like everything else that
+/// measures a row here, so a label following a multi-byte mark still ends where the
+/// caller counted it.
 ///
 /// Returns `Line<'static>` rather than borrowing `text`: the spans own their
 /// characters, so callers keep handing over the temporary `format!` string they
 /// already build instead of having to keep it alive for the frame.
 ///
-/// A row with no mark in it comes back as one unstyled span — not as a span per
-/// character — so the common case costs one allocation and the buffer sees the same
-/// default style it would have seen without this call.
-pub fn marked(text: &str) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut plain = String::new();
+/// Runs of one style are merged, so a plain row still comes back as a single unstyled
+/// span and the buffer sees the style it would have seen without this call.
+pub fn marked_row(text: &str, label_columns: usize, tint: Option<Color>) -> Line<'static> {
+    let base = |column: usize| {
+        if column < label_columns {
+            Style::default().fg(MUTED)
+        } else {
+            tint.map_or_else(Style::default, |colour| Style::default().fg(colour))
+        }
+    };
 
-    for character in text.chars() {
-        match mark_style(character) {
-            Some(style) => {
-                // Flush what came before, so the marks stay single-character spans
-                // and the text between them is not split for no reason.
-                if !plain.is_empty() {
-                    spans.push(Span::raw(std::mem::take(&mut plain)));
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run: Option<(Style, String)> = None;
+
+    for (column, character) in text.chars().enumerate() {
+        let style = mark_style(character).unwrap_or_else(|| base(column));
+        match &mut run {
+            Some((current, buffered)) if *current == style => buffered.push(character),
+            _ => {
+                if let Some((current, buffered)) = run.take() {
+                    spans.push(Span::styled(buffered, current));
                 }
-                spans.push(Span::styled(character.to_string(), style));
+                run = Some((style, character.to_string()));
             }
-            None => plain.push(character),
         }
     }
-    if !plain.is_empty() {
-        spans.push(Span::raw(plain));
+    if let Some((current, buffered)) = run {
+        spans.push(Span::styled(buffered, current));
     }
 
     Line::from(spans)
@@ -225,6 +281,63 @@ mod tests {
             .iter()
             .find(|span| span.content.contains(character))
             .map(|span| span.style)
+    }
+
+    #[test]
+    fn a_glyph_answers_with_the_same_hue_the_scan_would_give_it() {
+        // The one table, read from both ends: `of_glyph` is what the Upgrades price
+        // block tints itself with, and `marked_row` is what colours the mark beside it.
+        // Two tables here would let a red price sit under a green tick.
+        for (glyph, colour) in [('✓', AFFORDABLE), ('~', COMPRESS_FIRST), ('✗', REFUSED)] {
+            assert_eq!(of_glyph(&glyph.to_string()), Some(colour));
+            let row = marked(&format!(" Cost      40 Redstone   {glyph}"));
+            assert_eq!(style_of(&row, glyph), Some(Style::default().fg(colour)));
+        }
+    }
+
+    #[test]
+    fn the_glyphs_with_no_verdict_to_state_have_no_hue() {
+        // `Mark::Owned` is the empty string and `Mark::NoPrice` is the em dash, which
+        // this module deliberately does not own. Both must answer `None` rather than
+        // falling through to some default, or a settled row and an unpriced one would
+        // be tinted like a refusal.
+        assert_eq!(of_glyph(""), None);
+        assert_eq!(of_glyph("—"), None);
+        // And a word is never a mark, however it starts.
+        assert_eq!(of_glyph("✓ or not"), None);
+    }
+
+    #[test]
+    fn a_tint_colours_the_text_and_never_the_mark_on_it() {
+        // The rule §4.5 makes structural, extended to a tinted row: the scan runs last,
+        // so a price drawn in `REFUSED` still carries a `✓` in `AFFORDABLE` if that is
+        // what the glyph says. A tint that could override a mark would be a colour
+        // contradicting its own glyph — the one thing this module exists to forbid.
+        let line = marked_row(" Cost      40 Redstone   ✓", 0, Some(REFUSED));
+
+        assert_eq!(style_of(&line, '4'), Some(Style::default().fg(REFUSED)));
+        assert_eq!(style_of(&line, '✓'), Some(Style::default().fg(AFFORDABLE)));
+    }
+
+    #[test]
+    fn a_label_is_muted_and_the_value_after_it_is_not() {
+        // `block` writes eleven columns of margin, label and gap; everything past them
+        // is the answer the player came for. The boundary is a count of *columns*, like
+        // every other measurement on a row.
+        let line = marked_row(" Cost      1 Compressed Stone", 11, None);
+
+        assert_eq!(style_of(&line, 'C'), Some(Style::default().fg(MUTED)));
+        assert_eq!(style_of(&line, '1'), Some(Style::default()));
+        assert_eq!(text_of(&line), " Cost      1 Compressed Stone");
+    }
+
+    #[test]
+    fn a_row_with_neither_a_label_nor_a_tint_is_what_marked_already_drew() {
+        // The compatibility claim that lets `marked` be one call into `marked_row`:
+        // every screen but the Upgrades pane passes zero and `None`, and none of them
+        // may change appearance because of it.
+        let row = " ▸ Netherite Eff XV                ✗";
+        assert_eq!(marked(row), marked_row(row, 0, None));
     }
 
     #[test]

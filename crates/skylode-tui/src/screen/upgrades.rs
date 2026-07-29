@@ -15,7 +15,7 @@ use ratatui::{
     Frame,
     crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Layout, Rect},
-    style::Style,
+    style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -29,7 +29,7 @@ use crate::{
     screen::{panel, scrollbar, window},
     theme,
     view::{
-        EnchantDetail, MineTrackDetail, NOTHING, PickaxeDetail, TrackBlock, TrackOutcome,
+        EnchantDetail, Mark, MineTrackDetail, NOTHING, PickaxeDetail, TrackBlock, TrackOutcome,
         UpgradeDetail, UpgradeSubtab, UpgradesView, View, level_word,
     },
 };
@@ -326,22 +326,88 @@ fn detail(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
         UpgradeDetail::Enchant(detail) => enchant_pane(detail),
         UpgradeDetail::Mine(detail) => mine_pane(detail),
     };
-    // Through `marked`: the pane quotes the affordability of what is selected, so the
-    // same `✓ ~ ✗` appear here as in the list beside it, in the same hues.
-    let lines: Vec<Line> = text.iter().map(|line| theme::marked(line)).collect();
+    // Through `marked_row`: the pane quotes the affordability of what is selected, so
+    // the same `✓ ~ ✗` appear here as in the list beside it, in the same hues — and
+    // each line hands over the two things a glyph scan cannot derive, where its label
+    // ends and what the rest is tinted with.
+    let lines: Vec<Line> = text
+        .iter()
+        .map(|line| theme::marked_row(&line.text, line.label, line.tint))
+        .collect();
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// One line of a detail pane: the finished text, how many leading columns are the
+/// block's label, and the hue the rest of it takes.
+///
+/// **Two numbers beside a string, and not a `Line` of spans.** Every pane below
+/// composes its rows with [`format!`] and [`justified`], both of which measure the
+/// *whole* row — so a pane that emitted spans would have to do its padding before it
+/// knew its own width. Carrying the two facts the glyph scan cannot recover leaves all
+/// of that arithmetic exactly where it was and moves nothing into `theme`.
+struct PaneLine {
+    /// The row as it will be drawn, already formatted and already justified.
+    text: String,
+    /// How many leading columns [`block`] spent on its label, muted by
+    /// [`theme::marked_row`]. Zero on a continuation line and on prose.
+    label: usize,
+    /// What the rest of the row is tinted with — [`theme::of_glyph`]'s answer for the
+    /// block's own mark, or [`None`] for a row that states no verdict.
+    tint: Option<Color>,
+}
+
+impl From<String> for PaneLine {
+    /// Prose: no label to mute, no verdict to tint by.
+    ///
+    /// Here so the panes keep pushing plain `format!` strings — the alternative is a
+    /// constructor call on every one of the forty rows this screen builds, which would
+    /// bury the three that actually carry a colour.
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            label: 0,
+            tint: None,
+        }
+    }
+}
+
+/// The columns [`block`] spends before a value: one of margin, nine of label, one of
+/// gap.
+///
+/// Muted as a whole rather than just the label's own characters. The two spaces have
+/// no ink to recolour, so the wider span is the same picture and one number instead of
+/// three.
+const LABEL_COLUMNS: usize = 11;
+
 /// A labelled block: the label once, then one line per value, the rest indented under
 /// it — the shape every pane in §5.4 repeats.
-fn block(label: &str, values: &[String]) -> Vec<String> {
+fn block(label: &str, values: &[String]) -> Vec<PaneLine> {
     let mut lines = Vec::new();
     for (index, value) in values.iter().enumerate() {
         if index == 0 {
-            lines.push(format!(" {label:<9} {value}"));
+            lines.push(PaneLine {
+                text: format!(" {label:<9} {value}"),
+                label: LABEL_COLUMNS,
+                tint: None,
+            });
         } else {
-            lines.push(format!("           {value}"));
+            lines.push(format!("           {value}").into());
         }
+    }
+    lines
+}
+
+/// The same block, tinted by the verdict its own mark states.
+///
+/// **Applied to a price and to nothing else**, which is what keeps §4.5's rule intact:
+/// the hue doubles the `✓ ~ ✗` justified onto the block's last line, so it can neither
+/// contradict a glyph (it is computed from one) nor appear without one — a `Mark::Owned`
+/// or a `Mark::NoPrice` yields [`None`] and the block stays in the terminal's own
+/// foreground.
+fn tinted(mut lines: Vec<PaneLine>, mark: Mark) -> Vec<PaneLine> {
+    let tint = theme::of_glyph(mark.glyph());
+    for line in &mut lines {
+        line.tint = tint;
     }
     lines
 }
@@ -357,20 +423,23 @@ fn cost_lines(costs: &[CostLine]) -> Vec<String> {
 }
 
 /// The Pickaxe pane (UI.md §5.4).
-fn pickaxe_pane(detail: &PickaxeDetail) -> Vec<String> {
-    let mut lines = vec![justified(
-        &format!(" {}", detail.title),
-        if detail.crosses_tier_jump {
-            "tier jump "
-        } else {
-            ""
-        },
-        DETAIL_WIDTH,
-    )];
-    lines.push(String::new());
+fn pickaxe_pane(detail: &PickaxeDetail) -> Vec<PaneLine> {
+    let mut lines = vec![
+        justified(
+            &format!(" {}", detail.title),
+            if detail.crosses_tier_jump {
+                "tier jump "
+            } else {
+                ""
+            },
+            DETAIL_WIDTH,
+        )
+        .into(),
+    ];
+    lines.push(String::new().into());
 
     if detail.chain.is_empty() {
-        lines.push(" Owned already — nothing to buy here.".to_owned());
+        lines.push(" Owned already — nothing to buy here.".to_owned().into());
         return lines;
     }
 
@@ -379,37 +448,50 @@ fn pickaxe_pane(detail: &PickaxeDetail) -> Vec<String> {
     } else {
         format!("{} rungs", detail.chain.len())
     };
-    lines.push(justified(
-        &format!(" {:<9} {rungs}", "Chain"),
-        &format!("{} ", detail.mark.glyph()),
-        DETAIL_WIDTH,
+    // Hand-built rather than through `block`, because the mark is justified onto this
+    // line rather than onto the price below it — but it is a labelled row all the
+    // same, so it claims the same muted columns.
+    lines.push(PaneLine {
+        text: justified(
+            &format!(" {:<9} {rungs}", "Chain"),
+            &format!("{} ", detail.mark.glyph()),
+            DETAIL_WIDTH,
+        ),
+        label: LABEL_COLUMNS,
+        tint: None,
+    });
+    lines.extend(tinted(
+        block("Cost", &cost_lines(&detail.costs)),
+        detail.mark,
     ));
-    lines.extend(block("Cost", &cost_lines(&detail.costs)));
 
     if let Some(dip) = &detail.dip {
-        lines.push(String::new());
-        lines.push(" ┌────────────────────────────────────┐".to_owned());
-        lines.push(boxed(&format!(
-            "Power  {:.1} → {:.1}",
-            dip.power_before, dip.power_after
-        )));
-        lines.push(boxed(&format!(
-            "{}  {} → {} ticks",
-            dip.block.name(),
-            ticks(dip.ticks_before),
-            ticks(dip.ticks_after)
-        )));
+        lines.push(String::new().into());
+        lines.push(" ┌────────────────────────────────────┐".to_owned().into());
+        lines.push(
+            boxed(&format!(
+                "Power  {:.1} → {:.1}",
+                dip.power_before, dip.power_after
+            ))
+            .into(),
+        );
+        lines.push(
+            boxed(&format!(
+                "{}  {} → {} ticks",
+                dip.block.name(),
+                ticks(dip.ticks_before),
+                ticks(dip.ticks_after)
+            ))
+            .into(),
+        );
         if let Some(repaid) = &dip.repaid_at {
-            lines.push(boxed(&format!(
-                "Repaid at {} ({:.1})",
-                repaid.rung, repaid.power
-            )));
+            lines.push(boxed(&format!("Repaid at {} ({:.1})", repaid.rung, repaid.power)).into());
         }
-        lines.push(" └────────────────────────────────────┘".to_owned());
+        lines.push(" └────────────────────────────────────┘".to_owned().into());
     }
 
     if !detail.unlocks.is_empty() {
-        lines.push(String::new());
+        lines.push(String::new().into());
         let names: Vec<String> = detail
             .unlocks
             .iter()
@@ -418,7 +500,7 @@ fn pickaxe_pane(detail: &PickaxeDetail) -> Vec<String> {
         lines.extend(block("Unlocks", &names));
     }
     if let Some((before, after)) = detail.ceiling {
-        lines.push(String::new());
+        lines.push(String::new().into());
         lines.extend(block(
             "Ceiling",
             &[format!("Efficiency {before} → {after}")],
@@ -442,34 +524,39 @@ fn ticks(count: Option<u32>) -> String {
 }
 
 /// The Enchants pane (UI.md §5.4.1).
-fn enchant_pane(detail: &EnchantDetail) -> Vec<String> {
+fn enchant_pane(detail: &EnchantDetail) -> Vec<PaneLine> {
     let mut lines = vec![
         justified(
             &format!(" {}", detail.kind.name()),
             &format!("level {} ", level_word(detail.level)),
             DETAIL_WIDTH,
-        ),
-        String::new(),
+        )
+        .into(),
+        String::new().into(),
     ];
     lines.extend(block("Effect", &detail.effect));
-    lines.push(String::new());
+    lines.push(String::new().into());
     lines.extend(block("Next", &detail.next));
-    lines.push(String::new());
+    lines.push(String::new().into());
 
     match &detail.cost {
         Some(cost) => {
             let quoted = cost_lines(cost);
-            lines.extend(block("Cost", &quoted));
+            lines.extend(tinted(block("Cost", &quoted), detail.mark));
             // The mark goes on the *last* cost line, where the eye lands after
             // reading the price — the frame's own placement.
             if let Some(last) = lines.last_mut() {
-                *last = justified(last, &format!("{} ", detail.mark.glyph()), DETAIL_WIDTH);
+                last.text = justified(
+                    &last.text,
+                    &format!("{} ", detail.mark.glyph()),
+                    DETAIL_WIDTH,
+                );
             }
         }
         None => lines.extend(block("Cost", &["nothing left to buy".to_owned()])),
     }
 
-    lines.push(String::new());
+    lines.push(String::new().into());
     lines.extend(block(
         "Cap",
         &[
@@ -485,14 +572,14 @@ fn enchant_pane(detail: &EnchantDetail) -> Vec<String> {
 /// **Four lines of it are spent refusing one conflation**, and that is the frame's own
 /// choice: richness is the only word in the game that appears next to a price *and*
 /// next to a free cursor, and this is the one place both senses are on screen at once.
-fn mine_pane(detail: &MineTrackDetail) -> Vec<String> {
+fn mine_pane(detail: &MineTrackDetail) -> Vec<PaneLine> {
     let track = match detail.track {
         MineTrack::Size => "size",
         MineTrack::Richness => "richness",
     };
     let mut lines = vec![
-        format!(" {} Mine — {track}", detail.kind.name()),
-        String::new(),
+        format!(" {} Mine — {track}", detail.kind.name()).into(),
+        String::new().into(),
     ];
 
     if let Some(blocked) = detail.blocked {
@@ -546,7 +633,7 @@ fn mine_pane(detail: &MineTrackDetail) -> Vec<String> {
         }
         TrackOutcome::Richness(percent) => {
             lines.extend(block("Dial", &["free, on the Mines screen".to_owned()]));
-            lines.push(String::new());
+            lines.push(String::new().into());
             lines.extend(block(
                 &format!("At {next}"),
                 &[format!("{} {percent}%", detail.kind.value_block().name())],
@@ -555,11 +642,11 @@ fn mine_pane(detail: &MineTrackDetail) -> Vec<String> {
         TrackOutcome::Maxed => {}
     }
 
-    lines.push(String::new());
+    lines.push(String::new().into());
     match &detail.cost {
         Some(cost) => {
-            lines.extend(block("Cost", &cost_lines(cost)));
-            lines.push(String::new());
+            lines.extend(tinted(block("Cost", &cost_lines(cost)), detail.mark));
+            lines.push(String::new().into());
             // **Two lines per material, the name then the amounts.** One line reads
             // better and does not fit: `0 Compressed Crying Obsidian, 2 raw` is 35
             // columns against the 31 a labelled block leaves, so it would be cut off
@@ -576,18 +663,22 @@ fn mine_pane(detail: &MineTrackDetail) -> Vec<String> {
                 .collect();
             lines.extend(block("You hold", &held));
             if let Some(last) = lines.last_mut() {
-                *last = justified(last, &format!("{} ", detail.mark.glyph()), DETAIL_WIDTH);
+                last.text = justified(
+                    &last.text,
+                    &format!("{} ", detail.mark.glyph()),
+                    DETAIL_WIDTH,
+                );
             }
         }
         None => lines.extend(block("Cost", &["nothing left to buy".to_owned()])),
     }
 
     if detail.track == MineTrack::Richness {
-        lines.push(String::new());
-        lines.push(" This buys the ceiling only. The".to_owned());
-        lines.push(" dial slides anywhere at or below".to_owned());
-        lines.push(" it, free and reversible, on the".to_owned());
-        lines.push(" Mines screen.".to_owned());
+        lines.push(String::new().into());
+        lines.push(" This buys the ceiling only. The".to_owned().into());
+        lines.push(" dial slides anywhere at or below".to_owned().into());
+        lines.push(" it, free and reversible, on the".to_owned().into());
+        lines.push(" Mines screen.".to_owned().into());
     }
     lines
 }
@@ -773,6 +864,48 @@ mod tests {
             Some(Color::Reset),
             "the muting ran past the label"
         );
+    }
+
+    /// The column the flush-right reachability marks sit in, or [`None`] on a
+    /// sub-tab that draws none. Scanned over the list side's body rows only, so the
+    /// detail pane's own `✓` cannot answer for the list's.
+    fn mark_column(buffer: &Buffer) -> Option<u16> {
+        (2..22).find_map(|y| (0..36).find(|&x| matches!(sym(buffer, x, y), "✓" | "~" | "✗")))
+    }
+
+    #[test]
+    fn the_mark_column_keeps_one_blank_column_before_the_scrollbar() {
+        // The §5.4 Pickaxe frame's gutter, at the width the arithmetic allows: the
+        // mark in column 33, one blank column, then the bar in 35. A mark drawn
+        // against the thumb reads as part of it.
+        let buffer = render_tab(UpgradeTab::Pickaxe);
+        let marked: Vec<u16> = (2..22)
+            .filter(|&y| matches!(sym(&buffer, 33, y), "✓" | "~" | "✗"))
+            .collect();
+        assert!(
+            !marked.is_empty(),
+            "no mark in column 33:\n{}",
+            whole_frame(&buffer)
+        );
+        for y in marked {
+            assert_eq!(sym(&buffer, 34, y), " ", "the gutter is filled on row {y}");
+            assert!(
+                matches!(sym(&buffer, 35, y), "░" | "█"),
+                "no bar beside row {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_mark_column_stays_put_on_a_sub_tab_that_does_not_scroll() {
+        // Enchants fits in nineteen rows and draws no thumb; Pickaxe overflows and
+        // draws one. The bar column is reserved on both, so the column of `✓ ~ ✗` is
+        // the same either way — a glyph column that jumped when the player changed
+        // sub-tab would read as a redraw fault rather than as a layout.
+        let scrolling = mark_column(&render_tab(UpgradeTab::Pickaxe));
+        let fitting = mark_column(&render_tab(UpgradeTab::Enchants));
+        assert_eq!(scrolling, Some(33));
+        assert_eq!(fitting, scrolling, "the marks moved with the scrollbar");
     }
 
     #[test]
