@@ -39,6 +39,7 @@ use crate::tunables::{
     MICROBLOCKS_PER_MILLIBLOCK, MILLIBLOCKS_PER_BLOCK, MILLIS_PER_SECOND, OFFLINE_CAP,
     TICKS_PER_SECOND,
 };
+use crate::upgrade;
 use serde::{Deserialize, Serialize};
 
 /// Everything a saved run consists of.
@@ -434,7 +435,71 @@ impl GameState {
         economy::buy_enchant(inventory, pickaxe, kind, world)
     }
 
-    /// Buys the next size level of the current mine, growing and redrawing its grid.
+    /// Buys the next rung of the pickaxe roadmap, whichever kind it is.
+    ///
+    /// **The one door that does not need the caller to know which of the two pickaxe
+    /// purchases comes next.** [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe) is a
+    /// single linear step — Efficiency to the tier's cap, then the jump — so *"buy the
+    /// next thing"* is a well-defined act, and the ladder the Upgrades screen draws is
+    /// nothing but this call repeated. Private, because
+    /// [`buy_pickaxe_efficiency`](GameState::buy_pickaxe_efficiency) and
+    /// [`buy_pickaxe_tier`](GameState::buy_pickaxe_tier) are already public and a
+    /// third public door onto the same two would be a third place to disagree.
+    ///
+    /// The branch is the tier's cap, and it is the same test
+    /// [`economy::buy_pickaxe_efficiency`] refuses on — so a mistake here is a refusal
+    /// and never an unpriced purchase.
+    fn buy_pickaxe_rung(&mut self) -> Result<(), CoreError> {
+        let pickaxe = self.player.get_pickaxe();
+        let at_cap = pickaxe.enchants().get_level(EnchantType::Efficiency)
+            >= pickaxe.get_tier().efficiency_cap();
+        if at_cap {
+            self.buy_pickaxe_tier()
+        } else {
+            self.buy_pickaxe_efficiency()
+        }
+    }
+
+    /// Climbs the pickaxe roadmap to rung `to`, and reports how many rungs were
+    /// actually bought.
+    ///
+    /// **`Enter` on the Upgrades screen, and `M` with `to` set to
+    /// [`upgrade::max_affordable`].** The chain stops at the first refusal and every
+    /// rung before it stays bought: [`economy::buy_repeatedly`] re-reads the state on
+    /// each step, so the price climbs rung by rung and a failed attempt costs nothing.
+    /// That is what makes a partial climb the honest outcome rather than a bug — the
+    /// player asked for as much of a road as they could afford.
+    ///
+    /// **Returns a count and not a [`Result`]**, because the interesting refusal is
+    /// not a `CoreError`: the front-end has already asked
+    /// [`upgrade::chain_affordability`] to draw the `✓ ~ ✗` on the row, and that
+    /// answer — which names the shortfall and says which of the two loops the player
+    /// should run — is what the toast prints. A count of `0` is that verdict's echo.
+    ///
+    /// A `to` at or below the player's own rung buys nothing, which is the same
+    /// clamp [`upgrade::preview`] applies for the same reason.
+    pub fn buy_pickaxe_chain(&mut self, to: usize) -> u32 {
+        let ladder = upgrade::ladder();
+        let from = upgrade::position(&ladder, self.player.get_pickaxe());
+        // Saturating both ways: a `to` behind the player is zero rungs, and a ladder
+        // longer than `u32` is not a thing this game will ever have.
+        let wanted = u32::try_from(to.saturating_sub(from)).unwrap_or(u32::MAX);
+        economy::buy_repeatedly(wanted, || self.buy_pickaxe_rung())
+    }
+
+    /// Buys the next size level of `kind`, growing and redrawing its grid.
+    ///
+    /// **Addressed by [`MineKind`] and not applied to the mine underfoot**, for the
+    /// reason [`set_mine_richness_setting`](GameState::set_mine_richness_setting) is:
+    /// the Upgrades screen buys for the mine under the *cursor*, and a player reading
+    /// the Obsidian mine's price while standing in Iron must not upgrade Iron.
+    ///
+    /// **A mine this run has never entered is refused with
+    /// [`CoreError::MineNotEntered`]**, before anything is debited and before the
+    /// generator is touched. The alternative — minting the grid here — would let a
+    /// purchase advance the run's dice, and the whole determinism contract is that the
+    /// sequence of draws is a function of what the player did, in the order they did
+    /// it. Entering the mine is that act, and it is one keypress away.
     ///
     /// Three `&mut` borrows out of one `&mut self`, and it compiles only because
     /// they are taken from **distinct fields directly**. Routing any of them through
@@ -443,14 +508,41 @@ impl GameState {
     /// rule [`Player::inventory_and_pickaxe_mut`] exists to work around one level
     /// down, and the reason this module reaches for its own fields rather than its
     /// own accessors.
-    pub fn buy_mine_size(&mut self) -> Result<(), CoreError> {
-        economy::buy_mine_size(self.player.inventory_mut(), &mut self.mine, &mut self.rng)
+    pub fn buy_mine_size(&mut self, kind: MineKind) -> Result<(), CoreError> {
+        let mine = Self::mine_mut(&mut self.mine, &mut self.visited, kind)?;
+        economy::buy_mine_size(self.player.inventory_mut(), mine, &mut self.rng)
     }
 
-    /// Buys the next richness *ceiling* of the current mine; the dial stays where
-    /// it is.
-    pub fn buy_mine_richness(&mut self) -> Result<(), CoreError> {
-        economy::buy_mine_richness(self.player.inventory_mut(), &mut self.mine)
+    /// Buys the next richness *ceiling* of `kind`; the dial stays where it is.
+    ///
+    /// Addressed by [`MineKind`] and refused on an unvisited mine, exactly like
+    /// [`buy_mine_size`](GameState::buy_mine_size) — the two paid tracks of a mine
+    /// answer to the same rule about which mine they are about.
+    pub fn buy_mine_richness(&mut self, kind: MineKind) -> Result<(), CoreError> {
+        let mine = Self::mine_mut(&mut self.mine, &mut self.visited, kind)?;
+        economy::buy_mine_richness(self.player.inventory_mut(), mine)
+    }
+
+    /// The mine `kind` names, mutably, or the refusal that it has no state yet.
+    ///
+    /// **An associated function taking the two fields rather than a `&mut self`
+    /// method**, and that is the borrow checker's doing rather than a style choice: a
+    /// method here would borrow the *whole* `GameState` for as long as the returned
+    /// `&mut Mine` lives, and both callers need `self.player` and `self.rng` at the
+    /// same time. Passing the two fields in means the borrow is of those two fields
+    /// only, which leaves the others free — the same manoeuvre
+    /// [`Player::inventory_and_pickaxe_mut`] makes one level down.
+    fn mine_mut<'a>(
+        current: &'a mut Mine,
+        visited: &'a mut BTreeMap<MineKind, Mine>,
+        kind: MineKind,
+    ) -> Result<&'a mut Mine, CoreError> {
+        if kind == current.kind() {
+            return Ok(current);
+        }
+        visited
+            .get_mut(&kind)
+            .ok_or(CoreError::MineNotEntered { kind })
     }
 
     /// Buys one boost charge into the reserve.
@@ -1401,11 +1493,11 @@ mod tests {
             Err(CoreError::InsufficientItems { .. })
         ));
         assert!(matches!(
-            state.buy_mine_size(),
+            state.buy_mine_size(state.current_mine().kind()),
             Err(CoreError::InsufficientItems { .. })
         ));
         assert!(matches!(
-            state.buy_mine_richness(),
+            state.buy_mine_richness(state.current_mine().kind()),
             Err(CoreError::InsufficientItems { .. })
         ));
         // The dial is free, so what refuses it is the ceiling, not the till: a
@@ -1506,14 +1598,9 @@ mod tests {
     fn buying_a_size_level_spends_the_inventory_and_grows_the_grid() {
         let mut state = state();
         let before = state.current_mine().capacity();
-        let cost = economy::mine_size_cost(MineKind::Stone, 0);
-        for line in cost.lines() {
-            for (item, amount) in line.requirements() {
-                state.player.inventory_mut().add(item, amount);
-            }
-        }
+        stock(&mut state, &economy::mine_size_cost(MineKind::Stone, 0));
 
-        assert!(state.buy_mine_size().is_ok());
+        assert!(state.buy_mine_size(state.current_mine().kind()).is_ok());
 
         assert_eq!(state.current_mine().get_size_level(), 1);
         assert!(state.current_mine().capacity() > before);
@@ -1526,6 +1613,166 @@ mod tests {
             state.player().get_inventory().raw_value(Material::Stone),
             0,
             "the cost came out of the player's own inventory"
+        );
+    }
+
+    /// Stocks the run with exactly what `cost` demands, in the denominations it is
+    /// quoted in — the shortest path to "this purchase is affordable now".
+    fn stock(state: &mut GameState, cost: &economy::Cost) {
+        for line in cost.lines() {
+            for (item, amount) in line.requirements() {
+                state.player.inventory_mut().add(item, amount);
+            }
+        }
+    }
+
+    /// **A mine with no state yet cannot be upgraded, and the refusal is free.**
+    ///
+    /// Free is the load-bearing half: minting the grid to upgrade it would advance
+    /// this run's generator, so two runs that made the same moves would stop agreeing
+    /// on their dice. `next_draws` is what proves nothing moved — the same probe
+    /// `a_refused_mine_draws_nothing_and_changes_nothing` uses for `select_mine`.
+    #[test]
+    fn upgrading_a_mine_this_run_never_entered_is_refused_and_draws_nothing() {
+        let mut state = state();
+        // Rich enough that money is provably not what refuses this.
+        stock(&mut state, &economy::mine_size_cost(MineKind::Coal, 0));
+        stock(&mut state, &economy::mine_richness_cost(MineKind::Coal, 0));
+        let before = next_draws(&state);
+        let held = state.player().get_inventory().clone();
+
+        assert_eq!(
+            state.buy_mine_size(MineKind::Coal),
+            Err(CoreError::MineNotEntered {
+                kind: MineKind::Coal
+            })
+        );
+        assert_eq!(
+            state.buy_mine_richness(MineKind::Coal),
+            Err(CoreError::MineNotEntered {
+                kind: MineKind::Coal
+            })
+        );
+
+        assert!(state.mine(MineKind::Coal).is_none(), "a grid was minted");
+        assert_eq!(next_draws(&state), before, "the dice moved");
+        assert_eq!(
+            state.player().get_inventory(),
+            &held,
+            "something was debited"
+        );
+    }
+
+    /// **The purchase follows the cursor, not the feet.** A mine the player has
+    /// visited and left is still upgradable from the Upgrades screen, and upgrading it
+    /// must not touch the mine they are standing in.
+    #[test]
+    fn a_mine_that_was_left_is_still_upgradable_from_where_the_player_stands() {
+        let mut state = state();
+        // Walk into Coal and back out, so it has state to upgrade.
+        equip(&mut state, PickaxeTier::Stone, Enchants::new());
+        assert!(state.select_mine(MineKind::Coal).is_ok());
+        assert!(state.select_mine(MineKind::Stone).is_ok());
+        let standing = state.current_mine().get_size_level();
+        stock(&mut state, &economy::mine_size_cost(MineKind::Coal, 0));
+
+        assert_eq!(state.buy_mine_size(MineKind::Coal), Ok(()));
+
+        assert_eq!(
+            state.mine(MineKind::Coal).map(Mine::get_size_level),
+            Some(1),
+            "the mine under the cursor did not grow"
+        );
+        assert_eq!(
+            state.current_mine().get_size_level(),
+            standing,
+            "the mine underfoot grew instead"
+        );
+    }
+
+    /// The chain climbs several rungs from one call — the act `Enter` performs on the
+    /// Upgrades screen — and stops exactly where it was told to.
+    #[test]
+    fn a_chain_buys_every_rung_up_to_the_one_asked_for() {
+        let mut state = state();
+        let ladder = upgrade::ladder();
+        for rung in ladder.iter().take(4).skip(1) {
+            if let Some(cost) = &rung.cost {
+                stock(&mut state, cost);
+            }
+        }
+
+        assert_eq!(state.buy_pickaxe_chain(3), 3);
+
+        assert_eq!(
+            upgrade::position(&ladder, state.player().get_pickaxe()),
+            3,
+            "the pickaxe did not end up on the rung it was sent to"
+        );
+    }
+
+    /// **A partial climb is the honest outcome, not a failure.** The chain stops at
+    /// the first rung it cannot pay for, and everything below it stays bought — which
+    /// is what makes `M` (*buy max*) safe to press with no arithmetic beforehand.
+    #[test]
+    fn a_chain_stops_at_the_first_rung_it_cannot_pay_for() {
+        let mut state = state();
+        let ladder = upgrade::ladder();
+        // Exactly two rungs' worth of ore, against an order for five.
+        for rung in ladder.iter().take(3).skip(1) {
+            if let Some(cost) = &rung.cost {
+                stock(&mut state, cost);
+            }
+        }
+
+        assert_eq!(state.buy_pickaxe_chain(5), 2);
+        assert_eq!(upgrade::position(&ladder, state.player().get_pickaxe()), 2);
+    }
+
+    /// **The rung that makes a chain a chain**: one `Enter` walks the five Efficiency
+    /// steps *and* the tier jump behind them, without the caller ever deciding which
+    /// of the two purchases comes next.
+    ///
+    /// It is also the shape of the dip: the pickaxe ends on a stronger tier with its
+    /// Efficiency back at zero, which is the trade `docs/UI.md` §6.7 makes the player
+    /// confirm. The rules are asserted here; the warning is the front-end's.
+    #[test]
+    fn a_chain_walks_through_a_tier_jump_without_being_told_it_is_one() {
+        let mut state = state();
+        let ladder = upgrade::ladder();
+        // Rungs 1..=6: Wooden Efficiency I to V, then the jump out of Wooden.
+        for rung in ladder.iter().take(7).skip(1) {
+            if let Some(cost) = &rung.cost {
+                stock(&mut state, cost);
+            }
+        }
+
+        assert_eq!(state.buy_pickaxe_chain(6), 6);
+
+        let pickaxe = state.player().get_pickaxe();
+        assert_eq!(pickaxe.get_tier(), PickaxeTier::Stone);
+        assert_eq!(
+            pickaxe.enchants().get_level(EnchantType::Efficiency),
+            0,
+            "the jump must have cashed the maxed Efficiency in"
+        );
+    }
+
+    /// Buying back to where you already are buys nothing — the same clamp
+    /// [`upgrade::preview`] makes, and the reason neither refuses: a cursor behind the
+    /// player is a question, not a mistake.
+    #[test]
+    fn a_chain_to_a_rung_already_owned_buys_nothing() {
+        let mut state = state();
+        stock(
+            &mut state,
+            &economy::pickaxe_efficiency_cost(PickaxeTier::Wooden, 0),
+        );
+
+        assert_eq!(state.buy_pickaxe_chain(0), 0);
+        assert_eq!(
+            upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
+            0
         );
     }
 
@@ -3045,9 +3292,9 @@ mod tests {
             Track::Efficiency => state.buy_pickaxe_efficiency(),
             Track::Tier => state.buy_pickaxe_tier(),
             Track::Enchant(kind) => state.buy_enchant(kind),
-            Track::MineSize => state.buy_mine_size(),
+            Track::MineSize => state.buy_mine_size(state.current_mine().kind()),
             Track::MineRichness => {
-                state.buy_mine_richness()?;
+                state.buy_mine_richness(state.current_mine().kind())?;
                 let ceiling = state.current_mine().get_richness_level();
                 // A no-op if the dial is already there; otherwise a deterministic
                 // redraw of the standing cells, which is the point of buying it.

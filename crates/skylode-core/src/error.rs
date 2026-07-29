@@ -130,6 +130,27 @@ pub enum CoreError {
         /// What it is still waiting on, on either axis or both.
         lock: MineLock,
     },
+    /// A mine's paid track was bought for a mine this run has never opened.
+    ///
+    /// **Distinct from [`MineLocked`](CoreError::MineLocked), and the difference is
+    /// what the player must do about it.** A locked mine is waiting on progression —
+    /// a level, a pickaxe tier — and nothing the player does today will open it. This
+    /// one is waiting on a single keypress: the mine is unlocked, they simply have not
+    /// walked into it, and `Enter` on the Mines screen clears the refusal.
+    ///
+    /// It exists because a mine's state is created **lazily**: eleven of the twelve
+    /// have no grid until the run enters them, and a grid is minted from the seeded
+    /// generator. Upgrading a mine in absentia would therefore have to mint one — and
+    /// a purchase that quietly advances the run's dice is a purchase that makes two
+    /// otherwise identical runs diverge. Enoal's call (TUI phase 6) was to refuse and
+    /// let the player go there, rather than to draw a grid nobody is standing on.
+    ///
+    /// Carries only the mine, because there is no second number: the fix is a place,
+    /// not an amount.
+    MineNotEntered {
+        /// The mine that has no state to upgrade yet.
+        kind: MineKind,
+    },
     /// A boost was fired from an empty reserve.
     ///
     /// Carries no numbers, unlike every other variant here, and the reason is that
@@ -213,6 +234,12 @@ impl fmt::Display for CoreError {
                 // not open. Answered rather than trapped, per the module's doctrine.
                 (None, None) => write!(f, "the {} mine is locked", kind.name()),
             },
+            // Phrased as the instruction and not as the fault, because the player is
+            // one keypress from clearing it: this is the only refusal in the enum
+            // whose fix is *going somewhere* rather than holding more of something.
+            Self::MineNotEntered { kind } => {
+                write!(f, "enter the {} mine once before upgrading it", kind.name())
+            }
             Self::NoBoostCharge => write!(f, "no boost charge to fire"),
             // One clause per shut gate, level first — the order `docs/UI.md` §6.8
             // leads the preview with, since Amethyst only drops past the level gate.
@@ -264,6 +291,21 @@ mod tests {
             cap: 10,
         };
         assert_eq!(err.to_string(), "Fortune is already at its cap of 10");
+    }
+
+    /// **The one refusal phrased as an instruction rather than a fault**, because it
+    /// is the one the player clears by going somewhere rather than by holding more of
+    /// something. Read straight into a toast on the Upgrades screen, so the wording is
+    /// the interface and worth pinning.
+    #[test]
+    fn an_unvisited_mine_says_where_to_go_rather_than_what_is_missing() {
+        let err = CoreError::MineNotEntered {
+            kind: MineKind::Obsidian,
+        };
+        assert_eq!(
+            err.to_string(),
+            "enter the Obsidian mine once before upgrading it"
+        );
     }
 
     #[test]
