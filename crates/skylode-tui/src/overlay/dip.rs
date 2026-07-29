@@ -31,15 +31,19 @@ pub fn render(frame: &mut Frame, area: Rect, detail: &PickaxeDetail, buy: bool) 
         lines.push(format!(" This resets Efficiency {} to 0.", roman(cap)));
     }
     lines.push(String::new());
+    // Read off `power`, which every rung carries, rather than off `dip`, which only a
+    // regression does: the two numbers are the same fact whether or not it is bad news,
+    // and duplicating them onto the dip would let the modal and the pane behind it drift.
+    let power = &detail.power;
     lines.push(format!(
         " Mining power      {:.1}   →   {:.1}",
-        dip.power_before, dip.power_after
+        power.before, power.after
     ));
     lines.push(format!(
         " {}    {}  →  {} per block",
-        dip.block.name(),
-        ticks(dip.ticks_before),
-        ticks(dip.ticks_after)
+        power.block.name(),
+        ticks(power.ticks_before),
+        ticks(power.ticks_after)
     ));
     lines.push(String::new());
     match &dip.repaid_at {
@@ -109,10 +113,13 @@ fn choices(buy: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use skylode_core::{block::Block, economy::CostLine, material::Material};
+    use skylode_core::{
+        block::Block,
+        material::{Item, Material},
+    };
 
     use super::*;
-    use crate::view::{DipDetail, Mark, Repaid};
+    use crate::view::{DipDetail, Mark, PowerDetail, PriceLine, Repaid};
 
     /// The §6.7 frame's own chain: a maxed Diamond pickaxe one rung from Netherite.
     fn a_dip() -> PickaxeDetail {
@@ -124,17 +131,28 @@ mod tests {
                 "Netherite Pickaxe".to_owned(),
             ],
             mark: Mark::Affordable,
-            costs: vec![CostLine {
-                material: Material::AncientDebris,
-                compressed: 4,
-                raw: 60,
-            }],
-            dip: Some(DipDetail {
-                power_before: 34.0,
-                power_after: 9.0,
+            costs: vec![
+                PriceLine {
+                    item: Item::Compressed(Material::AncientDebris),
+                    needed: 4,
+                    held: 4,
+                    mark: Mark::Affordable,
+                },
+                PriceLine {
+                    item: Item::Raw(Material::AncientDebris),
+                    needed: 60,
+                    held: 60,
+                    mark: Mark::Affordable,
+                },
+            ],
+            power: PowerDetail {
+                before: 34.0,
+                after: 9.0,
                 block: Block::AncientDebris,
                 ticks_before: Some(27),
                 ticks_after: Some(100),
+            },
+            dip: Some(DipDetail {
                 repaid_at: Some(Repaid {
                     rung: "Netherite Efficiency V".to_owned(),
                     power: 35.0,
@@ -204,10 +222,6 @@ mod tests {
                     power: 35.0,
                     rungs_later: 1,
                 }),
-                ..match a_dip().dip {
-                    Some(dip) => dip,
-                    None => unreachable!("the fixture is a dip"),
-                }
             }),
             ..a_dip()
         };
@@ -245,15 +259,12 @@ mod tests {
     #[test]
     fn a_dip_with_nothing_past_it_says_so() {
         let detail = PickaxeDetail {
-            dip: Some(DipDetail {
-                repaid_at: None,
+            dip: Some(DipDetail { repaid_at: None }),
+            power: PowerDetail {
                 ticks_before: None,
                 ticks_after: None,
-                ..match a_dip().dip {
-                    Some(dip) => dip,
-                    None => unreachable!("the fixture is a dip"),
-                }
-            }),
+                ..a_dip().power
+            },
             ceiling: None,
             ..a_dip()
         };

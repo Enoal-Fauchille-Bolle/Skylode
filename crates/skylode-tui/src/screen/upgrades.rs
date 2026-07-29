@@ -20,17 +20,18 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use skylode_core::economy::CostLine;
+use skylode_core::world::World;
 
 use crate::{
     action::Action,
     cursor::{MineTrack, UpgradeTab},
-    format::{MAXED, grouped, justified},
+    format::{MAXED, grouped, justified, roman},
     screen::{panel, scrollbar, window},
     theme,
     view::{
-        EnchantDetail, Mark, MineTrackDetail, NOTHING, PickaxeDetail, TrackBlock, TrackOutcome,
-        UpgradeDetail, UpgradeSubtab, UpgradesView, View, level_word,
+        DipDetail, EnchantDetail, Mark, MineTrackDetail, NOTHING, PickaxeDetail, PowerDetail,
+        PriceLine, StatStep, TrackBlock, TrackOutcome, UpgradeDetail, UpgradeSubtab, UpgradesView,
+        View, level_word,
     },
 };
 
@@ -320,11 +321,16 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
 /// **The pane is composed here, from typed data** — it used to be a `Vec<String>` the
 /// view handed over whole, which was honest while every number in it was a
 /// placeholder and impossible once they became real.
+///
+/// It takes the `Rect`'s height, which all three panes read: a price is the one block on
+/// this screen with no bound — a chain from Wooden to Netherite Eff XV is forty-five
+/// rungs, and an enchant level is priced in three materials — so it is cut to whatever
+/// the blocks around it leave. See [`assembled`].
 fn detail(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
     let text = match &subtab.detail {
-        UpgradeDetail::Pickaxe(detail) => pickaxe_pane(detail),
-        UpgradeDetail::Enchant(detail) => enchant_pane(detail),
-        UpgradeDetail::Mine(detail) => mine_pane(detail),
+        UpgradeDetail::Pickaxe(detail) => pickaxe_pane(detail, usize::from(area.height)),
+        UpgradeDetail::Enchant(detail) => enchant_pane(detail, usize::from(area.height)),
+        UpgradeDetail::Mine(detail) => mine_pane(detail, usize::from(area.height)),
     };
     // Through `marked_row`: the pane quotes the affordability of what is selected, so
     // the same `✓ ~ ✗` appear here as in the list beside it, in the same hues — and
@@ -352,7 +358,7 @@ struct PaneLine {
     /// [`theme::marked_row`]. Zero on a continuation line and on prose.
     label: usize,
     /// What the rest of the row is tinted with — [`theme::of_glyph`]'s answer for the
-    /// block's own mark, or [`None`] for a row that states no verdict.
+    /// line's own mark, or [`None`] for a row that states no verdict.
     tint: Option<Color>,
 }
 
@@ -379,6 +385,13 @@ impl From<String> for PaneLine {
 /// three.
 const LABEL_COLUMNS: usize = 11;
 
+/// The columns a value has left once [`LABEL_COLUMNS`] is spent, in the counted frame.
+///
+/// Not enforced anywhere — a longer value is clipped by ratatui, not wrapped — but it is
+/// the number every sentence in this module was measured against, and the one to check a
+/// new one with.
+const VALUE_COLUMNS: usize = DETAIL_WIDTH - LABEL_COLUMNS;
+
 /// A labelled block: the label once, then one line per value, the rest indented under
 /// it — the shape every pane in §5.4 repeats.
 fn block(label: &str, values: &[String]) -> Vec<PaneLine> {
@@ -397,34 +410,72 @@ fn block(label: &str, values: &[String]) -> Vec<PaneLine> {
     lines
 }
 
-/// The same block, tinted by the verdict its own mark states.
+/// A price, one row per material and denomination, each verdicted on its own.
 ///
-/// **Applied to a price and to nothing else**, which is what keeps §4.5's rule intact:
-/// the hue doubles the `✓ ~ ✗` justified onto the block's last line, so it can neither
-/// contradict a glyph (it is computed from one) nor appear without one — a `Mark::Owned`
-/// or a `Mark::NoPrice` yields [`None`] and the block stays in the terminal's own
-/// foreground.
-fn tinted(mut lines: Vec<PaneLine>, mark: Mark) -> Vec<PaneLine> {
-    let tint = theme::of_glyph(mark.glyph());
-    for line in &mut lines {
-        line.tint = tint;
+/// **The block used to take one colour for the whole price**, from the verdict on the
+/// whole [`Cost`](skylode_core::economy::Cost) — so a two-material price short of a
+/// single ore was painted red end to end and said nothing about which half was missing.
+/// The mark and the hue now sit on the line they are about, and a line that is not
+/// [`Mark::Affordable`] is followed by what it is short of.
+///
+/// §4.5's rule survives intact, and is in fact better served: the hue is
+/// [`theme::of_glyph`]'s answer for the very glyph justified onto that row, so it still
+/// doubles a mark that is on screen — one per row now, rather than one for the block.
+///
+/// The shortfall row is deliberately **untinted**: it is the explanation of a mark, not
+/// a second statement of it, and two red lines in a row read as two refusals.
+fn price_block(lines: &[PriceLine]) -> Vec<PaneLine> {
+    let mut out = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let value = format!("{} {}", grouped(line.needed), line.item);
+        let row = if index == 0 {
+            format!(" {:<9} {value}", "Cost")
+        } else {
+            format!("           {value}")
+        };
+        out.push(PaneLine {
+            text: justified(&row, &format!("{} ", line.mark.glyph()), DETAIL_WIDTH),
+            label: if index == 0 { LABEL_COLUMNS } else { 0 },
+            tint: theme::of_glyph(line.mark.glyph()),
+        });
+        if line.mark != Mark::Affordable {
+            out.push(
+                format!(
+                    "             hold {} — short {}",
+                    grouped(line.held),
+                    grouped(line.needed.saturating_sub(line.held))
+                )
+                .into(),
+            );
+        }
     }
-    lines
+    out
 }
 
-/// A cost line as the panes quote it: `2 Compressed Diamond + 60 Ancient Debris`, one
-/// denomination per entry so a price is never rounded into the wrong shape.
-fn cost_lines(costs: &[CostLine]) -> Vec<String> {
-    costs
+/// What an upgrade moves, one row per stat: the stat's word, then its `now → next`.
+///
+/// The name column is measured over the rows it is given rather than fixed, for the
+/// reason [`list`] measures its own: `square` and `row` differ by three columns, and a
+/// constant wide enough for both would push every Haste row off-centre for nothing.
+fn stat_block(label: &str, steps: &[StatStep]) -> Vec<PaneLine> {
+    let width = steps.iter().map(|step| step.name.len()).max().unwrap_or(0);
+    let values: Vec<String> = steps
         .iter()
-        .flat_map(CostLine::requirements)
-        .map(|(item, amount)| format!("{} {item}", grouped(amount)))
-        .collect()
+        .map(|step| format!("{:<width$}  {}", step.name, step.value))
+        .collect();
+    block(label, &values)
 }
 
 /// The Pickaxe pane (UI.md §5.4).
-fn pickaxe_pane(detail: &PickaxeDetail) -> Vec<PaneLine> {
-    let mut lines = vec![
+///
+/// **Built in three parts because one of them is unbounded.** The head (the title and
+/// the chain) and the tail (the power, what the chain unlocks and the Efficiency
+/// ceiling) are a handful of rows each; the price between them is however many
+/// materials forty-five rungs of ladder demand. So the two fixed ends are measured
+/// first and the price gets what is left — the block that overflows is the block that
+/// is cut, rather than the `Ceiling` line that happened to be last.
+fn pickaxe_pane(detail: &PickaxeDetail, height: usize) -> Vec<PaneLine> {
+    let mut head = vec![
         justified(
             &format!(" {}", detail.title),
             if detail.crosses_tier_jump {
@@ -435,12 +486,12 @@ fn pickaxe_pane(detail: &PickaxeDetail) -> Vec<PaneLine> {
             DETAIL_WIDTH,
         )
         .into(),
+        PaneLine::from(String::new()),
     ];
-    lines.push(String::new().into());
 
     if detail.chain.is_empty() {
-        lines.push(" Owned already — nothing to buy here.".to_owned().into());
-        return lines;
+        head.push(" Owned already — nothing to buy here.".to_owned().into());
+        return head;
     }
 
     let rungs = if detail.chain.len() == 1 {
@@ -451,7 +502,7 @@ fn pickaxe_pane(detail: &PickaxeDetail) -> Vec<PaneLine> {
     // Hand-built rather than through `block`, because the mark is justified onto this
     // line rather than onto the price below it — but it is a labelled row all the
     // same, so it claims the same muted columns.
-    lines.push(PaneLine {
+    head.push(PaneLine {
         text: justified(
             &format!(" {:<9} {rungs}", "Chain"),
             &format!("{} ", detail.mark.glyph()),
@@ -460,52 +511,115 @@ fn pickaxe_pane(detail: &PickaxeDetail) -> Vec<PaneLine> {
         label: LABEL_COLUMNS,
         tint: None,
     });
-    lines.extend(tinted(
-        block("Cost", &cost_lines(&detail.costs)),
-        detail.mark,
-    ));
 
-    if let Some(dip) = &detail.dip {
-        lines.push(String::new().into());
-        lines.push(" ┌────────────────────────────────────┐".to_owned().into());
-        lines.push(
-            boxed(&format!(
-                "Power  {:.1} → {:.1}",
-                dip.power_before, dip.power_after
-            ))
-            .into(),
-        );
-        lines.push(
-            boxed(&format!(
-                "{}  {} → {} ticks",
-                dip.block.name(),
-                ticks(dip.ticks_before),
-                ticks(dip.ticks_after)
-            ))
-            .into(),
-        );
-        if let Some(repaid) = &dip.repaid_at {
-            lines.push(boxed(&format!("Repaid at {} ({:.1})", repaid.rung, repaid.power)).into());
-        }
-        lines.push(" └────────────────────────────────────┘".to_owned().into());
+    let mut tail = vec![PaneLine::from(String::new())];
+    match &detail.dip {
+        Some(dip) => tail.extend(dip_box(&detail.power, dip)),
+        None => tail.extend(power_block(&detail.power)),
     }
-
     if !detail.unlocks.is_empty() {
-        lines.push(String::new().into());
+        tail.push(String::new().into());
         let names: Vec<String> = detail
             .unlocks
             .iter()
             .map(|kind| format!("the {} mine", kind.name()))
             .collect();
-        lines.extend(block("Unlocks", &names));
+        tail.extend(block("Unlocks", &names));
     }
     if let Some((before, after)) = detail.ceiling {
-        lines.push(String::new().into());
-        lines.extend(block(
+        tail.push(String::new().into());
+        tail.extend(block(
             "Ceiling",
             &[format!("Efficiency {before} → {after}")],
         ));
     }
+
+    assembled(head, price_block(&detail.costs), tail, height)
+}
+
+/// A pane's three parts, with the price cut to whatever the other two leave.
+///
+/// **The price is the only block on this screen that grows without bound**: three
+/// materials in two denominations each, and a shortfall row under every one that is
+/// short. So the two fixed ends are measured first and the price gets the remainder —
+/// the block that overflows is the block that is cut, rather than the `Ceiling` or `Cap`
+/// line that happened to be last. Losing either of those is losing the number the
+/// purchase is decided on; losing the fifth material of a price the player cannot afford
+/// anyway is losing very little.
+///
+/// **A count of *lines*, not of rungs**, in the tail it leaves behind. The pickaxe chain
+/// is aggregated per material by the time it reaches here, so the rows that were cut are
+/// materials and denominations.
+fn assembled(
+    head: Vec<PaneLine>,
+    price: Vec<PaneLine>,
+    tail: Vec<PaneLine>,
+    height: usize,
+) -> Vec<PaneLine> {
+    let budget = height.saturating_sub(head.len() + tail.len());
+    let mut lines = head;
+    if price.len() <= budget {
+        lines.extend(price);
+    } else {
+        let shown = budget.saturating_sub(1);
+        let dropped = price.len() - shown;
+        lines.extend(price.into_iter().take(shown));
+        lines.push(format!("           …+ {dropped} more lines").into());
+    }
+    lines.extend(tail);
+    lines
+}
+
+/// What the chain does to the swing, on a rung that does not cost power.
+///
+/// **A labelled block and not the dip's box art**, which is the whole point of drawing
+/// it here at all: the box is a *warning*, and one drawn on all forty-six rungs stops
+/// being read as one. Its five rows of frame are also what the price block above it
+/// needs back on a long chain.
+///
+/// The block is named on the `Ticks` row rather than used as a label, because
+/// `Crying Obsidian` is fifteen columns against the nine [`block`] gives a label — the
+/// name would push its own value out of the pane.
+fn power_block(power: &PowerDetail) -> Vec<PaneLine> {
+    let mut lines = block(
+        "Power",
+        &[format!("{:.1} → {:.1}", power.before, power.after)],
+    );
+    lines.extend(block(
+        "Ticks",
+        &[format!(
+            "{} {} → {}",
+            power.block.name(),
+            ticks(power.ticks_before),
+            ticks(power.ticks_after)
+        )],
+    ));
+    lines
+}
+
+/// The dip box (UI.md §5.4): the same two numbers, framed as the warning they are.
+///
+/// Reads its powers from [`PowerDetail`] like every other rung does, so the box and the
+/// plain block cannot quote the swing differently. What the dip adds is the repayment —
+/// the rung that earns the loss back, which is the half of the decision the numbers
+/// above it cannot state.
+fn dip_box(power: &PowerDetail, dip: &DipDetail) -> Vec<PaneLine> {
+    let mut lines: Vec<PaneLine> =
+        vec![" ┌────────────────────────────────────┐".to_owned().into()];
+    lines.push(boxed(&format!("Power  {:.1} → {:.1}", power.before, power.after)).into());
+    lines.push(
+        boxed(&format!(
+            "{}  {} → {} ticks",
+            power.block.name(),
+            ticks(power.ticks_before),
+            ticks(power.ticks_after)
+        ))
+        .into(),
+    );
+    if let Some(repaid) = &dip.repaid_at {
+        lines.push(boxed(&format!("Repaid at {} ({:.1})", repaid.rung, repaid.power)).into());
+    }
+    lines.push(" └────────────────────────────────────┘".to_owned().into());
     lines
 }
 
@@ -524,46 +638,101 @@ fn ticks(count: Option<u32>) -> String {
 }
 
 /// The Enchants pane (UI.md §5.4.1).
-fn enchant_pane(detail: &EnchantDetail) -> Vec<PaneLine> {
-    let mut lines = vec![
+///
+/// Assembled like the Pickaxe pane, for the same reason: a level of Explosive is priced
+/// in three materials, and on a run that can afford none of them the price is twelve rows
+/// against a nineteen-row pane. The block that must survive is `Cap` — the one thing on
+/// this pane a player cannot work out from anywhere else.
+fn enchant_pane(detail: &EnchantDetail, height: usize) -> Vec<PaneLine> {
+    let mut head = vec![
         justified(
             &format!(" {}", detail.kind.name()),
             &format!("level {} ", level_word(detail.level)),
             DETAIL_WIDTH,
         )
         .into(),
-        String::new().into(),
+        PaneLine::from(String::new()),
     ];
-    lines.extend(block("Effect", &detail.effect));
-    lines.push(String::new().into());
-    lines.extend(block("Next", &detail.next));
-    lines.push(String::new().into());
+    head.extend(block("Effect", &detail.effect));
+    head.push(String::new().into());
 
-    match &detail.cost {
-        Some(cost) => {
-            let quoted = cost_lines(cost);
-            lines.extend(tinted(block("Cost", &quoted), detail.mark));
-            // The mark goes on the *last* cost line, where the eye lands after
-            // reading the price — the frame's own placement.
-            if let Some(last) = lines.last_mut() {
-                last.text = justified(
-                    &last.text,
-                    &format!("{} ", detail.mark.glyph()),
-                    DETAIL_WIDTH,
-                );
-            }
-        }
-        None => lines.extend(block("Cost", &["nothing left to buy".to_owned()])),
+    if detail.at_next.is_empty() {
+        head.extend(block("Next", &[format!("{MAXED} — nothing left to buy")]));
+    } else {
+        head.extend(stat_block(
+            &format!("At {}", roman(detail.level + 1)),
+            &detail.at_next,
+        ));
     }
+    for note in &detail.note {
+        head.push(format!("           {note}").into());
+    }
+    head.push(String::new().into());
 
-    lines.push(String::new().into());
-    lines.extend(block(
-        "Cap",
-        &[
-            format!("{} — the world's, and one", detail.cap),
-            "number for all five specials".to_owned(),
-        ],
-    ));
+    let mut tail = vec![PaneLine::from(String::new())];
+    tail.extend(block("Cap", &cap_sentence(detail.cap, detail.world)));
+
+    let price = if detail.cost.is_empty() {
+        block("Cost", &["nothing left to buy".to_owned()])
+    } else {
+        price_block(&detail.cost)
+    };
+    assembled(head, price, tail, height)
+}
+
+/// The `Cap` block's four lines (UI.md §5.4.1), which say three things the number alone
+/// does not.
+///
+/// **`3` on its own is ambiguous in the way that matters**: a ceiling the player has hit
+/// and one the *Overworld* is holding down call for opposite decisions — stop buying, or
+/// go open the Nether. So the cap is quoted `3 of 10` against the game's own ceiling, the
+/// world in force is named, and the two the player is not in are priced.
+///
+/// **Six tracks, not five.** The frame's own prose reads *"all five specials"* and
+/// `docs/UI.md` §5.4.1 still adds *"while Fortune's 10 is its own"* — both predate
+/// `DECISIONS.md`'s amendment, which put Fortune on [`World::enchant_cap`] with the other
+/// five so that no lever in the game is maxable at level 1. `enchant.rs` implements the
+/// amendment; this says what it implements.
+fn cap_sentence(cap: u8, world: World) -> Vec<String> {
+    // Written out because an enum cannot enumerate itself and the core has no `ALL` for
+    // worlds — the same reason `MineKind::ALL` had to be added for the Mines screen.
+    let others: Vec<String> = [World::Overworld, World::Nether, World::End]
+        .into_iter()
+        .filter(|&other| other != world)
+        .map(|other| format!("{} {}", other.name(), other.enchant_cap()))
+        .collect();
+    wrapped(
+        &format!(
+            "{cap} of {} — the {}'s. Six tracks share it: {}. Efficiency is capped by the \
+             pickaxe tier instead.",
+            World::End.enchant_cap(),
+            world.name(),
+            others.join(", ")
+        ),
+        VALUE_COLUMNS,
+    )
+}
+
+/// `text` broken into lines of at most `width` columns, on spaces.
+///
+/// **Here rather than as constant strings, because the sentence varies with the run.**
+/// Every other prose block on this screen is fixed and was hand-broken to fit; the `Cap`
+/// block names the world the player is in and the two they are not, so its line breaks
+/// move as they progress and cannot be written down.
+///
+/// A word longer than `width` gets a line of its own and overruns it, which ratatui
+/// clips. Nothing in the vocabulary here is close — `Efficiency` is the longest at ten.
+fn wrapped(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_owned()),
+        }
+    }
     lines
 }
 
@@ -572,18 +741,18 @@ fn enchant_pane(detail: &EnchantDetail) -> Vec<PaneLine> {
 /// **Four lines of it are spent refusing one conflation**, and that is the frame's own
 /// choice: richness is the only word in the game that appears next to a price *and*
 /// next to a free cursor, and this is the one place both senses are on screen at once.
-fn mine_pane(detail: &MineTrackDetail) -> Vec<PaneLine> {
+fn mine_pane(detail: &MineTrackDetail, height: usize) -> Vec<PaneLine> {
     let track = match detail.track {
         MineTrack::Size => "size",
         MineTrack::Richness => "richness",
     };
-    let mut lines = vec![
-        format!(" {} Mine — {track}", detail.kind.name()).into(),
-        String::new().into(),
+    let mut head = vec![
+        PaneLine::from(format!(" {} Mine — {track}", detail.kind.name())),
+        PaneLine::from(String::new()),
     ];
 
     if let Some(blocked) = detail.blocked {
-        lines.extend(match blocked {
+        head.extend(match blocked {
             // **Two independent `if`s, not a match on the pair**, mirroring the shape
             // `MineLock` itself chose: the two axes are independent, so a match would
             // need a fourth arm for the both-open case that no locked track can be in.
@@ -609,11 +778,11 @@ fn mine_pane(detail: &MineTrackDetail) -> Vec<PaneLine> {
                 ],
             ),
         });
-        return lines;
+        return head;
     }
 
     let (level, next) = detail.level;
-    lines.extend(block(
+    head.extend(block(
         match detail.track {
             MineTrack::Size => "Size",
             MineTrack::Richness => "Ceiling",
@@ -624,63 +793,65 @@ fn mine_pane(detail: &MineTrackDetail) -> Vec<PaneLine> {
         }],
     ));
 
+    // **Both sides of the step, which the frame's `At 7` block never showed.** A share or
+    // a grid quoted only *after* leaves the player to remember what they are moving from,
+    // and both numbers are free — the two tracks are pure functions of a level.
     match detail.at_next {
-        TrackOutcome::Size((width, height)) => {
-            lines.extend(block(
+        TrackOutcome::Size { before, after } => {
+            head.extend(stat_block(
                 &format!("At {next}"),
-                &[format!("{width}x{height} cells")],
+                &[
+                    StatStep {
+                        name: "grid",
+                        value: format!("{}x{} → {}x{}", before.0, before.1, after.0, after.1),
+                    },
+                    StatStep {
+                        name: "cells",
+                        value: format!(
+                            "{} → {}",
+                            grouped(u32::from(before.0) * u32::from(before.1)),
+                            grouped(u32::from(after.0) * u32::from(after.1))
+                        ),
+                    },
+                ],
             ));
         }
-        TrackOutcome::Richness(percent) => {
-            lines.extend(block("Dial", &["free, on the Mines screen".to_owned()]));
-            lines.push(String::new().into());
-            lines.extend(block(
+        TrackOutcome::Richness { before, after } => {
+            head.extend(block("Dial", &["free, on the Mines screen".to_owned()]));
+            head.push(String::new().into());
+            head.extend(block(
                 &format!("At {next}"),
-                &[format!("{} {percent}%", detail.kind.value_block().name())],
+                &[
+                    format!("{} {before}% → {after}%", detail.kind.value_block().name()),
+                    format!(
+                        "{} {}% → {}%",
+                        detail.kind.common_block().name(),
+                        100 - before,
+                        100 - after
+                    ),
+                ],
             ));
         }
         TrackOutcome::Maxed => {}
     }
 
-    lines.push(String::new().into());
-    match &detail.cost {
-        Some(cost) => {
-            lines.extend(tinted(block("Cost", &cost_lines(cost)), detail.mark));
-            lines.push(String::new().into());
-            // **Two lines per material, the name then the amounts.** One line reads
-            // better and does not fit: `0 Compressed Crying Obsidian, 2 raw` is 35
-            // columns against the 31 a labelled block leaves, so it would be cut off
-            // exactly where the number the player came to read sits.
-            let held: Vec<String> = detail
-                .held
-                .iter()
-                .flat_map(|(material, compressed, raw)| {
-                    [
-                        material.name().to_owned(),
-                        format!("{} Compressed, {} raw", grouped(*compressed), grouped(*raw)),
-                    ]
-                })
-                .collect();
-            lines.extend(block("You hold", &held));
-            if let Some(last) = lines.last_mut() {
-                last.text = justified(
-                    &last.text,
-                    &format!("{} ", detail.mark.glyph()),
-                    DETAIL_WIDTH,
-                );
-            }
-        }
-        None => lines.extend(block("Cost", &["nothing left to buy".to_owned()])),
+    head.push(String::new().into());
+
+    let mut tail = Vec::new();
+    if detail.track == MineTrack::Richness {
+        tail.push(String::new().into());
+        tail.push(" This buys the ceiling only. The".to_owned().into());
+        tail.push(" dial slides anywhere at or below".to_owned().into());
+        tail.push(" it, free and reversible, on the".to_owned().into());
+        tail.push(" Mines screen.".to_owned().into());
     }
 
-    if detail.track == MineTrack::Richness {
-        lines.push(String::new().into());
-        lines.push(" This buys the ceiling only. The".to_owned().into());
-        lines.push(" dial slides anywhere at or below".to_owned().into());
-        lines.push(" it, free and reversible, on the".to_owned().into());
-        lines.push(" Mines screen.".to_owned().into());
-    }
-    lines
+    let price = if detail.cost.is_empty() {
+        block("Cost", &["nothing left to buy".to_owned()])
+    } else {
+        price_block(&detail.cost)
+    };
+    assembled(head, price, tail, height)
 }
 
 /// The width the panes justify their right-hand marks against.
@@ -716,7 +887,10 @@ mod tests {
 
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
     use skylode_core::{
-        enchant::EnchantType, game::GameState, material::Material, mine_kind::MineKind,
+        enchant::EnchantType,
+        game::GameState,
+        material::{Item, Material},
+        mine_kind::MineKind,
     };
 
     use super::*;
@@ -839,13 +1013,60 @@ mod tests {
             "the price is not tinted with its verdict:\n{}",
             whole_frame(&buffer)
         );
-        // And `You hold` beside it is not: the tint is the *price*'s reading, so
-        // spreading it over the pane would make it decoration.
+        // And the row explaining the shortfall is not: it is the reading of a mark, not
+        // a second statement of one, and two red rows in a row read as two refusals.
         assert_eq!(
-            ink(&buffer, "You hold", PANE_X + LABEL_COLUMNS as u16),
+            ink(&buffer, "short", PANE_X),
             Some(Color::Reset),
-            "the tint leaked past the price"
+            "the tint leaked onto the shortfall it explains"
         );
+    }
+
+    /// **The defect this block was rewritten for.** A price short of one material used
+    /// to be painted red end to end, so the player could see that it was refused and
+    /// not which half refused it.
+    #[test]
+    fn each_material_of_a_price_is_verdicted_on_its_own() {
+        let frame_buffer = mine_pane_buffer(MineTrackDetail {
+            cost: vec![
+                PriceLine {
+                    item: Item::Compressed(Material::Obsidian),
+                    needed: 2,
+                    held: 7,
+                    mark: Mark::Affordable,
+                },
+                PriceLine {
+                    item: Item::Raw(Material::CryingObsidian),
+                    needed: 40,
+                    held: 2,
+                    mark: Mark::Refused,
+                },
+            ],
+            ..a_mine_track()
+        });
+        let frame = whole_frame(&frame_buffer);
+
+        assert!(frame.contains("Cost      2 Compressed Obsidian"), "{frame}");
+        assert!(frame.contains("40 Crying Obsidian"), "{frame}");
+        // What the pane could not say before: the shortfall, on the line it is about.
+        assert!(frame.contains("hold 2 — short 38"), "{frame}");
+        // One green row and one red one, in a price the list column marks `✗`.
+        assert_eq!(
+            ink(
+                &frame_buffer,
+                "Compressed Obsidian",
+                PANE_X + LABEL_COLUMNS as u16
+            ),
+            Some(theme::AFFORDABLE)
+        );
+        // Anchored on the amount as well as the material: `Crying Obsidian` is also the
+        // value block named in the `At 7` rows above, and those are prose.
+        assert_eq!(
+            ink(&frame_buffer, "40 Crying Obsidian", PANE_X),
+            Some(theme::REFUSED)
+        );
+        // And the affordable line gets no shortfall row under it.
+        assert!(!frame.contains("hold 7"), "{frame}");
     }
 
     #[test]
@@ -1120,10 +1341,15 @@ mod tests {
     /// richness ceiling or a locked mine by play is `view`'s problem, and it is tested
     /// there. What is tested here is the sentence each shape prints.
     fn mine_pane_frame(detail: MineTrackDetail) -> String {
+        whole_frame(&mine_pane_buffer(detail))
+    }
+
+    /// The same, kept as a [`Buffer`] for the assertions that are about colour.
+    fn mine_pane_buffer(detail: MineTrackDetail) -> Buffer {
         let mut view = View::sample();
         view.upgrades.active = UpgradeTab::Mines;
         view.upgrades.mines.detail = UpgradeDetail::Mine(detail);
-        whole_frame(&render_view(&view))
+        render_view(&view)
     }
 
     /// The Obsidian richness track the §5.4.2 frame draws, as a starting point to vary.
@@ -1132,14 +1358,16 @@ mod tests {
             kind: MineKind::Obsidian,
             track: MineTrack::Richness,
             level: (6, 7),
-            at_next: TrackOutcome::Richness(73),
-            cost: Some(vec![CostLine {
-                material: Material::Obsidian,
-                compressed: 2,
-                raw: 0,
-            }]),
-            held: vec![(Material::Obsidian, 0, 21)],
-            mark: Mark::Refused,
+            at_next: TrackOutcome::Richness {
+                before: 66,
+                after: 73,
+            },
+            cost: vec![PriceLine {
+                item: Item::Compressed(Material::Obsidian),
+                needed: 2,
+                held: 0,
+                mark: Mark::Refused,
+            }],
             blocked: None,
         }
     }
@@ -1150,12 +1378,18 @@ mod tests {
         // the number the player is buying is the one the Mine screen will draw.
         let frame = mine_pane_frame(MineTrackDetail {
             track: MineTrack::Size,
-            at_next: TrackOutcome::Size((12, 7)),
+            at_next: TrackOutcome::Size {
+                before: (10, 6),
+                after: (12, 7),
+            },
             ..a_mine_track()
         });
         assert!(frame.contains("Obsidian Mine — size"), "{frame}");
         assert!(frame.contains("Size      level 6 → 7"), "{frame}");
-        assert!(frame.contains("At 7      12x7 cells"), "{frame}");
+        // Both sides of the step, and the cell counts under them: a grid quoted only
+        // after leaves the player to remember what they are moving from.
+        assert!(frame.contains("At 7      grid   10x6 → 12x7"), "{frame}");
+        assert!(frame.contains("cells  60 → 84"), "{frame}");
         // The four lines about the dial belong to the richness track alone.
         assert!(!frame.contains("This buys the ceiling only"), "{frame}");
     }
@@ -1166,9 +1400,7 @@ mod tests {
         // readings of one fact, because the pane's two halves are read separately.
         let frame = mine_pane_frame(MineTrackDetail {
             at_next: TrackOutcome::Maxed,
-            cost: None,
-            held: Vec::new(),
-            mark: Mark::NoPrice,
+            cost: Vec::new(),
             ..a_mine_track()
         });
         assert!(
@@ -1194,7 +1426,7 @@ mod tests {
         assert!(frame.contains("needs level 30"), "{frame}");
         assert!(frame.contains("and a Netherite pickaxe"), "{frame}");
         // A locked track prints no price at all — there is nothing to weigh yet.
-        assert!(!frame.contains("You hold"), "{frame}");
+        assert!(!frame.contains("Cost"), "{frame}");
     }
 
     #[test]
@@ -1219,10 +1451,11 @@ mod tests {
             kind: EnchantType::Explosive,
             level: 6,
             cap: 6,
+            world: World::Nether,
             effect: vec!["clears a 5x5 square on a proc".to_owned()],
-            next: vec!["at its cap — nothing left to buy".to_owned()],
-            cost: None,
-            mark: Mark::NoPrice,
+            at_next: Vec::new(),
+            note: Vec::new(),
+            cost: Vec::new(),
         });
         let frame = whole_frame(&render_view(&view));
         assert!(frame.contains("nothing left to buy"), "{frame}");
@@ -1244,5 +1477,169 @@ mod tests {
         let frame = whole_frame(&render_view(&view));
         assert!(frame.contains("Chain     1 rung"), "{frame}");
         assert!(!frame.contains("1 rungs"), "{frame}");
+    }
+
+    /// A pickaxe pane with `detail` swapped in, rendered at 80×24.
+    fn pickaxe_pane_frame(detail: PickaxeDetail) -> String {
+        let mut view = View::sample();
+        view.upgrades.active = UpgradeTab::Pickaxe;
+        view.upgrades.pickaxe.detail = UpgradeDetail::Pickaxe(Box::new(detail));
+        whole_frame(&render_view(&view))
+    }
+
+    /// The fixture's own pickaxe detail, as a starting point to vary.
+    fn a_chain() -> PickaxeDetail {
+        match &View::sample().upgrades.pickaxe.detail {
+            UpgradeDetail::Pickaxe(detail) => (**detail).clone(),
+            other => unreachable!("the fixture's Pickaxe pane is a pickaxe: {other:?}"),
+        }
+    }
+
+    /// **The overflow this pane was rewritten for.** A chain from the bottom of the
+    /// ladder to the top demands eight materials in two denominations each, every one of
+    /// them short on a fresh run — sixteen price rows and sixteen shortfalls under them,
+    /// in a pane nineteen rows tall.
+    ///
+    /// What must survive the cut is everything *below* the price: a `Ceiling` line
+    /// pushed off the bottom is the one number a tier jump is decided on.
+    #[test]
+    fn a_chain_too_long_to_price_in_full_keeps_what_sits_under_it() {
+        let long: Vec<PriceLine> = Material::ALL
+            .into_iter()
+            .flat_map(|material| {
+                [
+                    PriceLine {
+                        item: Item::Compressed(material),
+                        needed: 12,
+                        held: 0,
+                        mark: Mark::Refused,
+                    },
+                    PriceLine {
+                        item: Item::Raw(material),
+                        needed: 40,
+                        held: 0,
+                        mark: Mark::Refused,
+                    },
+                ]
+            })
+            .collect();
+        let dropped = long.len();
+        let frame = pickaxe_pane_frame(PickaxeDetail {
+            costs: long,
+            ..a_chain()
+        });
+
+        assert!(
+            frame.contains("…+ "),
+            "the price was not cut at all:\n{frame}"
+        );
+        assert!(frame.contains(" more lines"), "{frame}");
+        // A count of *lines*, not of rungs: the price is aggregated per material by the
+        // time it reaches the pane, so rungs are no longer what was dropped.
+        assert!(!frame.contains("more rungs"), "{frame}");
+        // Everything under the price is still on screen.
+        assert!(frame.contains("Ceiling   Efficiency 5 → 15"), "{frame}");
+        assert!(frame.contains("Unlocks"), "{frame}");
+        assert!(frame.contains("Power  34.0 → 9.0"), "{frame}");
+        // And it really was too long to fit, so the assertions above are about a cut.
+        assert!(dropped > 20, "{dropped} rows is not an overflow");
+    }
+
+    /// The `Power` block is what an ordinary rung is bought for, and it used to be
+    /// printed only when it went the *wrong* way.
+    ///
+    /// The box art stays off it: that frame is a warning, and one drawn on all
+    /// forty-six rungs stops being read as one.
+    #[test]
+    fn a_rung_that_costs_no_power_still_says_what_it_buys() {
+        let frame = pickaxe_pane_frame(PickaxeDetail {
+            dip: None,
+            power: PowerDetail {
+                before: 34.0,
+                after: 41.0,
+                ..a_chain().power
+            },
+            ..a_chain()
+        });
+
+        assert!(frame.contains("Power     34.0 → 41.0"), "{frame}");
+        assert!(
+            frame.contains("Ticks     Ancient Debris 27 → 100"),
+            "{frame}"
+        );
+        assert!(
+            !frame.contains("┌────"),
+            "the box art is the dip's:\n{frame}"
+        );
+
+        // And the dip still draws its own frame, with the repayment inside it.
+        let dipped = pickaxe_pane_frame(a_chain());
+        assert!(dipped.contains("┌────"), "{dipped}");
+        assert!(dipped.contains("Repaid at Netherite Eff V"), "{dipped}");
+        assert!(!dipped.contains("Power     34.0"), "{dipped}");
+    }
+
+    /// `Cap 3` alone cannot tell a ceiling the player has hit from one the *world* is
+    /// holding down, and the two call for opposite decisions — stop buying, or go open
+    /// the Nether.
+    #[test]
+    fn the_cap_names_the_world_that_sets_it_and_the_one_the_game_stops_at() {
+        for (world, cap, others) in [
+            (World::Overworld, 3, "Nether 6, End 10"),
+            (World::Nether, 6, "Overworld 3, End 10"),
+            (World::End, 10, "Overworld 3, Nether 6"),
+        ] {
+            let mut view = View::sample();
+            view.upgrades.active = UpgradeTab::Enchants;
+            let detail = match &view.upgrades.enchants.detail {
+                UpgradeDetail::Enchant(detail) => EnchantDetail {
+                    cap,
+                    world,
+                    ..detail.clone()
+                },
+                other => unreachable!("the fixture's Enchants pane is an enchant: {other:?}"),
+            };
+            view.upgrades.enchants.detail = UpgradeDetail::Enchant(detail);
+            let frame = whole_frame(&render_view(&view));
+
+            // On screen: the cap against the game's own ceiling, and whose it is.
+            assert!(
+                frame.contains(&format!("Cap       {cap} of 10 — the {}'s.", world.name())),
+                "{frame}"
+            );
+
+            // The rest of the sentence is asserted unwrapped — its line breaks move with
+            // the world, and the pane's right border sits between them in the frame.
+            let sentence = cap_sentence(cap, world).join(" ");
+            assert!(sentence.contains(others), "{sentence:?}");
+            // Six tracks share it, not the five the frame's prose still says.
+            assert!(sentence.contains("Six tracks share it"), "{sentence:?}");
+            assert!(
+                sentence.contains("Efficiency is capped by the pickaxe tier"),
+                "{sentence:?}"
+            );
+        }
+    }
+
+    /// The `Cap` sentence is the one prose block on this screen whose line breaks move
+    /// with the run, so it is wrapped rather than hand-broken. Nothing may overrun the
+    /// columns a labelled block leaves.
+    #[test]
+    fn a_wrapped_sentence_never_overruns_the_value_column() {
+        for world in [World::Overworld, World::Nether, World::End] {
+            for line in cap_sentence(world.enchant_cap(), world) {
+                assert!(
+                    line.chars().count() <= VALUE_COLUMNS,
+                    "{world:?} wraps to {} columns: {line:?}",
+                    line.chars().count()
+                );
+            }
+        }
+        // Words are never split, and no line starts or ends on a space.
+        let wrapped = wrapped("one two three four five six seven eight", 11);
+        assert_eq!(
+            wrapped,
+            vec!["one two", "three four", "five six", "seven eight"]
+        );
     }
 }

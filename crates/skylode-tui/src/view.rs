@@ -10,6 +10,8 @@
 //! Keep it plain data: no methods that decide anything, no `Option`s standing in
 //! for rules. A computation that belongs to the game belongs to the core.
 
+use std::collections::BTreeMap;
+
 use skylode_core::{
     block::Block,
     economy::{self, Affordability, Cost, CostLine},
@@ -19,11 +21,12 @@ use skylode_core::{
     material::{Item, Material},
     mine::{MAX_RICHNESS_LEVEL, Mine},
     mine_kind::{MineKind, MineLock},
-    pickaxe::PickaxeTier,
+    pickaxe::{Pickaxe, PickaxeTier},
     tunables::{
         BOOST_DURATION_TICKS, HASTE_PER_LEVEL, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND,
     },
     upgrade,
+    world::World,
 };
 
 use crate::{
@@ -140,6 +143,113 @@ impl Mark {
     }
 }
 
+/// One line of a price: what is owed, in one denomination, against what is held.
+///
+/// **The whole price used to be verdicted once**, and the detail pane painted every
+/// line of it in that one colour — so a two-material cost short of a single ore read
+/// entirely red and said nothing about which half was missing. The verdict belongs on
+/// the line, because that is the granularity the player acts on: one line sends them
+/// mining, the one beside it sends them to the Inventory screen.
+///
+/// **Not a [`CostLine`], and the reason is an invariant.** `CostLine` guarantees
+/// `raw < RAW_PER_COMPRESSED` — it is the *split* of a total, and everything downstream
+/// reads it as one. The pickaxe chain's aggregate (see
+/// [`chain_price`]) sums forty-five rungs per denomination and must **not** re-split, so
+/// it produces totals like `110 raw` that no `CostLine` may legally hold. Its fields are
+/// `pub`, so nothing but a separate type would have stopped that.
+///
+/// It carries `held` for the same reason it carries `mark`: the Mines pane used to spend
+/// four lines on a `You hold` block far from the price it was about, and the number is
+/// only ever read beside the demand it answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PriceLine {
+    /// The demand, in the denomination it is owed in.
+    pub item: Item,
+    /// How many of it the price asks for.
+    pub needed: u32,
+    /// How many of *that item* the player holds.
+    pub held: u32,
+    /// This line's own verdict.
+    pub mark: Mark,
+}
+
+/// A price as the panes quote it: one entry per `(material, denomination)`, verdicted
+/// line by line against what the player holds.
+///
+/// **The two passes are [`economy::affordability`]'s, narrowed to one line**, and the
+/// asymmetry between them is the rule rather than an oversight: the wealth question is
+/// asked per **material** (`raw_value`, blind to denomination) while the shape question
+/// is asked per **item**. Asking wealth per item would put a `Compressed` line and a raw
+/// line of the same ore in disagreement — one `~`, one `✗` — over a single pile the
+/// player can convert either way.
+///
+/// The `owed` closure re-reads the whole material's demand for that reason: a line is
+/// only *repairable* if the material's total value covers the material's total price,
+/// not merely this line's share of it.
+fn price_lines(inventory: &Inventory, lines: &[CostLine]) -> Vec<PriceLine> {
+    let owed = |material: Material| -> u32 {
+        lines
+            .iter()
+            .filter(|line| line.material == material)
+            .map(|line| line.compressed * RAW_PER_COMPRESSED + line.raw)
+            .sum()
+    };
+    lines
+        .iter()
+        .flat_map(CostLine::requirements)
+        .map(|(item, needed)| {
+            let held = inventory.count(item);
+            PriceLine {
+                item,
+                needed,
+                held,
+                mark: if held >= needed {
+                    Mark::Affordable
+                } else if inventory.raw_value(item.material()) >= owed(item.material()) {
+                    Mark::CompressFirst
+                } else {
+                    Mark::Refused
+                },
+            }
+        })
+        .collect()
+}
+
+/// The same, over a demand already summed past what a [`CostLine`] may hold.
+///
+/// The pickaxe chain's aggregate is one `(Item, total)` per denomination with no
+/// `< RAW_PER_COMPRESSED` bound, so it cannot go through [`price_lines`]. The verdict is
+/// the same three states, with the wealth pass reading the material's summed demand out
+/// of the same map.
+fn aggregate_price_lines(inventory: &Inventory, owed: &BTreeMap<Item, u32>) -> Vec<PriceLine> {
+    let per_material = |material: Material| -> u32 {
+        owed.iter()
+            .filter(|(item, _)| item.material() == material)
+            .map(|(item, total)| match item {
+                Item::Compressed(_) => total * RAW_PER_COMPRESSED,
+                Item::Raw(_) => *total,
+            })
+            .sum()
+    };
+    owed.iter()
+        .map(|(&item, &needed)| {
+            let held = inventory.count(item);
+            PriceLine {
+                item,
+                needed,
+                held,
+                mark: if held >= needed {
+                    Mark::Affordable
+                } else if inventory.raw_value(item.material()) >= per_material(item.material()) {
+                    Mark::CompressFirst
+                } else {
+                    Mark::Refused
+                },
+            }
+        })
+        .collect()
+}
+
 /// One sub-tab of the Upgrades screen: a list on the left, a detail pane on the
 /// right (UI.md §5.4).
 ///
@@ -188,10 +298,21 @@ pub enum UpgradeDetail {
 
 /// The Pickaxe sub-tab's pane: what the chain to the cursor costs and does.
 ///
-/// **`costs` is one entry per rung and is never summed**, which is the same rule
-/// [`upgrade::chain_affordability`] enforces: two prices added together and re-split
-/// into denominations describe a payment the player is never asked to make. The pane
-/// therefore lists what each step demands, in order.
+/// **`costs` is summed per denomination and is never re-split.** It used to be one entry
+/// per rung, which is what [`upgrade::chain_affordability`] walks — and at forty-five
+/// rungs that block alone was longer than the pane, pushing the dip box, `Unlocks` and
+/// `Ceiling` off the bottom. The rule those two carry is about the *re-split*: adding
+/// `30 raw` to `80 raw` and quoting `1 Compressed + 10` describes a payment the player is
+/// never asked to make. Summing inside a denomination invents nothing —
+/// [`economy::pay`](skylode_core::economy) is strict per denomination and converts
+/// nothing, and no ore enters the purse between two rungs, so the multiset of demands the
+/// walk makes *is* this sum. See [`chain_price`].
+///
+/// The verdict is still the core's: [`mark`](PickaxeDetail::mark) comes from
+/// `chain_affordability`, which is what the list column beside the pane shows. Where the
+/// two can differ is *which* refusal they name — the walk stops at the first rung that
+/// fails, the lines report every material independently — and the lines are the richer
+/// answer.
 #[derive(Clone, Debug)]
 pub struct PickaxeDetail {
     /// The rung the cursor is on, named.
@@ -208,8 +329,10 @@ pub struct PickaxeDetail {
     pub chain: Vec<String>,
     /// What the whole chain is verdicted at.
     pub mark: Mark,
-    /// Every line every rung of the chain demands, in climbing order.
-    pub costs: Vec<CostLine>,
+    /// What the chain demands, one entry per material and denomination.
+    pub costs: Vec<PriceLine>,
+    /// What the chain does to the pickaxe's speed, on every rung.
+    pub power: PowerDetail,
     /// The dip box, when the chain ends below the power it started at.
     pub dip: Option<DipDetail>,
     /// The mines this tier opens, if the chain reaches a new one.
@@ -218,24 +341,41 @@ pub struct PickaxeDetail {
     pub ceiling: Option<(u8, u8)>,
 }
 
-/// The dip box (UI.md §5.4) and the modal that guards it (§6.7).
+/// What a chain does to the pickaxe's speed — the numbers UI.md §5.4's dip box and
+/// §6.7's modal are made of, and the ones every *other* rung is now sold on.
 ///
-/// **The cost is stated in ticks per block as well as in power**, because `34.0 → 9.0`
-/// is a number no player has an intuition for. The reference block is the *value*
-/// cell of the mine they are standing in — always defined, and stable while the box
-/// is being read, which the aimed cell is not.
-#[derive(Clone, Debug)]
-pub struct DipDetail {
+/// **Stated in ticks per block as well as in power**, because `34.0 → 9.0` is a number
+/// no player has an intuition for. The reference block is the *value* cell of the mine
+/// they are standing in — always defined, and stable while the pane is being read, which
+/// the aimed cell is not.
+///
+/// **Present on every rung, not only on a dip**, which is the answer to a plain
+/// question the pane could not answer: a player buying Efficiency IV was told what it
+/// cost and never what it bought. Only the *framing* is conditional — a dip draws the
+/// box art, an ordinary rung a labelled block — because the box is a **warning**, and a
+/// warning drawn on all forty-six rungs stops reading as one.
+#[derive(Clone, Copy, Debug)]
+pub struct PowerDetail {
     /// Mining power now.
-    pub power_before: f64,
+    pub before: f64,
     /// Mining power after the chain.
-    pub power_after: f64,
+    pub after: f64,
     /// The block the two tick counts are quoted against.
     pub block: Block,
     /// Ticks it takes now, or [`None`] if this pickaxe never breaks that block.
     pub ticks_before: Option<u32>,
     /// Ticks it will take after.
     pub ticks_after: Option<u32>,
+}
+
+/// The dip box (UI.md §5.4) and the modal that guards it (§6.7).
+///
+/// **What is left once the powers moved to [`PowerDetail`]: the repayment alone.** Its
+/// presence is what says the chain *is* a dip — [`upgrade::preview`]'s `is_dip()` read
+/// once, on the core's side of the boundary, so the box and the modal cannot disagree
+/// about whether there is anything to warn about.
+#[derive(Clone, Debug)]
+pub struct DipDetail {
     /// The rung that earns the power back, when there is one.
     pub repaid_at: Option<Repaid>,
 }
@@ -251,10 +391,24 @@ pub struct DipDetail {
 pub struct Repaid {
     /// The rung that earns the power back, named.
     pub rung: String,
-    /// The power it restores — above [`DipDetail::power_before`] by construction.
+    /// The power it restores — above [`PowerDetail::before`] by construction.
     pub power: f64,
     /// How many rungs past the one being bought it sits.
     pub rungs_later: usize,
+}
+
+/// One stat an upgrade moves, as the pane states it: a word and a `now → next` pair.
+///
+/// **The name is separate from the value so the screen can align the column**, which is
+/// the same lesson [`UpgradeRow::cells`] records — a read model that pads has decided a
+/// width it cannot know. The value is one already-formatted string because `4.0% → 6.0%`
+/// is a single unit of meaning and no layout decision falls between its halves.
+#[derive(Clone, Debug)]
+pub struct StatStep {
+    /// The stat's own word, lower-case: `square`, `procs`, `drops`, `speed`.
+    pub name: &'static str,
+    /// What it is now and what it becomes, as one phrase.
+    pub value: String,
 }
 
 /// The Enchants sub-tab's pane: one track, its effect and its price.
@@ -266,14 +420,27 @@ pub struct EnchantDetail {
     pub level: u8,
     /// The cap the highest world reached allows.
     pub cap: u8,
+    /// The world that cap comes from — the highest the player has unlocked, not the one
+    /// whose mine they are standing in.
+    ///
+    /// Carried because the pane must name it: `Cap 3` alone says neither *whose* 3 it is
+    /// nor that the game's ceiling is 10, which is the whole of UI.md §5.4.1's `Cap`
+    /// block and the half the implementation had dropped.
+    pub world: World,
     /// What the enchant does, in prose — front-end text, like the Mines screen's note.
     pub effect: Vec<String>,
-    /// What the next level changes, if there is one.
-    pub next: Vec<String>,
-    /// What one level costs, or [`None`] at the cap.
-    pub cost: Option<Vec<CostLine>>,
-    /// The verdict on that price.
-    pub mark: Mark,
+    /// What the next level moves, in numbers. Empty at the cap.
+    pub at_next: Vec<StatStep>,
+    /// The one thing the numbers cannot say, when there is one — Explosive's square
+    /// standing still because it only grows every third level.
+    pub note: Vec<String>,
+    /// What one level costs, verdicted line by line. Empty at the cap.
+    ///
+    /// **No overall verdict beside it.** The pane used to carry one and tint the whole
+    /// price with it; every line now states its own, and the list row beside the pane
+    /// still carries the price's — a third copy could only ever disagree with one of
+    /// them.
+    pub cost: Vec<PriceLine>,
 }
 
 /// The Mines sub-tab's pane: one paid track of one mine.
@@ -285,25 +452,38 @@ pub struct MineTrackDetail {
     pub track: MineTrack,
     /// The level held, and the one being bought.
     pub level: (u32, u32),
-    /// What the next level buys: a grid size, or a value-cell share.
+    /// What the next level buys: a grid size, or a value-cell share — both sides of it.
     pub at_next: TrackOutcome,
-    /// What it costs, or [`None`] when the track is maxed.
-    pub cost: Option<Vec<CostLine>>,
-    /// What the player holds of each material the price names.
-    pub held: Vec<(Material, u32, u32)>,
-    /// The verdict on that price.
-    pub mark: Mark,
+    /// What it costs, verdicted line by line. Empty when the track is maxed, when the
+    /// mine is locked, and when this run has never entered it — see
+    /// [`EnchantDetail::cost`] for why no overall verdict sits beside it.
+    pub cost: Vec<PriceLine>,
     /// Why this mine cannot be upgraded at all, if it cannot.
     pub blocked: Option<TrackBlock>,
 }
 
-/// What buying the next level of a mine track hands over.
+/// What buying the next level of a mine track hands over — **both sides of the step**.
+///
+/// It used to carry the *after* alone, which is what UI.md §5.4.2's `At 7` block prints;
+/// a player deciding whether to spend on it has no way to know what they are moving
+/// *from* unless the pane also says so, and the number is free — both tracks are pure
+/// functions of a level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackOutcome {
-    /// The grid the size track would grow to.
-    Size((u8, u8)),
-    /// The value cell's share of the grid, in percent, at the new ceiling.
-    Richness(u32),
+    /// The grid now, and the one the size track would grow to.
+    Size {
+        /// The grid at the level held.
+        before: (u8, u8),
+        /// The grid one level up.
+        after: (u8, u8),
+    },
+    /// The value cell's share of the grid, in percent, at the ceiling held and the next.
+    Richness {
+        /// The share the dial may reach today.
+        before: u32,
+        /// The share it may reach one ceiling up.
+        after: u32,
+    },
     /// The track has nothing left to sell.
     Maxed,
 }
@@ -943,7 +1123,7 @@ impl View {
 
 /// The Pickaxe panel's first line: `Diamond Pickaxe  Efficiency IV`.
 ///
-/// **Takes the tier and the level, not the [`Pickaxe`](skylode_core::pickaxe::Pickaxe)**,
+/// **Takes the tier and the level, not the [`Pickaxe`]**,
 /// and that is a testability constraint rather than a style: `Enchants::upgrade` is
 /// `pub(crate)` — deliberately, since a front-end that could call it would enchant for
 /// free — so this crate cannot *build* an enchanted pickaxe, and a helper taking one
@@ -1236,11 +1416,7 @@ fn pickaxe_detail(
     // The rungs actually being bought: everything past where the player stands, up to
     // and including the cursor. Empty when the cursor is at or behind them.
     let climbed = ladder.get(here + 1..=target).unwrap_or(&[]);
-    let costs = climbed
-        .iter()
-        .filter_map(|rung| rung.cost.as_ref())
-        .flat_map(|cost| cost.lines().iter().copied())
-        .collect();
+    let costs = aggregate_price_lines(inventory, &chain_price(climbed));
 
     let title = ladder
         .get(target)
@@ -1283,47 +1459,73 @@ fn pickaxe_detail(
             Mark::of(&upgrade::chain_affordability(inventory, pickaxe, target))
         },
         costs,
-        dip: preview
-            .is_dip()
-            .then(|| dip_detail(state, ladder, &preview, target)),
+        power: power_detail(state, &preview),
+        dip: preview.is_dip().then(|| DipDetail {
+            repaid_at: preview.repaid_at.and_then(|index| {
+                ladder.get(index).map(|rung: &upgrade::PickaxeRung| Repaid {
+                    rung: rung_label(rung.tier, rung.efficiency),
+                    power: f64::from(
+                        state
+                            .player()
+                            .get_pickaxe()
+                            .power_with(rung.tier, rung.efficiency),
+                    ),
+                    rungs_later: index.saturating_sub(target),
+                })
+            }),
+        }),
         unlocks,
         ceiling,
     }
 }
 
-/// The dip box's numbers, quoted against the block the player is actually mining.
+/// The chain's whole demand, summed per material **and denomination**.
+///
+/// **The sum never crosses a denomination**, which is the entire safety of it: `30 raw`
+/// plus `80 raw` is `110 raw` and is never re-quoted as `1 Compressed + 10`. That
+/// re-split is what `docs/UI.md` and the core's `chain_affordability` forbid — it names a
+/// payment the player is never asked to make, and one they may be unable to make while
+/// being able to pay the two steps in order.
+///
+/// Within a denomination there is nothing to invent. `economy::pay` checks and debits
+/// each `(Item, amount)` strictly, converting nothing, and no ore enters the purse
+/// between two rungs — so the demands the sequential walk makes are exactly this
+/// multiset, and holding it is the same fact as being able to pay every rung in order.
+///
+/// A [`BTreeMap`] and not a `HashMap`, for the reason every map in `save` is one: the
+/// same chain must lay its lines out in the same order on every redraw.
+fn chain_price(climbed: &[upgrade::PickaxeRung]) -> BTreeMap<Item, u32> {
+    let mut owed = BTreeMap::new();
+    for (item, amount) in climbed
+        .iter()
+        .filter_map(|rung| rung.cost.as_ref())
+        .flat_map(|cost| cost.lines().iter().flat_map(CostLine::requirements))
+    {
+        *owed.entry(item).or_insert(0) += amount;
+    }
+    owed
+}
+
+/// What the chain does to the swing, quoted against the block the player is actually
+/// mining.
 ///
 /// **The *value* cell of the standing mine**, per Enoal's call for phase 6: it is
 /// always defined, unlike the aimed cell on a fresh grid, and it does not change
-/// while the box is being read. It is also the dearer of the two, which is the honest
-/// half of a warning about losing speed.
-fn dip_detail(
-    state: &GameState,
-    ladder: &[upgrade::PickaxeRung],
-    preview: &upgrade::UpgradePreview,
-    to: usize,
-) -> DipDetail {
+/// while the pane is being read. It is also the dearer of the two, which is the honest
+/// half of a warning about losing speed — and the useful half of a promise about
+/// gaining it.
+///
+/// **Computed on every rung**, not only under `is_dip()`. It used to sit inside the dip
+/// branch, which meant the one number a speed upgrade is bought for was printed only
+/// when it went the wrong way.
+fn power_detail(state: &GameState, preview: &upgrade::UpgradePreview) -> PowerDetail {
     let block = state.current_mine().kind().value_block();
-    let named = |index: usize| {
-        ladder.get(index).map(|rung: &upgrade::PickaxeRung| Repaid {
-            rung: rung_label(rung.tier, rung.efficiency),
-            power: f64::from(
-                state
-                    .player()
-                    .get_pickaxe()
-                    .power_with(rung.tier, rung.efficiency),
-            ),
-            rungs_later: index.saturating_sub(to),
-        })
-    };
-
-    DipDetail {
-        power_before: f64::from(preview.power_before),
-        power_after: f64::from(preview.power_after),
+    PowerDetail {
+        before: f64::from(preview.power_before),
+        after: f64::from(preview.power_after),
         block,
         ticks_before: block.ticks_to_break(preview.power_before),
         ticks_after: block.ticks_to_break(preview.power_after),
-        repaid_at: preview.repaid_at.and_then(named),
     }
 }
 
@@ -1353,7 +1555,12 @@ fn enchants_subtab(state: &GameState, cursors: Cursors) -> UpgradeSubtab {
                     } else {
                         format!("{} → {}", level_word(level), roman(level + 1))
                     },
-                    cap.to_string(),
+                    // **Both numbers, because the column showed the world's as if it
+                    // were the game's.** A player reading `3` beside a track has no way
+                    // to tell a ceiling they have hit from one the Overworld is holding
+                    // down, and the two call for opposite decisions — stop buying, or go
+                    // open the Nether.
+                    format!("{cap}/{}", World::End.enchant_cap()),
                 ],
                 // A capped track has no price to quote, which is the `—` case and not a
                 // refusal: the player is not short of anything. The same arm catches
@@ -1382,12 +1589,20 @@ fn enchants_subtab(state: &GameState, cursors: Cursors) -> UpgradeSubtab {
         kind,
         level,
         cap,
+        world,
         effect: enchant_effect(kind, level),
-        next: enchant_next(kind, level, cap),
-        mark: cost.as_ref().map_or(Mark::NoPrice, |cost| {
-            Mark::of(&economy::affordability(inventory, cost))
-        }),
-        cost: cost.map(|cost| cost.lines().to_vec()),
+        at_next: enchant_at_next(
+            kind,
+            level,
+            cap,
+            state.current_mine().get_size().0,
+            player.get_pickaxe(),
+        ),
+        note: enchant_note(kind, level, cap),
+        cost: cost
+            .as_ref()
+            .map(|cost| price_lines(inventory, cost.lines()))
+            .unwrap_or_default(),
     };
 
     UpgradeSubtab {
@@ -1447,25 +1662,10 @@ fn mine_tracks_subtab(state: &GameState, cursors: Cursors) -> UpgradeSubtab {
         track,
         level: (level, level + 1),
         at_next: track_outcome(track, level),
-        held: cost
+        cost: cost
             .as_ref()
-            .map(|cost| {
-                cost.lines()
-                    .iter()
-                    .map(|line| {
-                        (
-                            line.material,
-                            inventory.count(Item::Compressed(line.material)),
-                            inventory.count(Item::Raw(line.material)),
-                        )
-                    })
-                    .collect()
-            })
+            .map(|cost| price_lines(inventory, cost.lines()))
             .unwrap_or_default(),
-        mark: cost.as_ref().map_or(Mark::NoPrice, |cost| {
-            Mark::of(&economy::affordability(inventory, cost))
-        }),
-        cost: cost.map(|cost| cost.lines().to_vec()),
         blocked: if lock.is_open() {
             // Open but never walked into: the one refusal a keypress clears.
             mine.is_none().then_some(TrackBlock::NotEntered)
@@ -1504,8 +1704,8 @@ fn track_row(state: &GameState, kind: MineKind, track: MineTrack) -> (String, Ma
     });
     let next = match track_outcome(track, level) {
         TrackOutcome::Maxed => MAXED.to_owned(),
-        TrackOutcome::Size((width, height)) => format!("{width}x{height}"),
-        TrackOutcome::Richness(_) => (level + 1).to_string(),
+        TrackOutcome::Size { after: (w, h), .. } => format!("{w}x{h}"),
+        TrackOutcome::Richness { .. } => (level + 1).to_string(),
     };
     let mark = match track_cost(kind, track, level, mine.is_some()) {
         Some(cost) => Mark::of(&economy::affordability(player.get_inventory(), &cost)),
@@ -1518,18 +1718,21 @@ fn track_row(state: &GameState, kind: MineKind, track: MineTrack) -> (String, Ma
 fn track_outcome(track: MineTrack, level: u32) -> TrackOutcome {
     match track {
         MineTrack::Size => {
-            let next = Mine::size_for_level(level + 1);
-            if next == Mine::size_for_level(level) {
+            let (before, after) = (Mine::size_for_level(level), Mine::size_for_level(level + 1));
+            if before == after {
                 TrackOutcome::Maxed
             } else {
-                TrackOutcome::Size(next)
+                TrackOutcome::Size { before, after }
             }
         }
         MineTrack::Richness if level >= MAX_RICHNESS_LEVEL => TrackOutcome::Maxed,
         // The share the *dial* would then be free to reach — the ceiling being bought
         // is permission, and this is what the permission is worth. Asked of the same
         // pure function the Mines screen draws its bar from, so the two agree.
-        MineTrack::Richness => TrackOutcome::Richness(Mine::value_weight_percent_for(level + 1)),
+        MineTrack::Richness => TrackOutcome::Richness {
+            before: Mine::value_weight_percent_for(level),
+            after: Mine::value_weight_percent_for(level + 1),
+        },
     }
 }
 
@@ -1568,9 +1771,14 @@ fn track_word(track: MineTrack) -> &'static str {
 /// come from `blast_cells`' own arithmetic, and §5.4.1 is explicit that a pane
 /// promising `5x5` at a level that still blasts `3x3` is promising a reward the rules
 /// do not pay.
+///
+/// **Which is why the square is now *asked for*.** This function and `enchant_at_next`
+/// each carried their own copy of `1 + 2 * (1 + (level - 1) / 3).min(3)` — the very
+/// transcription §5.4.1 warns about, twice. `EnchantType::explosive_side` is that
+/// formula's one home; a band that moves in the core now moves here.
 fn enchant_effect(kind: EnchantType, level: u8) -> Vec<String> {
     let square = |level: u8| {
-        let side = 1 + 2 * (1 + u32::from(level.saturating_sub(1)) / 3).min(3);
+        let side = EnchantType::Explosive.explosive_side(level);
         format!("{side}x{side}")
     };
     let lines: Vec<String> = match kind {
@@ -1600,48 +1808,131 @@ fn enchant_effect(kind: EnchantType, level: u8) -> Vec<String> {
     lines
 }
 
-/// What the next level changes — the sentence §5.4.1 spends four lines on, because
-/// Explosive's square does *not* grow on every step.
+/// What the next level moves, in numbers.
 ///
-/// **"Procs more often" is not the universal answer**, even though the frame prints it
-/// on the row it happened to draw. Three of these six enchants never roll a die:
-/// [`proc_permille`](EnchantType::proc_permille) returns `0` for Fortune and Haste
-/// (and for Efficiency, which the shop does not price), because they are permanent
-/// multipliers rather than chances. Telling a player their next Fortune level will
-/// proc more often would describe a mechanic the enchant does not have, so the two
-/// passive ones each name the number they actually move.
-fn enchant_next(kind: EnchantType, level: u8, cap: u8) -> Vec<String> {
+/// **"Procs more often" is not the universal answer**, even though §5.4.1's frame prints
+/// it on the row it happened to draw. Three of these six enchants never roll a die:
+/// [`EnchantType::proc_permille`] returns `0` for Fortune and Haste (and for Efficiency,
+/// which the shop does not price), because they are permanent multipliers rather than
+/// chances. So each track names the number it actually moves, and the ones that do roll
+/// name both — the shape *and* the frequency, since for Jackhammer and Nuke the shape
+/// never changes and the frequency is the whole purchase.
+///
+/// **Numbers replacing the prose this used to return.** A sentence saying the square
+/// "grows every third level" leaves the player to work out whether *this* level is the
+/// third; `square 3x3 → 3x3` says it. The one thing a pair cannot say — *why* it stands
+/// still — survives in [`enchant_note`].
+///
+/// **Rates are printed as a percentage, not in permille.** Permille is the core's unit
+/// because the proc roll is an integer comparison a save resumes and must not depend on
+/// how a division rounded; it is not a unit anyone reads.
+///
+/// **Takes the two facts it needs, not the [`GameState`] they come from**, which is the
+/// same rule `pickaxe_summary` and `boost_view` already follow. Only two of the six
+/// tracks reach outside themselves at all — Jackhammer's stripe is the mine's width,
+/// Haste's multiplier is worth whatever *this* pickaxe's tier and Efficiency make it —
+/// and a signature naming the run would make [`View::sample`] unable to call this
+/// without one.
+fn enchant_at_next(
+    kind: EnchantType,
+    level: u8,
+    cap: u8,
+    mine_width: u8,
+    pickaxe: &Pickaxe,
+) -> Vec<StatStep> {
     if level >= cap {
-        return vec!["at its cap — nothing left to buy".to_owned()];
+        return Vec::new();
     }
     let next = level + 1;
+    let step = |name: &'static str, value: String| StatStep { name, value };
+    let procs = || {
+        step(
+            "procs",
+            format!(
+                "{} → {}",
+                percent(kind.proc_permille(level)),
+                percent(kind.proc_permille(next))
+            ),
+        )
+    };
+
     match kind {
+        EnchantType::Fortune => vec![step(
+            "drops",
+            format!("x{} → x{}", 1 + u32::from(level), 1 + u32::from(next)),
+        )],
         EnchantType::Explosive => {
-            let side = |level: u8| 1 + 2 * (1 + u32::from(level.saturating_sub(1)) / 3).min(3);
-            let (now, grown) = (side(level.max(1)), side(next));
-            if now == grown {
-                vec![
-                    format!("{} — still {now}x{now}. The square", roman(next)),
-                    "grows every third level.".to_owned(),
-                ]
-            } else {
-                vec![format!(
-                    "{} — the square grows to {grown}x{grown}.",
-                    roman(next)
-                )]
-            }
+            let side = |level: u8| {
+                let side = kind.explosive_side(level);
+                format!("{side}x{side}")
+            };
+            vec![
+                step("square", format!("{} → {}", side(level.max(1)), side(next))),
+                procs(),
+            ]
         }
-        EnchantType::Fortune => vec![format!(
-            "{} — every drop multiplied by {}.",
-            roman(next),
-            1 + u32::from(next)
-        )],
-        EnchantType::Haste => vec![format!(
-            "{} — mining speed x{:.2}.",
-            roman(next),
-            1.0 + HASTE_PER_LEVEL * f32::from(next)
-        )],
-        _ => vec!["procs more often.".to_owned()],
+        // The stripe spans the mine's whole width, so what scales its reach is the *mine*
+        // and never the level — the one enchant whose shape is bought on another screen.
+        EnchantType::Jackhammer => vec![
+            step("row", format!("the mine's width ({mine_width})")),
+            procs(),
+        ],
+        EnchantType::Nuke => vec![step("blast", "the whole grid".to_owned()), procs()],
+        EnchantType::Excavator => vec![step("yield", "1 Compressed per proc".to_owned()), procs()],
+        // Both rows, because neither alone decides the purchase: the multiplier is what
+        // the level literally buys, and the power is what it is worth on *this* pickaxe.
+        EnchantType::Haste => {
+            vec![
+                step(
+                    "speed",
+                    format!(
+                        "x{:.2} → x{:.2}",
+                        1.0 + HASTE_PER_LEVEL * f32::from(level),
+                        1.0 + HASTE_PER_LEVEL * f32::from(next)
+                    ),
+                ),
+                step(
+                    "power",
+                    format!(
+                        "{:.1} → {:.1}",
+                        pickaxe.power_at_haste(level),
+                        pickaxe.power_at_haste(next)
+                    ),
+                ),
+            ]
+        }
+        // Never reached: `cursor::enchant_tracks` filters Efficiency out, since it is a
+        // pickaxe upgrade on the ladder rather than an enchant the shop prices.
+        EnchantType::Efficiency => Vec::new(),
+    }
+}
+
+/// A proc rate, as a percentage with one decimal: `0.1%`, `4.0%`, `20.0%`.
+///
+/// Integer arithmetic on the way in and a float only to print, so the halving is the
+/// display's and never the rule's — [`EnchantType::proc_permille`] stays the number the
+/// die is actually compared against.
+fn percent(permille: u32) -> String {
+    format!("{:.1}%", f64::from(permille) / 10.0)
+}
+
+/// The one thing [`enchant_at_next`]'s numbers cannot say, when there is one.
+///
+/// Only Explosive has it: its square stands still on two levels out of three, and
+/// `square 3x3 → 3x3` states the fact without stating that it is a *rhythm* rather than
+/// a ceiling. Empty everywhere else, and empty on the level where the square does grow —
+/// there the pair speaks for itself.
+fn enchant_note(kind: EnchantType, level: u8, cap: u8) -> Vec<String> {
+    if kind != EnchantType::Explosive || level >= cap {
+        return Vec::new();
+    }
+    if kind.explosive_side(level.max(1)) == kind.explosive_side(level + 1) {
+        vec![
+            "The square grows every third".to_owned(),
+            "level.".to_owned(),
+        ]
+    } else {
+        Vec::new()
     }
 }
 
@@ -1768,25 +2059,21 @@ fn sample_upgrades() -> UpgradesView {
             chain: vec!["Diamond Eff V".to_owned(), "Netherite Pickaxe".to_owned()],
             mark: Mark::Affordable,
             // Diamond Efficiency V, then the jump out of Diamond — the two rungs the
-            // frame's `Chain  Diamond Eff V + the jump` names.
-            costs: vec![
-                CostLine {
-                    material: Material::Diamond,
-                    compressed: 2,
-                    raw: 0,
-                },
-                CostLine {
-                    material: Material::AncientDebris,
-                    compressed: 4,
-                    raw: 60,
-                },
-            ],
-            dip: Some(DipDetail {
-                power_before: 34.0,
-                power_after: 9.0,
+            // frame's `Chain  Diamond Eff V + the jump` names, already summed per
+            // denomination the way `chain_price` sums a real one.
+            costs: sample_price(&[
+                (Item::Compressed(Material::Diamond), 2, 2),
+                (Item::Compressed(Material::AncientDebris), 4, 4),
+                (Item::Raw(Material::AncientDebris), 60, 60),
+            ]),
+            power: PowerDetail {
+                before: 34.0,
+                after: 9.0,
                 block: Block::AncientDebris,
                 ticks_before: Some(27),
                 ticks_after: Some(100),
+            },
+            dip: Some(DipDetail {
                 repaid_at: Some(Repaid {
                     rung: "Netherite Eff V".to_owned(),
                     power: 35.0,
@@ -1810,21 +2097,20 @@ fn sample_upgrades() -> UpgradesView {
             kind: EnchantType::Explosive,
             level: 2,
             cap: 6,
+            world: World::Nether,
             effect: enchant_effect(EnchantType::Explosive, 2),
-            next: enchant_next(EnchantType::Explosive, 2, 6),
-            cost: Some(vec![
-                CostLine {
-                    material: Material::Quartz,
-                    compressed: 3,
-                    raw: 0,
-                },
-                CostLine {
-                    material: Material::Redstone,
-                    compressed: 0,
-                    raw: 40,
-                },
+            at_next: enchant_at_next(
+                EnchantType::Explosive,
+                2,
+                6,
+                SAMPLE_MINE_WIDTH,
+                &Pickaxe::default(),
+            ),
+            note: enchant_note(EnchantType::Explosive, 2, 6),
+            cost: sample_price(&[
+                (Item::Compressed(Material::Quartz), 3, 3),
+                (Item::Raw(Material::Redstone), 40, 40),
             ]),
-            mark: Mark::Affordable,
         }),
         footer: SELECT_FOOTER.to_owned(),
     };
@@ -1838,24 +2124,14 @@ fn sample_upgrades() -> UpgradesView {
             kind: MineKind::Obsidian,
             track: MineTrack::Richness,
             level: (6, 7),
-            at_next: TrackOutcome::Richness(73),
-            cost: Some(vec![
-                CostLine {
-                    material: Material::Obsidian,
-                    compressed: 2,
-                    raw: 0,
-                },
-                CostLine {
-                    material: Material::CryingObsidian,
-                    compressed: 0,
-                    raw: 40,
-                },
+            at_next: TrackOutcome::Richness {
+                before: 66,
+                after: 73,
+            },
+            cost: sample_price(&[
+                (Item::Compressed(Material::Obsidian), 2, 0),
+                (Item::Raw(Material::CryingObsidian), 40, 2),
             ]),
-            held: vec![
-                (Material::Obsidian, 0, 21),
-                (Material::CryingObsidian, 0, 2),
-            ],
-            mark: Mark::Refused,
             blocked: None,
         }),
         footer: SELECT_FOOTER.to_owned(),
@@ -1867,6 +2143,35 @@ fn sample_upgrades() -> UpgradesView {
         enchants,
         mines,
     }
+}
+
+/// The mine width the fixture's Jackhammer row is quoted against.
+///
+/// The §5.4 frame's player stands in a `12x7` mine, which is the number
+/// [`enchant_at_next`] would read off a real run — and the reason that function takes
+/// the width rather than the run it comes from.
+const SAMPLE_MINE_WIDTH: u8 = 12;
+
+/// A fixture price: `(item, needed, held)` per line, verdicted the way
+/// [`price_lines`] verdicts a real one.
+///
+/// **The mark is derived, never written down**, so a fixture cannot state a green line
+/// the numbers beside it contradict — the one failure mode a hand-built price has that a
+/// projected one does not.
+fn sample_price(lines: &[(Item, u32, u32)]) -> Vec<PriceLine> {
+    lines
+        .iter()
+        .map(|&(item, needed, held)| PriceLine {
+            item,
+            needed,
+            held,
+            mark: if held >= needed {
+                Mark::Affordable
+            } else {
+                Mark::Refused
+            },
+        })
+        .collect()
 }
 
 /// The six enchant rows the §5.4.1 frame draws, at the levels it draws them.
@@ -1884,7 +2189,7 @@ fn sample_enchant_rows() -> Vec<UpgradeRow> {
             cells: vec![
                 kind.name().to_owned(),
                 format!("{} → {}", level_word(level), roman(level + 1)),
-                cap.to_string(),
+                format!("{cap}/{}", World::End.enchant_cap()),
             ],
             mark,
             cursor: kind == EnchantType::Explosive,
@@ -2985,24 +3290,145 @@ mod tests {
                     Some(dip) => dip,
                     None => unreachable!("Diamond Eff V → Netherite is the dip"),
                 };
-                assert!((dip.power_before - 34.0).abs() < f64::EPSILON);
-                assert!((dip.power_after - 9.0).abs() < f64::EPSILON);
+                let power = &detail.power;
+                assert!((power.before - 34.0).abs() < f64::EPSILON);
+                assert!((power.after - 9.0).abs() < f64::EPSILON);
                 // The *value* block of the mine the player is standing in — Stone here,
                 // since a fresh run has never left it.
-                assert_eq!(dip.block, MineKind::Stone.value_block());
-                assert!(dip.ticks_after > dip.ticks_before);
+                assert_eq!(power.block, MineKind::Stone.value_block());
+                assert!(power.ticks_after > power.ticks_before);
                 // The power is earned back, and the pane says exactly where.
                 let repaid = match dip.repaid_at.as_ref() {
                     Some(repaid) => repaid,
                     None => unreachable!("Netherite Efficiency repays the jump"),
                 };
                 assert!(repaid.rung.starts_with("Netherite Eff"));
-                assert!(repaid.power > dip.power_before);
+                assert!(repaid.power > power.before);
                 // Five purchases later, which is the §6.7 modal's closing sentence.
                 assert_eq!(repaid.rungs_later, 5);
             }
             other => unreachable!("the Pickaxe sub-tab must project a pickaxe: {other:?}"),
         }
+    }
+
+    /// **The defect the price block was rewritten for**, stated where it is decided: a
+    /// price short of one material out of two must not verdict the other one with it.
+    ///
+    /// Before, the pane asked [`economy::affordability`] about the *whole* price and
+    /// painted every line in that one answer, so `Insufficient` — which wins a mixed
+    /// shortage by design — made both lines read `✗`.
+    #[test]
+    fn a_price_is_verdicted_one_material_at_a_time() {
+        let mut inventory = Inventory::new();
+        inventory.add(Item::Compressed(Material::Quartz), 5);
+        inventory.add(Item::Raw(Material::Redstone), 2);
+
+        let lines = price_lines(
+            &inventory,
+            &[
+                CostLine::from_raw_total(Material::Quartz, 300),
+                CostLine::from_raw_total(Material::Redstone, 40),
+            ],
+        );
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].item, Item::Compressed(Material::Quartz));
+        assert_eq!(lines[0].mark, Mark::Affordable);
+        assert_eq!(lines[1].item, Item::Raw(Material::Redstone));
+        assert_eq!(lines[1].mark, Mark::Refused);
+        assert_eq!((lines[1].needed, lines[1].held), (40, 2));
+    }
+
+    /// The middle state, and the reason the wealth pass is asked per **material** while
+    /// the shape pass is asked per **item**.
+    ///
+    /// `1 Compressed + 50` is owed and `200 raw` is held. The Compressed line holds
+    /// *none* of what it asks for and is still one conversion away, because the pile
+    /// behind it covers the whole price — asking wealth per **item** would have read
+    /// `held 0 of 1` and called it `✗`, sending the player to a mine they do not need.
+    #[test]
+    fn a_line_the_pile_behind_it_covers_invites_a_conversion_rather_than_a_mine() {
+        let mut inventory = Inventory::new();
+        inventory.add(Item::Raw(Material::Iron), 200);
+
+        let lines = price_lines(&inventory, &[CostLine::from_raw_total(Material::Iron, 150)]);
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].item, Item::Compressed(Material::Iron));
+        assert_eq!((lines[0].needed, lines[0].held), (1, 0));
+        assert_eq!(lines[0].mark, Mark::CompressFirst);
+        // The raw half is over-served by the same pile, and says so on its own.
+        assert_eq!(lines[1].mark, Mark::Affordable);
+
+        // Halve the pile and the *same* line becomes a mine's problem instead.
+        let mut poorer = Inventory::new();
+        poorer.add(Item::Raw(Material::Iron), 40);
+        let lines = price_lines(&poorer, &[CostLine::from_raw_total(Material::Iron, 150)]);
+        assert!(
+            lines.iter().all(|line| line.mark == Mark::Refused),
+            "{lines:?}"
+        );
+    }
+
+    /// **The rule the aggregate exists to respect.** Two rungs of `30` and `80` raw owe
+    /// `110 raw` — one hundred and ten loose items — and never `1 Compressed + 10`,
+    /// which is a payment `economy::pay` would refuse and the player was never offered.
+    #[test]
+    fn a_summed_chain_never_re_splits_into_a_compressed_unit() {
+        let rungs = [
+            upgrade::PickaxeRung {
+                tier: PickaxeTier::Wooden,
+                efficiency: 1,
+                cost: Some(Cost::single(Material::Stone, 30)),
+            },
+            upgrade::PickaxeRung {
+                tier: PickaxeTier::Wooden,
+                efficiency: 2,
+                cost: Some(Cost::single(Material::Stone, 80)),
+            },
+        ];
+
+        let owed = chain_price(&rungs);
+        assert_eq!(owed.get(&Item::Raw(Material::Stone)), Some(&110));
+        assert_eq!(owed.get(&Item::Compressed(Material::Stone)), None);
+    }
+
+    /// The aggregate and the walk must agree on the only thing the player acts on.
+    ///
+    /// [`upgrade::chain_affordability`] simulates rung by rung through a cloned purse;
+    /// the pane sums per denomination. They may name *different* refusals — the walk
+    /// stops at the first rung that fails, the lines report every material — but
+    /// "payable or not" is one fact, and this walks the whole ladder to say so.
+    #[test]
+    fn the_summed_price_is_payable_exactly_when_the_walk_is() {
+        let state = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Iron""#),
+            (
+                r#""inventory":{}"#,
+                r#""inventory":{"compressed_iron":30,"iron":80,"compressed_gold":12}"#,
+            ),
+        ]);
+        let ladder = upgrade::ladder();
+        let pickaxe = state.player().get_pickaxe();
+        let inventory = state.player().get_inventory();
+        let here = upgrade::position(&ladder, pickaxe);
+
+        let mut verdicts = Vec::new();
+        for target in here..ladder.len() {
+            let climbed = ladder.get(here + 1..=target).unwrap_or(&[]);
+            let summed = aggregate_price_lines(inventory, &chain_price(climbed))
+                .iter()
+                .all(|line| line.mark == Mark::Affordable);
+            let walked = upgrade::chain_affordability(inventory, pickaxe, target)
+                == Affordability::Affordable;
+            assert_eq!(summed, walked, "the two disagree at rung {target}");
+            verdicts.push(walked);
+        }
+        // Both answers must occur, or the agreement above is agreement about nothing.
+        assert!(
+            verdicts.contains(&true) && verdicts.contains(&false),
+            "{verdicts:?}"
+        );
     }
 
     #[test]
@@ -3019,7 +3445,7 @@ mod tests {
                 UpgradeDetail::Enchant(detail) => {
                     assert_eq!(detail.kind, kind);
                     assert!(!detail.effect.is_empty(), "{kind:?} explains nothing");
-                    assert!(!detail.next.is_empty(), "{kind:?} promises nothing");
+                    assert!(!detail.at_next.is_empty(), "{kind:?} promises nothing");
                 }
                 other => unreachable!("the Enchants sub-tab must project an enchant: {other:?}"),
             }
@@ -3030,38 +3456,88 @@ mod tests {
     fn only_the_enchants_that_roll_a_die_are_promised_more_procs() {
         // `proc_permille` is `0` for Fortune and Haste — they are permanent
         // multipliers — so telling a player their next level procs more often would
-        // describe a mechanic the enchant does not have.
+        // describe a mechanic the enchant does not have. Now that the pane states
+        // numbers rather than sentences, that reads as a `procs` row the two passive
+        // tracks do not have at all.
         let cap = 6;
+        let steps = |kind, level| {
+            enchant_at_next(kind, level, cap, 12, &Pickaxe::default())
+                .into_iter()
+                .map(|step| (step.name, step.value))
+                .collect::<Vec<_>>()
+        };
+        let names = |kind, level: u8| -> Vec<&'static str> {
+            steps(kind, level)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect()
+        };
+
+        assert_eq!(names(EnchantType::Fortune, 0), vec!["drops"]);
+        assert_eq!(names(EnchantType::Haste, 0), vec!["speed", "power"]);
+        for kind in [
+            EnchantType::Explosive,
+            EnchantType::Jackhammer,
+            EnchantType::Nuke,
+            EnchantType::Excavator,
+        ] {
+            assert!(
+                names(kind, 0).contains(&"procs"),
+                "{kind:?} rolls a die and must quote its rate"
+            );
+        }
+
+        // The numbers themselves, on the two the frame draws.
         assert!(
-            enchant_next(EnchantType::Fortune, 0, cap)
-                .join(" ")
-                .contains("multiplied by 2")
+            steps(EnchantType::Fortune, 0)
+                .iter()
+                .any(|(_, value)| value == "x1 → x2")
         );
         assert!(
-            enchant_next(EnchantType::Haste, 0, cap)
-                .join(" ")
-                .contains("speed")
+            steps(EnchantType::Nuke, 0)
+                .iter()
+                .any(|(name, value)| *name == "procs" && value == "0.0% → 0.1%")
         );
-        assert_eq!(
-            enchant_next(EnchantType::Nuke, 0, cap),
-            vec!["procs more often.".to_owned()]
-        );
-        // Explosive's square grows every third level and says so on the levels it
-        // does not grow — the one track whose sentence needed four lines in §5.4.1.
-        assert!(
-            enchant_next(EnchantType::Explosive, 1, cap)
-                .join(" ")
-                .contains("still 3x3")
-        );
-        assert!(
-            enchant_next(EnchantType::Explosive, 3, cap)
-                .join(" ")
-                .contains("grows to 5x5")
-        );
-        assert_eq!(
-            enchant_next(EnchantType::Nuke, cap, cap),
-            vec!["at its cap — nothing left to buy".to_owned()]
-        );
+    }
+
+    /// The square is the one stat that stands still on two levels out of three, and the
+    /// pane has to be honest about which — a `5x5` printed at II → III would promise a
+    /// reward `blast_cells` does not pay (UI.md §5.4.1).
+    #[test]
+    fn the_explosive_square_is_quoted_band_by_band() {
+        let cap = 6;
+        let square = |level: u8| {
+            enchant_at_next(EnchantType::Explosive, level, cap, 12, &Pickaxe::default())
+                .into_iter()
+                .find(|step| step.name == "square")
+                .map(|step| step.value)
+        };
+
+        // Bands of three: I-III blast 3x3, IV-VI 5x5. So two steps out of three stand
+        // still, and the third is the one that pays.
+        assert_eq!(square(1), Some("3x3 → 3x3".to_owned()));
+        assert_eq!(square(2), Some("3x3 → 3x3".to_owned()));
+        assert_eq!(square(3), Some("3x3 → 5x5".to_owned()));
+        assert_eq!(square(4), Some("5x5 → 5x5".to_owned()));
+
+        // The sentence the numbers cannot say, and only where they cannot say it.
+        assert!(!enchant_note(EnchantType::Explosive, 1, cap).is_empty());
+        assert!(enchant_note(EnchantType::Explosive, 3, cap).is_empty());
+        assert!(enchant_note(EnchantType::Nuke, 1, cap).is_empty());
+    }
+
+    /// A capped track sells nothing, and says so by having nothing to say: no steps, no
+    /// note, no price. The pane prints its own `Maxed` line off that emptiness.
+    #[test]
+    fn a_capped_track_moves_no_stat_at_all() {
+        let cap = 6;
+        for kind in cursor::enchant_tracks() {
+            assert!(
+                enchant_at_next(kind, cap, cap, 12, &Pickaxe::default()).is_empty(),
+                "{kind:?} is at its cap and must promise nothing"
+            );
+            assert!(enchant_note(kind, cap, cap).is_empty(), "{kind:?}");
+        }
     }
 
     #[test]
@@ -3072,6 +3548,7 @@ mod tests {
         // than assumed: if the filter ever changed, the pane would print a blank
         // Effect block instead of failing here.
         assert!(enchant_effect(EnchantType::Efficiency, 5).is_empty());
+        assert!(enchant_at_next(EnchantType::Efficiency, 0, 5, 12, &Pickaxe::default()).is_empty());
         assert!(!cursor::enchant_tracks().contains(&EnchantType::Efficiency));
     }
 
@@ -3092,7 +3569,7 @@ mod tests {
         assert_eq!(fortune.map(|row| row.mark), Some(Mark::NoPrice));
         assert!(fortune.is_some_and(|row| row.cells.get(1).is_some_and(|cell| cell == MAXED)));
         match &view.upgrades.active_subtab().detail {
-            UpgradeDetail::Enchant(detail) => assert!(detail.cost.is_none()),
+            UpgradeDetail::Enchant(detail) => assert!(detail.cost.is_empty()),
             other => unreachable!("the Enchants sub-tab must project an enchant: {other:?}"),
         }
     }
@@ -3139,7 +3616,7 @@ mod tests {
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Mine(detail) => {
                 assert_eq!(detail.blocked, Some(TrackBlock::NotEntered));
-                assert!(detail.cost.is_none());
+                assert!(detail.cost.is_empty());
             }
             other => unreachable!("the Mines sub-tab must project a mine track: {other:?}"),
         }
@@ -3164,8 +3641,10 @@ mod tests {
             match &view.upgrades.active_subtab().detail {
                 UpgradeDetail::Mine(detail) => {
                     assert_eq!(detail.at_next, TrackOutcome::Maxed, "{track:?}");
-                    assert!(detail.cost.is_none(), "{track:?}");
-                    assert_eq!(detail.mark, Mark::NoPrice, "{track:?}");
+                    // No price at all, which is what the pane reads to print `Maxed`
+                    // rather than a number: the mark used to say it, and every line of
+                    // a price now carries its own.
+                    assert!(detail.cost.is_empty(), "{track:?}");
                 }
                 other => unreachable!("the Mines sub-tab must project a mine track: {other:?}"),
             }
