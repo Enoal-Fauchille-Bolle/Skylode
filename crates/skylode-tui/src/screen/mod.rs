@@ -66,20 +66,52 @@ pub(super) fn panel(title: &str) -> Block<'static> {
         .title_style(theme::TITLE)
 }
 
-/// Draws a vertical scrollbar of `content_length` items with the thumb at
-/// `position`, using the design's `░` track and `█` thumb (UI.md §5.6).
+/// Draws a vertical scrollbar for a `total`-long list showing `visible` rows, with
+/// the thumb at scroll `position`, using the design's `░` track and `█` thumb
+/// (UI.md §5.6).
 ///
 /// Shared because both the Levels roadmap and the two scrolling Upgrades sub-tabs
-/// draw the same bar. `content_length` is the whole list's length — the *ladder*,
-/// not the window — so the thumb's size reflects how much of it is off-screen; a
-/// zero length renders nothing, which is ratatui's own guard, not ours.
+/// draw the same bar.
+///
+/// **The translation into ratatui's contract lives here, and it is not the obvious
+/// one.** [`ScrollbarState::content_length`] is *not* the number of rows: it is the
+/// number of distinct scroll **positions**, which for a windowed list is
+/// `total - visible + 1`. Ratatui places the thumb at
+/// `position * track / (content_length - 1 + viewport)` and gives it a length of
+/// `viewport * track / (content_length - 1 + viewport)`, so the two sum to the whole
+/// track — the thumb touches the bottom — exactly when `position == content_length - 1`.
+/// Handing it the row count instead reserves track for `visible` positions the list
+/// does not have, and the thumb stops short of the end by that fraction: on the
+/// 51-rung pickaxe ladder at 43 visible rows it stopped at a quarter.
+///
+/// [`ScrollbarState::viewport_content_length`] is set for the same reason rather than
+/// left to default: ratatui falls back to the *track's* height, which happens to equal
+/// `visible` at both call sites today and would silently stop doing so the day a bar is
+/// drawn beside a header it does not span.
+///
+/// A list that fits draws **nothing**, and the guard is ours rather than ratatui's
+/// `content_length == 0` one: the `+ 1` below would turn a fitting list into a
+/// full-height thumb, which reads as a scrollbar that is stuck rather than as one that
+/// is absent.
 ///
 /// The thumb takes [`theme::ACCENT`] and the track [`theme::MUTED`], which is the
 /// same pairing the status gauges use for their filled and unfilled halves — a
 /// scrollbar and a gauge are both "how far along this are you", so they should not
 /// answer that in two different colours.
-pub(super) fn scrollbar(frame: &mut Frame, area: Rect, content_length: usize, position: usize) {
-    let mut state = ScrollbarState::new(content_length).position(position);
+pub(super) fn scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    total: usize,
+    visible: usize,
+    position: usize,
+) {
+    let scrolled = total.saturating_sub(visible);
+    if scrolled == 0 {
+        return;
+    }
+    let mut state = ScrollbarState::new(scrolled + 1)
+        .position(position)
+        .viewport_content_length(visible);
     let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)
@@ -233,9 +265,79 @@ impl Screen {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::{
+        Terminal,
+        backend::TestBackend,
+        crossterm::event::{KeyCode, KeyModifiers},
+    };
 
     use super::*;
+
+    /// The bar a `total`-long list of `visible` rows draws at `position`, as one
+    /// string of `height` glyphs.
+    ///
+    /// Rendered through a real [`TestBackend`] rather than by calling ratatui's
+    /// arithmetic directly: the thing under test *is* the translation into ratatui's
+    /// contract, so a test that reimplemented the contract could only agree with
+    /// itself.
+    fn bar(total: usize, visible: usize, position: usize, height: u16) -> String {
+        let mut terminal = match Terminal::new(TestBackend::new(1, height)) {
+            Ok(terminal) => terminal,
+            Err(infallible) => match infallible {},
+        };
+        if let Err(infallible) = terminal.draw(|frame| {
+            scrollbar(frame, frame.area(), total, visible, position);
+        }) {
+            match infallible {}
+        }
+        let buffer = terminal.backend().buffer().clone();
+        (0..height).map(|y| buffer[(0, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn the_thumb_reaches_both_ends_of_the_track() {
+        // The screenshot's own numbers: 51 rungs, 43 visible, so the last offset is 8.
+        // At that offset the thumb must be flush with the *bottom* — the bug this
+        // helper was rewritten for left it at roughly a quarter, because it was handed
+        // 51 scroll positions when the list has 9.
+        let top = bar(51, 43, 0, 43);
+        assert!(top.starts_with('█'), "the thumb is not at the top: {top}");
+        assert!(top.ends_with('░'), "the track has no tail: {top}");
+
+        let bottom = bar(51, 43, 8, 43);
+        assert!(
+            bottom.ends_with('█'),
+            "the thumb does not reach the bottom: {bottom}"
+        );
+        assert!(bottom.starts_with('░'), "the track has no head: {bottom}");
+    }
+
+    #[test]
+    fn the_thumb_is_the_visible_share_of_the_list() {
+        // Half the list on screen is half a track of thumb, which is the reading a
+        // scrollbar exists to give: how much of this am I looking at.
+        let half = bar(20, 10, 0, 10);
+        assert_eq!(half.matches('█').count(), 5, "{half}");
+    }
+
+    #[test]
+    fn a_list_that_fits_draws_no_bar_at_all() {
+        // Not a full-height thumb, and not a bare track: a list with nowhere to
+        // scroll has nothing to report, and the reserved column stays blank. Both the
+        // equal case and the taller-viewport one, since only the first is reachable
+        // through `window`.
+        assert_eq!(bar(10, 10, 0, 10), " ".repeat(10));
+        assert_eq!(bar(4, 10, 0, 10), " ".repeat(10));
+    }
+
+    #[test]
+    fn a_position_past_the_last_offset_pins_the_thumb_rather_than_overflowing() {
+        // Unreachable through `window`, which clamps — but a scroll position is an
+        // untyped `usize`, and a renderer is the wrong place to discover a caller was
+        // wrong. Ratatui clamps it for us; this pins that it does.
+        let over = bar(51, 43, 999, 43);
+        assert_eq!(over, bar(51, 43, 8, 43));
+    }
 
     #[test]
     fn the_ring_holds_every_screen_once() {

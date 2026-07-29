@@ -238,28 +238,38 @@ fn columned(cells: &[String], widths: &[usize]) -> String {
 /// drops the column it exists to show is worse than a tight one.
 const COLUMN_GAP: &str = " ";
 
+/// The blank columns between the flush-right reachability mark and the scrollbar.
+///
+/// **One, and it is a budget rather than a taste** — the same argument
+/// [`COLUMN_GAP`] makes, against the same row. The §5.4 Pickaxe frame draws two here
+/// and the §5.4.2 Mines frame draws none, which is a contradiction inside one section
+/// of `docs/UI.md`; the arithmetic settles it. The widest Mines row is the lead
+/// mark (3) + `Ancient Debris` (14) + a gap + `Richness` (8) + a gap + `Lv 30` (5) =
+/// 32 columns, against the 34 the list pane has once the bar column is reserved. One
+/// gutter plus one mark leaves exactly 32; two would leave 31 and push the mark column
+/// off the pane — the very failure `COLUMN_GAP` was cut to one space to avoid.
+const MARK_GUTTER: usize = 1;
+
 /// The master list: the header row, then the entries, with a scrollbar on the two
 /// sub-tabs that overflow.
 fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
-    // How many rows fit, and therefore whether this list scrolls at all — both read
-    // off the `Rect` rather than off the view. Reserving the scrollbar column narrows
-    // the rows but not their number, so the count is taken first and stands.
+    // How many rows fit, read off the `Rect` rather than off the view. Reserving the
+    // scrollbar column narrows the rows but not their number, so the count is taken
+    // first and stands.
     let header_rows = u16::from(!subtab.header.is_empty());
     let visible = usize::from(area.height.saturating_sub(header_rows));
     let range = window(subtab.rows.len(), subtab.cursor(), subtab.offset, visible);
-    let scrolls = subtab.rows.len() > visible;
 
-    // Reserve the last column for a scrollbar only when the list scrolls; otherwise
-    // the rows have the full width.
-    let (rows_area, bar_area) = if scrolls {
-        let [rows, bar] =
-            Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-        (rows, Some(bar))
-    } else {
-        (area, None)
-    };
+    // **The bar column is reserved on every sub-tab, and drawn on the two that
+    // overflow.** Reserving it only when the list scrolls made the mark column jump one
+    // column between Pickaxe and Enchants — a column of glyphs that moves when the
+    // player changes sub-tab is the one thing a column of glyphs must not do.
+    // `screen::scrollbar` draws nothing when the list fits, so the reservation costs a
+    // blank column and never a stuck thumb.
+    let [rows_area, bar_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
-    let width = rows_area.width as usize;
+    let width = (rows_area.width as usize).saturating_sub(MARK_GUTTER);
     let widths = columns(subtab);
     let mut lines: Vec<Line> = Vec::new();
     if !subtab.header.is_empty() {
@@ -297,14 +307,12 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
     // own start, not the view's stored offset: `window` may have moved it to keep
     // the cursor on screen, and a thumb pointing at where the list *used* to be
     // would be reporting a scroll that did not happen.
-    if let Some(bar_area) = bar_area {
-        let bar = Rect {
-            y: bar_area.y + header_rows,
-            height: bar_area.height.saturating_sub(header_rows),
-            ..bar_area
-        };
-        scrollbar(frame, bar, subtab.rows.len(), range.start);
-    }
+    let bar = Rect {
+        y: bar_area.y + header_rows,
+        height: bar_area.height.saturating_sub(header_rows),
+        ..bar_area
+    };
+    scrollbar(frame, bar, subtab.rows.len(), visible, range.start);
 }
 
 /// The detail pane: the selected row, described.
@@ -707,6 +715,64 @@ mod tests {
         assert_eq!(sym(&buffer, 36, 1), "┬", "no divider at the top border");
         assert_eq!(sym(&buffer, 36, 5), "│", "no divider through the body");
         assert_eq!(sym(&buffer, 36, 22), "┴", "no divider at the bottom border");
+    }
+
+    /// The first inked column of the detail-pane row carrying `label`, and its colour,
+    /// searched from `from` — the pane's own left edge for a label, past
+    /// [`LABEL_COLUMNS`] for the value beside it.
+    ///
+    /// Anchored on the row rather than on a glyph: the panes repeat every letter of
+    /// the alphabet, so a buffer-wide scan for `C` finds whichever `Cobblestone` came
+    /// first and reports a colour about the wrong thing.
+    fn ink(buffer: &Buffer, label: &str, from: u16) -> Option<Color> {
+        let frame = whole_frame(buffer);
+        let y = u16::try_from(frame.lines().position(|line| line.contains(label))?).ok()?;
+        (from..buffer.area.width)
+            .find(|&x| sym(buffer, x, y) != " ")
+            .map(|x| buffer[(x, y)].fg)
+    }
+
+    /// The detail pane's left edge: one past the divider the frame draws at 36.
+    const PANE_X: u16 = 37;
+
+    #[test]
+    fn a_price_is_drawn_in_the_hue_of_its_own_verdict() {
+        // The colour doubles the `✗` further down the pane, so removing it loses
+        // nothing the pane did not already say — which is the whole of §4.5's rule.
+        // What it buys is that a refused price reads as refused at a glance rather than
+        // after the price has been read.
+        let buffer = render_tab(UpgradeTab::Mines);
+        assert_eq!(
+            ink(&buffer, "Cost", PANE_X + LABEL_COLUMNS as u16),
+            Some(theme::REFUSED),
+            "the price is not tinted with its verdict:\n{}",
+            whole_frame(&buffer)
+        );
+        // And `You hold` beside it is not: the tint is the *price*'s reading, so
+        // spreading it over the pane would make it decoration.
+        assert_eq!(
+            ink(&buffer, "You hold", PANE_X + LABEL_COLUMNS as u16),
+            Some(Color::Reset),
+            "the tint leaked past the price"
+        );
+    }
+
+    #[test]
+    fn a_blocks_label_is_muted_and_its_value_is_not() {
+        // Labels are chrome — the same role `MUTED` already plays for table headers —
+        // so the eye lands on the answer rather than on the word introducing it.
+        let buffer = render_tab(UpgradeTab::Pickaxe);
+        assert_eq!(
+            ink(&buffer, "Chain", PANE_X),
+            Some(theme::MUTED),
+            "the `Chain` label kept the default foreground:\n{}",
+            whole_frame(&buffer)
+        );
+        assert_eq!(
+            ink(&buffer, "Chain", PANE_X + LABEL_COLUMNS as u16),
+            Some(Color::Reset),
+            "the muting ran past the label"
+        );
     }
 
     #[test]

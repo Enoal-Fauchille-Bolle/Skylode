@@ -108,7 +108,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     // stored offset: `window` may have moved it to keep the cursor on screen, and a
     // thumb pointing at where the list used to be would report a scroll that did not
     // happen.
-    scrollbar(frame, bar_area, view.levels.len(), range.start);
+    scrollbar(frame, bar_area, view.levels.len(), visible, range.start);
 
     let footer =
         format!(" ↑↓  scroll     Home  jump to Lv {current}     Tab  next screen     ?  help");
