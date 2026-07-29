@@ -198,15 +198,49 @@ impl Pickaxe {
     /// would be choosing between them instead of compounding them. Multiplying the
     /// sum is what lets an additive lever and a multiplicative one sit on different
     /// layers and stack, which is the reason the game has both.
+    ///
+    /// **The arithmetic itself lives in [`power_with`](Pickaxe::power_with)**, which
+    /// answers the same question about a tier and level this pickaxe does not have.
+    /// This method is that one asked about the tool as it stands — one formula, so
+    /// the roadmap the Upgrades screen draws cannot promise a power the swing then
+    /// fails to deliver.
     pub fn mining_power(&self) -> f32 {
-        let base = self.tier.base_power();
-        let level = self.enchants.get_level(EnchantType::Efficiency);
-        let eff_bonus = if level > 0 {
-            (level as f32).powi(2) + 1.0
+        self.power_with(self.tier, self.enchants.get_level(EnchantType::Efficiency))
+    }
+
+    /// What this pickaxe's [`mining_power`](Pickaxe::mining_power) *would* be at
+    /// another tier and Efficiency level, keeping everything else about it.
+    ///
+    /// **The counterfactual the Upgrades screen is made of.** `docs/UI.md` §5.4 draws
+    /// a forty-six rung roadmap and §6.7 warns `34.0 → 9.0` before a tier jump is
+    /// paid for — both are questions about a pickaxe that does not exist yet, asked
+    /// by a front-end that must not be able to *build* one:
+    /// [`Enchants::upgrade`](crate::enchant::Enchants) is `pub(crate)` precisely so
+    /// nothing outside the core can enchant for free. So the counterfactual is
+    /// answered here, on the real pickaxe, rather than by handing out a way to forge
+    /// a hypothetical one.
+    ///
+    /// **It takes the pickaxe and not just the two numbers**, and Haste is why: the
+    /// power formula multiplies by [`haste_multiplier`](Pickaxe::haste_multiplier),
+    /// which is a property of *this* tool. A free function over `(tier, efficiency)`
+    /// would quote every preview at Haste 0 and understate every rung for a hasted
+    /// player — a roadmap that got worse the more the player invested in it.
+    ///
+    /// [`mining_power`](Pickaxe::mining_power) is now this method asked about the
+    /// pickaxe's own tier and level, so there is one formula and the preview cannot
+    /// drift from the swing it predicts.
+    ///
+    /// The `efficiency` is **not** checked against the tier's
+    /// [`efficiency_cap`](PickaxeTier::efficiency_cap): this answers a question, it
+    /// does not sell anything, and a caller walking a ladder past a cap is describing
+    /// a rung the ladder will not contain rather than cheating.
+    pub fn power_with(&self, tier: PickaxeTier, efficiency: u8) -> f32 {
+        let eff_bonus = if efficiency > 0 {
+            (efficiency as f32).powi(2) + 1.0
         } else {
             0.0
         };
-        (base + eff_bonus) * self.haste_multiplier()
+        (tier.base_power() + eff_bonus) * self.haste_multiplier()
     }
 
     /// Advances the pickaxe one step along its upgrade path.
@@ -605,6 +639,62 @@ mod tests {
                 "{tier:?} at Efficiency 5 must be worth base + 5² + 1"
             );
         }
+    }
+
+    /// **The identity that makes the counterfactual trustworthy**: asked about the
+    /// rung it is standing on, `power_with` *is* `mining_power`.
+    ///
+    /// Worth an exhaustive walk rather than a spot check, because the whole value of
+    /// the Upgrades roadmap is that the number it promises for the next rung is the
+    /// number the swing will deliver on arrival. The two agreeing at the current rung
+    /// is the only place that can be checked without predicting the future.
+    #[test]
+    fn asking_a_pickaxe_about_its_own_rung_gives_its_mining_power() {
+        for &tier in &ALL_TIERS {
+            for efficiency in [0, 1, 5] {
+                for haste in [0, 3] {
+                    let pickaxe = enchanted(tier, efficiency, haste);
+                    assert_eq!(
+                        pickaxe.power_with(tier, efficiency),
+                        pickaxe.mining_power(),
+                        "{tier:?} Eff {efficiency} Haste {haste} previews itself wrong"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The reason the counterfactual is a **method and not a free function**: it
+    /// keeps the asking pickaxe's Haste.
+    ///
+    /// A `power_with(tier, efficiency)` taking no pickaxe would quote every rung of
+    /// the roadmap at Haste 0 — so the more a player invested in Haste, the more the
+    /// screen would understate what their next purchase buys them.
+    #[test]
+    fn a_previewed_rung_keeps_the_haste_of_the_pickaxe_asking() {
+        let hasted = enchanted(PickaxeTier::Wooden, 0, 5);
+        let bare = enchanted(PickaxeTier::Wooden, 0, 0);
+        let rung = (PickaxeTier::Netherite, 15);
+
+        // 9 (Netherite) + 15² + 1 = 235, which `a_maxed_pickaxe_is_worth_its_whole
+        // _ladder` pins from the other end.
+        assert_eq!(bare.power_with(rung.0, rung.1), 235.0);
+        assert_eq!(
+            hasted.power_with(rung.0, rung.1),
+            470.0,
+            "Haste 5 doubles the previewed rung, exactly as it doubles the swing"
+        );
+    }
+
+    /// A rung far off the pickaxe's own tier answers, and answers with the *target*
+    /// tier's base power — the roadmap's whole job is to price a place the player is
+    /// not standing in.
+    #[test]
+    fn a_wooden_pickaxe_can_be_asked_what_diamond_would_be_worth() {
+        let wooden = Pickaxe::default();
+
+        assert_eq!(wooden.mining_power(), 2.0, "still a bare Wooden pickaxe");
+        assert_eq!(wooden.power_with(PickaxeTier::Diamond, 5), 34.0);
     }
 
     /// Haste's rungs are evenly spaced 20% steps — `2.0, 2.4, 2.8` on a bare
