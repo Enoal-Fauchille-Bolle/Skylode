@@ -55,12 +55,11 @@ pub enum Conversion {
 
 /// A modal overlay that captures input.
 ///
-/// Two variants so far. The rest ([`dip`], [`prestige`], [`settings`]) are drawn but
-/// not yet stacked: they arrive as variants here when the screens that open them are
-/// wired (phases 6–7), and the exhaustive `match` in [`crate::keymap`] and
-/// [`crate::app`] then refuses to compile until each learns to draw and drive.
+/// Three variants so far. The rest ([`prestige`], [`settings`]) are drawn but not yet
+/// stacked: they arrive as variants here when the screens that open them are wired
+/// (phase 7), and the exhaustive `match` in [`crate::keymap`] and [`crate::app`] then
+/// refuses to compile until each learns to draw and drive.
 ///
-/// [`dip`]: crate::overlay::dip
 /// [`prestige`]: crate::overlay::prestige
 /// [`settings`]: crate::overlay::settings
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +85,25 @@ pub enum Modal {
         direction: Conversion,
         /// How many units the spinner currently reads, always `1..=max`.
         units: u32,
+    },
+    /// The tier-jump confirmation (UI.md §6.7), opened by a chain that ends below the
+    /// power it started at.
+    ///
+    /// **The target rung is carried, not re-read from the cursor**, for the reason the
+    /// compression dialog carries its material: the modal is *about* one chain, and it
+    /// was opened against numbers the player has now read. A cursor cannot move under
+    /// a modal today — the modal has every key — but the confirm would silently mean
+    /// something else the moment one could.
+    ///
+    /// `buy` is which of the two options the `▸` is on, and it opens **`false`**: the
+    /// dangerous option must not be the one a reflex `Enter` takes. That is §6.7's
+    /// prose over its own wireframe, which draws the caret on `Buy it`; the departure
+    /// is recorded in `docs/UI.md`.
+    Dip {
+        /// The ladder index the chain would climb to.
+        to: usize,
+        /// Whether `Buy it` is the focused option.
+        buy: bool,
     },
 }
 

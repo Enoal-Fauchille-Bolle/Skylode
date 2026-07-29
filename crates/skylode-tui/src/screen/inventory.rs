@@ -11,9 +11,10 @@
 //! and shows `Compressible now` — a screen that only said "you cannot afford this"
 //! would be lying, since the player can.
 //!
-//! That refusal half is an [`Option`](crate::view::InventoryView::hint) and is
-//! [`None`] on every run today: only `Enter` on the Upgrades screen produces a
-//! `CompressFirst` verdict, and that is phase 6. Everything else here is real — the
+//! That refusal half is an [`Option`](crate::view::InventoryView::hint), filled only
+//! when `Enter` on the Upgrades screen has actually produced a `CompressFirst`
+//! verdict **for this material** — so a fresh run draws no refusal block at all, and a
+//! remembered one follows the cursor off its own row. Everything else here is real — the
 //! counts come from the run's [`Inventory`](skylode_core::inventory::Inventory), and
 //! the two derived numbers (value, compressible-now) are computed from what the
 //! player holds.
@@ -257,7 +258,7 @@ mod tests {
         use crate::cursor::Cursors;
 
         let state = GameState::new(0x5B1_0DE, std::time::UNIX_EPOCH);
-        let view = View::from_state(&state, Cursors::new(MineKind::Stone));
+        let view = View::from_state(&state, Cursors::new(MineKind::Stone, 0), None);
 
         assert_eq!(view.inventory.rows.len(), 15);
         for row in &view.inventory.rows {
@@ -287,8 +288,8 @@ mod tests {
         assert!(frame.contains("Amethyst"), "{frame}");
     }
 
-    /// The panel's refusal half is absent when nothing has been refused — which is
-    /// every run until phase 6 wires `Enter` on the Upgrades screen.
+    /// The panel's refusal half is absent when nothing has been refused, which is the
+    /// state every run opens in.
     ///
     /// The rest of the panel is still drawn, and both halves are asserted: a
     /// `None` that blanked the whole panel would pass a test that only checked the

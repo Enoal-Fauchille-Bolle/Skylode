@@ -60,6 +60,22 @@ pub enum Action {
     AdjustMax,
     /// Act on whatever the cursor is sitting on (`Enter`).
     Confirm,
+    /// Buy as much of the active track as the inventory allows (`M`).
+    ///
+    /// **Not [`AdjustMax`](Action::AdjustMax), and the two are worth keeping apart.**
+    /// That one moves a *number* to its ceiling — the compression spinner's `a` — and
+    /// costs nothing; this one spends an inventory and cannot be taken back. One
+    /// gesture, one kind of consequence.
+    BuyMax,
+    /// Show the next Upgrades sub-tab (the configurable binding, `⇧→` by default).
+    ///
+    /// A gesture of its own rather than a reuse of
+    /// [`AdjustRight`](Action::AdjustRight), because UI.md §9 gives the two axes
+    /// different jobs everywhere: `←/→` adjusts the value under the cursor, and the
+    /// lateral *sub-tab* move is a different act that happens to be bound near it.
+    NextSubTab,
+    /// Show the previous one.
+    PrevSubTab,
     /// Open the compression dialog on the material under the Inventory cursor (`c`).
     ///
     /// **Not a list gesture**, which is why it is a variant of its own rather than a

@@ -338,9 +338,10 @@ mod tests {
             KeyCode::Enter,
             KeyCode::Char('c'),
             KeyCode::Char('\u{1}'),
+            KeyCode::Char('M'),
         ];
         // What each screen answers, in the order of `keys` above.
-        let claimed = |screen: Screen| -> [Option<Action>; 7] {
+        let claimed = |screen: Screen| -> [Option<Action>; 8] {
             match screen {
                 Screen::Mines => [
                     Some(Action::CursorUp),
@@ -348,6 +349,7 @@ mod tests {
                     Some(Action::AdjustLeft),
                     Some(Action::AdjustRight),
                     Some(Action::Confirm),
+                    None,
                     None,
                     None,
                 ],
@@ -363,10 +365,25 @@ mod tests {
                     None,
                     Some(Action::Compress),
                     None,
+                    None,
                 ],
-                // Phases 6-7 own the rest; `None` is "not mine", which lets `keymap`
+                // **The one screen that answers nothing lateral**, deliberately: UI.md
+                // §9 leaves `←/→` free here so the configurable sub-tab binding can own
+                // it, and that binding is resolved in `keymap` — the only place the
+                // config is visible — before this function is ever reached.
+                Screen::Upgrades => [
+                    Some(Action::CursorUp),
+                    Some(Action::CursorDown),
+                    None,
+                    None,
+                    Some(Action::Confirm),
+                    None,
+                    None,
+                    Some(Action::BuyMax),
+                ],
+                // Phase 7 owns the rest; `None` is "not mine", which lets `keymap`
                 // fall through instead of swallowing the key.
-                _ => [const { None }; 7],
+                _ => [const { None }; 8],
             }
         };
         for screen in Screen::ALL {

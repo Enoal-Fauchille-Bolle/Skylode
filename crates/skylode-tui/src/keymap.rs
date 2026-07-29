@@ -16,7 +16,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::{action::Action, app::App, overlay::Modal};
+use crate::{action::Action, app::App, config::SubTabKeys, overlay::Modal, screen::Screen};
 
 /// The digits that jump straight to a tab. Derived from the ring, so a seventh
 /// screen does not need this constant edited — only the ring.
@@ -58,6 +58,19 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
                 KeyCode::Esc => Some(Action::CloseModal),
                 _ => None,
             },
+            // The tier-jump confirmation. Two options rather than a value, so `←/→`
+            // move the caret between them — the same *adjust what is under the
+            // cursor* the spinner reuses — and `Enter` takes the focused one. `n` is
+            // the frame's own printed key and closes the box outright, which is why
+            // it is `CloseModal` and not a third gesture: declining is exactly what
+            // every other modal's `Esc` does.
+            Modal::Dip { .. } => match key.code {
+                KeyCode::Left => Some(Action::AdjustLeft),
+                KeyCode::Right => Some(Action::AdjustRight),
+                KeyCode::Enter => Some(Action::Confirm),
+                KeyCode::Char('n') | KeyCode::Esc => Some(Action::CloseModal),
+                _ => None,
+            },
         };
     }
 
@@ -82,8 +95,42 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
         _ => {}
     }
 
-    // 4. Fall through to whatever the current screen wants.
+    // 4. The configurable sub-tab binding, before the screen is consulted.
+    //
+    //    Here rather than in `screen::upgrades::map_key` because that function is
+    //    handed a key and nothing else — no config — and this module's header has
+    //    promised since phase 0 that the binding would land in "one function, not a
+    //    match scattered across six screens". Gated on the Upgrades screen because
+    //    two of the three choices (`h`/`l`, `[`/`]`) are ordinary characters: claimed
+    //    globally they would be swallowed everywhere for a screen that owns them
+    //    nowhere else.
+    if app.screen == Screen::Upgrades
+        && let Some(action) = sub_tab(key, app.config.sub_tab_keys)
+    {
+        return Some(action);
+    }
+
+    // 5. Fall through to whatever the current screen wants.
     app.screen.map_key(key)
+}
+
+/// Decodes the configured sub-tab binding, or `None` if this key is not it.
+///
+/// The three choices are `SubTabKeys`' own, and each is matched *whole* — a
+/// `Shift+←` is the modifier and the code together, and dropping the modifier check
+/// would make a bare `←` switch sub-tabs on a screen where UI.md §9 deliberately
+/// leaves the lateral axis free.
+fn sub_tab(key: KeyEvent, binding: SubTabKeys) -> Option<Action> {
+    let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
+    match (binding, key.code) {
+        (SubTabKeys::ShiftArrows, KeyCode::Left) if shifted => Some(Action::PrevSubTab),
+        (SubTabKeys::ShiftArrows, KeyCode::Right) if shifted => Some(Action::NextSubTab),
+        (SubTabKeys::HL, KeyCode::Char('h')) => Some(Action::PrevSubTab),
+        (SubTabKeys::HL, KeyCode::Char('l')) => Some(Action::NextSubTab),
+        (SubTabKeys::Brackets, KeyCode::Char('[')) => Some(Action::PrevSubTab),
+        (SubTabKeys::Brackets, KeyCode::Char(']')) => Some(Action::NextSubTab),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +279,108 @@ mod tests {
         // `Ctrl-C` still outranks even a modal — the one key that is never captured.
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(resolve(&app, ctrl_c), Some(Action::Quit));
+    }
+
+    /// A session on the Upgrades screen, where the sub-tab binding lives.
+    fn upgrading() -> App {
+        let mut app = session();
+        app.screen = Screen::Upgrades;
+        app
+    }
+
+    /// The default binding: `Shift` **and** the arrow, together.
+    ///
+    /// A bare `←` must stay unclaimed here — UI.md §9 leaves the lateral axis free on
+    /// this screen precisely so the sub-tab can own it, and a decode that dropped the
+    /// modifier would take a key the player expects to do nothing and make it change
+    /// what they are looking at.
+    #[test]
+    fn the_default_sub_tab_binding_is_the_shifted_arrows_and_only_those() {
+        let app = upgrading();
+        let shifted = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
+
+        assert_eq!(
+            resolve(&app, shifted(KeyCode::Right)),
+            Some(Action::NextSubTab)
+        );
+        assert_eq!(
+            resolve(&app, shifted(KeyCode::Left)),
+            Some(Action::PrevSubTab)
+        );
+        assert_eq!(
+            resolve(&app, press(KeyCode::Left)),
+            None,
+            "an unshifted arrow switched sub-tabs"
+        );
+    }
+
+    /// Help renders the binding from config (UI.md §6.11), and so does the keymap —
+    /// which is the half that was missing: the field existed and was displayed for two
+    /// phases before anything was bound to it.
+    #[test]
+    fn each_configured_binding_is_the_one_that_answers() {
+        for (choice, prev, next) in [
+            (SubTabKeys::HL, KeyCode::Char('h'), KeyCode::Char('l')),
+            (SubTabKeys::Brackets, KeyCode::Char('['), KeyCode::Char(']')),
+        ] {
+            let mut app = upgrading();
+            app.config.sub_tab_keys = choice;
+
+            assert_eq!(resolve(&app, press(prev)), Some(Action::PrevSubTab));
+            assert_eq!(resolve(&app, press(next)), Some(Action::NextSubTab));
+            // And the default's own keys stop answering, or a rebind would add a
+            // binding rather than move one.
+            assert_eq!(
+                resolve(&app, KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+                None,
+                "{choice:?} left the shifted arrows bound"
+            );
+        }
+    }
+
+    /// **Gated on the screen, and that is why two of the three choices are safe at
+    /// all.** `h` and `[` are ordinary characters: claimed globally they would be
+    /// swallowed on every screen for a gesture only one of them has.
+    #[test]
+    fn the_sub_tab_keys_are_not_claimed_on_other_screens() {
+        let mut app = session();
+        app.config.sub_tab_keys = SubTabKeys::HL;
+        app.screen = Screen::Mines;
+
+        assert_eq!(resolve(&app, press(KeyCode::Char('h'))), None);
+        assert_eq!(
+            resolve(&app, KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+            Some(Action::AdjustRight),
+            "the Mines dial lost its own arrow"
+        );
+    }
+
+    /// The dip box binds the two list gestures, `Enter`, and the frame's own `n` —
+    /// and swallows everything else, which is what makes it modal.
+    #[test]
+    fn the_dip_box_takes_the_arrows_enter_and_its_own_printed_key() {
+        let mut app = session();
+        app.modal = Some(Modal::Dip { to: 7, buy: false });
+
+        assert_eq!(
+            resolve(&app, press(KeyCode::Left)),
+            Some(Action::AdjustLeft)
+        );
+        assert_eq!(
+            resolve(&app, press(KeyCode::Right)),
+            Some(Action::AdjustRight)
+        );
+        assert_eq!(resolve(&app, press(KeyCode::Enter)), Some(Action::Confirm));
+        // `n` is the key the §6.7 frame prints, and it declines outright — the same
+        // act every other modal spells `Esc`, so it decodes to the same action.
+        assert_eq!(
+            resolve(&app, press(KeyCode::Char('n'))),
+            Some(Action::CloseModal)
+        );
+        assert_eq!(resolve(&app, press(KeyCode::Esc)), Some(Action::CloseModal));
+        // Swallowed, not passed through: `q` would otherwise quit from under the box.
+        assert_eq!(resolve(&app, press(KeyCode::Char('q'))), None);
+        assert_eq!(resolve(&app, press(KeyCode::Tab)), None);
     }
 
     #[test]

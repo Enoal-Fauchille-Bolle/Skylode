@@ -1,13 +1,17 @@
 //! Text formatting shared across screens.
 //!
-//! Three helpers the screens lean on. [`grouped`] enforces the cross-cutting rule
-//! that numbers are **exact, with a thousands separator, and never abbreviated**
-//! (UI.md §5.6): `1 240`, `418 297`, never `1.2k`. [`justified`] lays a label and
-//! a value on one row with the value flush to the right — the shape a roadmap row,
-//! a stat line and a table row all repeat. [`xp_progress`] is the one reading that
-//! has a *non-numeric* answer, and it is here so all three screens that print it
-//! give the same one. Keeping them together means the grouping and the alignment
-//! cannot drift between the XP gauge and the inventory table.
+//! [`grouped`] enforces the cross-cutting rule that numbers are **exact, with a
+//! thousands separator, and never abbreviated** (UI.md §5.6): `1 240`, `418 297`,
+//! never `1.2k`. [`justified`] lays a label and a value on one row with the value
+//! flush to the right — the shape a roadmap row, a stat line and a table row all
+//! repeat. [`xp_progress`] is the one reading that has a *non-numeric* answer, and it
+//! is here so all three screens that print it give the same one. [`roman`] and
+//! [`rung_label`] name a pickaxe rung, which both the Upgrades roadmap and the toast
+//! announcing a purchase have to do identically. Keeping them together means the
+//! grouping and the alignment cannot drift between the XP gauge and the inventory
+//! table.
+
+use skylode_core::pickaxe::PickaxeTier;
 
 /// Groups `n` into space-separated thousands: `1240` becomes `"1 240"`.
 ///
@@ -51,6 +55,51 @@ pub fn justified(left: &str, right: &str, width: usize) -> String {
     }
     out.push_str(right);
     out
+}
+
+/// Roman numerals `I`..=`XV` — exactly the range an Efficiency level can take, since
+/// [`PickaxeTier::efficiency_cap`] tops out at 15 on Netherite.
+const ROMAN: [&str; 15] = [
+    "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV",
+];
+
+/// `level` as a Roman numeral, or `"?"` past the table.
+///
+/// The fallback is unreachable in play — [`ROMAN`] spans every level any cap allows —
+/// but it exists so the lookup is total: this crate's lints forbid the `unwrap` that
+/// would be the alternative, and a panic while drawing a frame is the worst way for a
+/// front-end to report that a cap moved.
+///
+/// **Here rather than in [`view`](crate::view)**, where it lived until the Upgrades
+/// ladder needed it: a toast naming a bought rung is written by
+/// [`app`](crate::app), which holds no read model, so a numeral private to the
+/// projection would have had to be duplicated or made public from the wrong module.
+pub fn roman(level: u8) -> &'static str {
+    // `level - 1` cannot underflow: zero is filtered here rather than by the callers,
+    // each of which would otherwise repeat the guard.
+    if level == 0 {
+        return "?";
+    }
+    ROMAN.get(usize::from(level) - 1).copied().unwrap_or("?")
+}
+
+/// A rung of the pickaxe ladder, named the way `docs/UI.md` §5.4 lists it:
+/// `Netherite Pickaxe` for a tier jump, `Diamond Eff IV` for an Efficiency level.
+///
+/// **The tier's own word plus a suffix**, which is what
+/// [`PickaxeTier::name`](skylode_core::pickaxe::PickaxeTier::name) returning the bare
+/// material is for: the roadmap writes `Pickaxe` once per tier and never on the thirty
+/// Efficiency rungs between.
+///
+/// A rung at Efficiency 0 is the tier itself — the jump, or the bare pickaxe a run
+/// starts with. Both read the same, and correctly: what the row names is *arriving at
+/// that tier*, and the two differ only in whether anybody paid for it.
+pub fn rung_label(tier: PickaxeTier, efficiency: u8) -> String {
+    if efficiency == 0 {
+        format!("{} Pickaxe", tier.name())
+    } else {
+        format!("{} Eff {}", tier.name(), roman(efficiency))
+    }
 }
 
 /// The XP readout: `1 240 / 2 300`, or [`MAXED`] once there is no next level.

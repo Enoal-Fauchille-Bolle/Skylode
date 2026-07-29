@@ -12,7 +12,7 @@
 
 use skylode_core::{
     block::Block,
-    economy::CostLine,
+    economy::{self, Affordability, Cost, CostLine},
     enchant::EnchantType,
     game::GameState,
     inventory::Inventory,
@@ -20,17 +20,24 @@ use skylode_core::{
     mine::{MAX_RICHNESS_LEVEL, Mine},
     mine_kind::{MineKind, MineLock},
     pickaxe::PickaxeTier,
-    tunables::{BOOST_DURATION_TICKS, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND},
+    tunables::{
+        BOOST_DURATION_TICKS, HASTE_PER_LEVEL, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND,
+    },
+    upgrade,
 };
 
-use crate::{cursor::Cursors, palette::ColourMode};
+use crate::{
+    cursor::{self, Cursors, MineTrack, UpgradeTab},
+    format::{MAXED, roman, rung_label},
+    palette::ColourMode,
+};
 
 /// What a readout with nothing to report prints.
 ///
 /// The same em dash the Mine screen's empty gauges use, and for the same reason: a
 /// `Fortune 0` or an `Efficiency 0` states a level the player owns, where the truth
 /// is that they own no such enchant at all.
-const NOTHING: &str = "—";
+pub const NOTHING: &str = "—";
 
 /// One row of the Levels roadmap (UI.md §5.6).
 ///
@@ -50,43 +57,91 @@ pub struct LevelRow {
     pub xp: u32,
 }
 
-/// Which sub-tab of the Upgrades screen is showing (UI.md §5.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UpgradeTab {
-    /// The pickaxe ladder — a single linear roadmap, no rung skippable.
-    Pickaxe,
-    /// The six enchant tracks, each at its frontier.
-    Enchants,
-    /// The twelve mines' size and richness tracks.
-    Mines,
-}
-
 /// One row of an Upgrades sub-tab's list (UI.md §5.4).
 ///
 /// Two mark channels, because the Pickaxe ladder carries both: `cursor`/`current`
 /// are where you are and where the selection sits (`▸`/`●`), while `mark` is
 /// **cumulative reachability** — `✓`/`~`/`✗`, "reachable buying every rung from
-/// here". All fixture data; the real marks are a phase-6 core read, and the ladder
-/// invariant (the `✓` region is a contiguous prefix) is asserted on the fixture.
+/// here". The marks come from `upgrade::max_affordable` on the Pickaxe ladder and
+/// from `economy::affordability` on the other two sub-tabs, and the ladder invariant
+/// (the `✓` region is a contiguous prefix) is asserted on the fixture *and* on a run.
 #[derive(Clone, Debug)]
 pub struct UpgradeRow {
-    /// The row's own text — the rung label, or a track line already laid out.
-    pub text: String,
-    /// The reachability mark: `✓`, `~`, `✗`, `—`, or empty.
-    pub mark: String,
+    /// The row's columns, left to right — a rung label alone on the Pickaxe ladder,
+    /// three cells on the two sub-tabs that draw a table.
+    ///
+    /// **Cells, not one laid-out line, and that is phase 6's instance of the recurring
+    /// lesson.** The fixture wrote `"Fortune     III → IV  10"`, padding included, so
+    /// the column widths were decided in the read model — where nothing knows how wide
+    /// the pane is, and where a name one character longer silently breaks the
+    /// alignment of every row below it. The screen owns the padding now: it measures
+    /// the widest cell per column and lays them out, so the table is right by
+    /// construction at any width.
+    pub cells: Vec<String>,
+    /// What buying this row would cost the player, as a verdict.
+    pub mark: Mark,
     /// Whether the selection cursor sits here — drawn `▸`.
     pub cursor: bool,
     /// Whether this is the player's current position — drawn `●` (Pickaxe only).
     pub current: bool,
 }
 
+/// What a row's reachability column says (UI.md §5.4).
+///
+/// **A verdict and not a glyph**, which is what lets [`crate::theme::marked`] keep
+/// owning the colour and the ladder-prefix test assert on meaning rather than on a
+/// character. It carries one state [`Affordability`] does not: a track with no price
+/// to quote at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    /// Already bought — the rungs behind the player. Drawn blank.
+    Owned,
+    /// The till would take it: `✓`.
+    Affordable,
+    /// The value is held, the denomination is not: `~`.
+    CompressFirst,
+    /// The ore is not there: `✗`.
+    Refused,
+    /// **Nothing to price**, drawn `—`: a maxed track, or one gated by a level rather
+    /// than by a purchase (the End's two rows, `Lv 30`). Distinct from
+    /// [`Refused`](Mark::Refused) on purpose — a price the player cannot meet and a
+    /// price that does not exist are different news, and `docs/UI.md` §5.4.2 draws the
+    /// End's rows locked *with the reason* rather than as unaffordable.
+    NoPrice,
+}
+
+impl Mark {
+    /// The three-state verdict a [`Cost`] got, as a mark.
+    ///
+    /// A free function over the core's own enum rather than a `From` impl, because the
+    /// mapping is not total in the other direction: [`NoPrice`](Mark::NoPrice) and
+    /// [`Owned`](Mark::Owned) are the front-end's, and an [`Affordability`] can never
+    /// mean either.
+    pub fn of(verdict: &Affordability) -> Self {
+        match verdict {
+            Affordability::Affordable => Self::Affordable,
+            Affordability::CompressFirst(_) => Self::CompressFirst,
+            Affordability::Insufficient(_) => Self::Refused,
+        }
+    }
+
+    /// The glyph this mark draws in the reachability column.
+    ///
+    /// Empty for [`Owned`](Mark::Owned): a rung already bought has nothing to say, and
+    /// a glyph there would put a fourth symbol in a column the eye reads as three.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Owned => "",
+            Self::Affordable => "✓",
+            Self::CompressFirst => "~",
+            Self::Refused => "✗",
+            Self::NoPrice => "—",
+        }
+    }
+}
+
 /// One sub-tab of the Upgrades screen: a list on the left, a detail pane on the
 /// right (UI.md §5.4).
-///
-/// The detail pane is a **pre-formatted block of lines**, transcribed from the
-/// frame — the dip box, the costs and the affordability are all placeholder prose
-/// the core does not yet answer (phases 5–6), so there is nothing to derive and
-/// the box art travels as text.
 ///
 /// **`rows` is the whole ladder, not the visible slice.** It used to be the slice,
 /// with a `scroll: Option<(total, position)>` beside it saying how much had been cut
@@ -108,10 +163,159 @@ pub struct UpgradeSubtab {
     /// player on every keypress. The screen adjusts it only when the cursor would
     /// otherwise fall off an edge, which is what [`crate::screen::window`] does.
     pub offset: usize,
-    /// The detail pane, already laid out line by line.
-    pub detail: Vec<String>,
+    /// The detail pane for the row under the cursor.
+    pub detail: UpgradeDetail,
     /// The screen-local footer for this sub-tab.
     pub footer: String,
+}
+
+/// The right-hand pane, typed by sub-tab (UI.md §5.4, §5.4.1, §5.4.2).
+///
+/// **It used to be `Vec<String>` — the frame's box art transcribed verbatim** — and
+/// that was honest while the numbers were placeholders. It cannot survive a real run:
+/// the dip box quotes a power the pickaxe actually has, the cost block lists the
+/// lines a purchase actually demands, and a pane built from strings would be a second
+/// place those could be wrong.
+#[derive(Clone, Debug)]
+pub enum UpgradeDetail {
+    /// The chain up to the cursor: its price, its dip, what it unlocks.
+    Pickaxe(Box<PickaxeDetail>),
+    /// One enchant track at its frontier.
+    Enchant(EnchantDetail),
+    /// One mine's size or richness track.
+    Mine(MineTrackDetail),
+}
+
+/// The Pickaxe sub-tab's pane: what the chain to the cursor costs and does.
+///
+/// **`costs` is one entry per rung and is never summed**, which is the same rule
+/// [`upgrade::chain_affordability`] enforces: two prices added together and re-split
+/// into denominations describe a payment the player is never asked to make. The pane
+/// therefore lists what each step demands, in order.
+#[derive(Clone, Debug)]
+pub struct PickaxeDetail {
+    /// The rung the cursor is on, named.
+    pub title: String,
+    /// Whether reaching it crosses a tier jump — the pane's `tier jump` tag.
+    pub crosses_tier_jump: bool,
+    /// Every rung the chain would buy, named, in climbing order.
+    ///
+    /// **Named and not merely counted**, because §6.7's modal opens on *"Buying Diamond
+    /// Efficiency V, then the tier jump"* — the sentence that tells a player what they
+    /// are about to lose Efficiency *from*. The pane beside it only wants the length,
+    /// and `len()` is that; carrying the count instead would have made the modal ask
+    /// the ladder a second time, from the far side of the read model.
+    pub chain: Vec<String>,
+    /// What the whole chain is verdicted at.
+    pub mark: Mark,
+    /// Every line every rung of the chain demands, in climbing order.
+    pub costs: Vec<CostLine>,
+    /// The dip box, when the chain ends below the power it started at.
+    pub dip: Option<DipDetail>,
+    /// The mines this tier opens, if the chain reaches a new one.
+    pub unlocks: Vec<MineKind>,
+    /// The Efficiency cap before and after, when the chain crosses a jump.
+    pub ceiling: Option<(u8, u8)>,
+}
+
+/// The dip box (UI.md §5.4) and the modal that guards it (§6.7).
+///
+/// **The cost is stated in ticks per block as well as in power**, because `34.0 → 9.0`
+/// is a number no player has an intuition for. The reference block is the *value*
+/// cell of the mine they are standing in — always defined, and stable while the box
+/// is being read, which the aimed cell is not.
+#[derive(Clone, Debug)]
+pub struct DipDetail {
+    /// Mining power now.
+    pub power_before: f64,
+    /// Mining power after the chain.
+    pub power_after: f64,
+    /// The block the two tick counts are quoted against.
+    pub block: Block,
+    /// Ticks it takes now, or [`None`] if this pickaxe never breaks that block.
+    pub ticks_before: Option<u32>,
+    /// Ticks it will take after.
+    pub ticks_after: Option<u32>,
+    /// The rung that earns the power back, when there is one.
+    pub repaid_at: Option<Repaid>,
+}
+
+/// Where a dip is paid back, and how far away that is.
+///
+/// **The distance is carried, not recomputed.** §6.7's frame ends on *"five purchases
+/// later"*, and that is the number the decision actually turns on: a dip repaid one
+/// rung on is a different offer from one repaid five, and both read `35.0` in the
+/// power column. Derived here from the two ladder indices, which is the only place
+/// both are in hand.
+#[derive(Clone, Debug)]
+pub struct Repaid {
+    /// The rung that earns the power back, named.
+    pub rung: String,
+    /// The power it restores — above [`DipDetail::power_before`] by construction.
+    pub power: f64,
+    /// How many rungs past the one being bought it sits.
+    pub rungs_later: usize,
+}
+
+/// The Enchants sub-tab's pane: one track, its effect and its price.
+#[derive(Clone, Debug)]
+pub struct EnchantDetail {
+    /// Which track.
+    pub kind: EnchantType,
+    /// The level held.
+    pub level: u8,
+    /// The cap the highest world reached allows.
+    pub cap: u8,
+    /// What the enchant does, in prose — front-end text, like the Mines screen's note.
+    pub effect: Vec<String>,
+    /// What the next level changes, if there is one.
+    pub next: Vec<String>,
+    /// What one level costs, or [`None`] at the cap.
+    pub cost: Option<Vec<CostLine>>,
+    /// The verdict on that price.
+    pub mark: Mark,
+}
+
+/// The Mines sub-tab's pane: one paid track of one mine.
+#[derive(Clone, Debug)]
+pub struct MineTrackDetail {
+    /// Which mine.
+    pub kind: MineKind,
+    /// Which of its two tracks.
+    pub track: MineTrack,
+    /// The level held, and the one being bought.
+    pub level: (u32, u32),
+    /// What the next level buys: a grid size, or a value-cell share.
+    pub at_next: TrackOutcome,
+    /// What it costs, or [`None`] when the track is maxed.
+    pub cost: Option<Vec<CostLine>>,
+    /// What the player holds of each material the price names.
+    pub held: Vec<(Material, u32, u32)>,
+    /// The verdict on that price.
+    pub mark: Mark,
+    /// Why this mine cannot be upgraded at all, if it cannot.
+    pub blocked: Option<TrackBlock>,
+}
+
+/// What buying the next level of a mine track hands over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackOutcome {
+    /// The grid the size track would grow to.
+    Size((u8, u8)),
+    /// The value cell's share of the grid, in percent, at the new ceiling.
+    Richness(u32),
+    /// The track has nothing left to sell.
+    Maxed,
+}
+
+/// Why a mine's tracks are shut, when they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackBlock {
+    /// Progression has not opened this mine yet — the `Lv 30` of §5.4.2.
+    Locked(MineLock),
+    /// The mine is open but this run has never walked into it, so it has no state to
+    /// upgrade. One keypress away, which is why it is not a [`Locked`](TrackBlock::Locked).
+    NotEntered,
 }
 
 impl UpgradeSubtab {
@@ -309,12 +513,13 @@ pub struct InventoryView {
     pub selected: Material,
     /// The refusal this screen was walked here to clear, or [`None`].
     ///
-    /// **[`None`] on every run today, and that is not a stub.** A `CompressFirst`
-    /// verdict is only produced by `Enter` on the Upgrades screen, which phase 6
-    /// wires — so until then nothing has been refused and the panel has nothing to
-    /// report. Printing the frame's `Efficiency V wants…` regardless would have the
-    /// screen inventing a refusal that never happened, which is worse than the blank
-    /// space: it is the same class of lie the panel exists to avoid.
+    /// **[`None`] until something is actually refused, and that is the point.** A
+    /// `CompressFirst` verdict comes only from `Enter` on the Upgrades screen, and it
+    /// is carried here from [`App::refused`](crate::app::App::refused) **only when it
+    /// names the material under the cursor** — a price in Stone printed beside the Coal
+    /// row would attach a number to the wrong pile. Printing the frame's
+    /// `Efficiency V wants…` regardless would have the screen inventing a refusal that
+    /// never happened, which is the same class of lie the panel exists to avoid.
     pub hint: Option<CompressHint>,
 }
 
@@ -590,8 +795,8 @@ impl View {
     /// The `..Self::sample()` at the bottom is not laziness, it is the **progress
     /// marker**. Rust's *functional update syntax* — `Self { a, b, ..other }`, "these
     /// fields explicitly, the remainder taken from `other`" — makes that one line the
-    /// literal list of what phases 4 to 7 still owe: the Mines list, the Inventory
-    /// table, the Upgrades ladders, the Stats panels and the Levels roadmap. Each
+    /// literal list of what phase 7 still owes: the Stats panels and the Levels
+    /// roadmap. Each
     /// phase lifts its own fields above the `..`, and when the last one goes, the line
     /// goes with it and the compiler resumes checking that every field is accounted
     /// for. A comment would have said the same and never failed.
@@ -600,7 +805,12 @@ impl View {
     /// That is why [`App`](crate::app::App) caches the result in a field rather than
     /// projecting inside its `render`: the cost is paid when the state changes, not
     /// thirty times a second.
-    pub fn from_state(state: &GameState, cursors: Cursors) -> Self {
+    /// `refused` is the front-end's memory of the last compress-first refusal
+    /// ([`App::refused`](crate::app::App::refused)), and it is a *parameter* rather
+    /// than something read off the run because the run does not know it happened: a
+    /// refusal changes no game state, which is precisely what makes it the front-end's
+    /// to remember.
+    pub fn from_state(state: &GameState, cursors: Cursors, refused: Option<&CompressHint>) -> Self {
         let player = state.player();
         let pickaxe = player.get_pickaxe();
         let enchants = pickaxe.enchants();
@@ -648,7 +858,8 @@ impl View {
                 ratio: mine.break_ratio(),
             }),
             mines: mines_view(state, cursors),
-            inventory: inventory_view(player.get_inventory(), cursors),
+            inventory: inventory_view(player.get_inventory(), cursors, refused),
+            upgrades: upgrades_view(state, cursors),
 
             // Everything below is still the fixture. Phases 6-7 own these, one
             // screen at a time; see this function's own note on the `..`.
@@ -728,27 +939,6 @@ impl View {
             colour_mode: ColourMode::default(),
         }
     }
-}
-
-/// Roman numerals `I`..=`XV` — exactly the range an Efficiency level can take, since
-/// [`PickaxeTier::efficiency_cap`] tops out at 15 on Netherite.
-const ROMAN: [&str; 15] = [
-    "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV",
-];
-
-/// `level` as a Roman numeral, or `"?"` past the table.
-///
-/// The fallback is unreachable in play — [`ROMAN`] spans every level any cap allows —
-/// but it exists so the lookup is total: this crate's lints forbid the `unwrap` that
-/// would be the alternative, and a panic while drawing a frame is the worst way for a
-/// front-end to report that a cap moved.
-fn roman(level: u8) -> &'static str {
-    // `level - 1` cannot underflow: zero is filtered here rather than by the callers,
-    // each of which would otherwise repeat the guard.
-    if level == 0 {
-        return "?";
-    }
-    ROMAN.get(usize::from(level) - 1).copied().unwrap_or("?")
 }
 
 /// The Pickaxe panel's first line: `Diamond Pickaxe  Efficiency IV`.
@@ -943,7 +1133,11 @@ fn mines_view(state: &GameState, cursors: Cursors) -> MinesView {
 /// is what lets a test build one directly instead of driving a run to reach it.
 ///
 /// The `hint` is [`None`] here rather than derived: see [`InventoryView::hint`].
-fn inventory_view(inventory: &Inventory, cursors: Cursors) -> InventoryView {
+fn inventory_view(
+    inventory: &Inventory,
+    cursors: Cursors,
+    refused: Option<&CompressHint>,
+) -> InventoryView {
     InventoryView {
         rows: Material::ALL
             .into_iter()
@@ -954,9 +1148,506 @@ fn inventory_view(inventory: &Inventory, cursors: Cursors) -> InventoryView {
             })
             .collect(),
         selected: cursors.material,
-        hint: None,
+        // **Shown only on the row it is about.** The hint names a price in one
+        // material, so printing it beside a different pile would attach a number to
+        // the wrong thing — and the player walked here to look at one row.
+        hint: refused
+            .filter(|hint| hint.needed.material == cursors.material)
+            .cloned(),
     }
 }
+
+/// The three Upgrades sub-tabs, projected from the run (UI.md §5.4).
+///
+/// All three are built on every redraw, not just the one showing: they are cheap —
+/// forty-six rungs, six tracks, twenty-four mine rows — and building only the active
+/// one would put a `match` on the cursor in front of a projection that has no other
+/// reason to know which tab is up. [`App`](crate::app::App) caches the whole `View`
+/// anyway, so this runs when the run changes rather than thirty times a second.
+fn upgrades_view(state: &GameState, cursors: Cursors) -> UpgradesView {
+    UpgradesView {
+        active: cursors.upgrade_tab,
+        pickaxe: pickaxe_subtab(state, cursors),
+        enchants: enchants_subtab(state, cursors),
+        mines: mine_tracks_subtab(state, cursors),
+    }
+}
+
+/// The pickaxe ladder: forty-six rungs, the cumulative `✓` prefix, and the chain the
+/// cursor is pointing at.
+///
+/// **The prefix is read off [`upgrade::max_affordable`] and not asked per row.** One
+/// walk answers where the `✓`s stop, and asking each rung on its own would be
+/// forty-six simulations of the same climb — and, worse, forty-six chances for the
+/// column to come out with a hole in it. The `~` is the *first* refused rung's own
+/// verdict, since that is the one the player is being told how to clear; everything
+/// past it is `✗`, because a chain that already failed cannot be diagnosed further.
+fn pickaxe_subtab(state: &GameState, cursors: Cursors) -> UpgradeSubtab {
+    let ladder = upgrade::ladder();
+    let pickaxe = state.player().get_pickaxe();
+    let inventory = state.player().get_inventory();
+    let here = upgrade::position(&ladder, pickaxe);
+    let furthest = upgrade::max_affordable(inventory, pickaxe);
+    // The verdict on the first rung past the prefix — `~` or `✗` — which is what
+    // decides whether that one row invites a conversion or a mine.
+    let frontier = Mark::of(&upgrade::chain_affordability(
+        inventory,
+        pickaxe,
+        furthest + 1,
+    ));
+
+    let rows = ladder
+        .iter()
+        .enumerate()
+        .map(|(index, rung)| UpgradeRow {
+            cells: vec![rung_label(rung.tier, rung.efficiency)],
+            mark: match index {
+                i if i <= here => Mark::Owned,
+                i if i <= furthest => Mark::Affordable,
+                i if i == furthest + 1 => frontier,
+                _ => Mark::Refused,
+            },
+            cursor: index == cursors.pickaxe_rung,
+            current: index == here,
+        })
+        .collect();
+
+    UpgradeSubtab {
+        header: Vec::new(),
+        rows,
+        offset: 0,
+        detail: UpgradeDetail::Pickaxe(Box::new(pickaxe_detail(state, &ladder, cursors))),
+        footer: " ↑↓  select     Enter  buy to here     M  buy max     Tab  next screen".to_owned(),
+    }
+}
+
+/// The Pickaxe pane: the chain to the cursor, priced, with its dip if it has one.
+fn pickaxe_detail(
+    state: &GameState,
+    ladder: &[upgrade::PickaxeRung],
+    cursors: Cursors,
+) -> PickaxeDetail {
+    let pickaxe = state.player().get_pickaxe();
+    let inventory = state.player().get_inventory();
+    let here = upgrade::position(ladder, pickaxe);
+    let target = cursors.pickaxe_rung.min(ladder.len().saturating_sub(1));
+    let preview = upgrade::preview(pickaxe, target);
+
+    // The rungs actually being bought: everything past where the player stands, up to
+    // and including the cursor. Empty when the cursor is at or behind them.
+    let climbed = ladder.get(here + 1..=target).unwrap_or(&[]);
+    let costs = climbed
+        .iter()
+        .filter_map(|rung| rung.cost.as_ref())
+        .flat_map(|cost| cost.lines().iter().copied())
+        .collect();
+
+    let title = ladder
+        .get(target)
+        .map_or_else(String::new, |rung| rung_label(rung.tier, rung.efficiency));
+    let ceiling = climbed
+        .iter()
+        .any(upgrade::PickaxeRung::is_tier_jump)
+        .then(|| {
+            (
+                pickaxe.get_tier().efficiency_cap(),
+                ladder
+                    .get(target)
+                    .map_or(0, |rung| rung.tier.efficiency_cap()),
+            )
+        });
+    // What the chain opens: the mines gated behind a tier the player does not have
+    // yet but will after it. Asked of `MineKind` rather than listed, so a thirteenth
+    // mine announces itself.
+    let reached = ladder.get(target).map(|rung| rung.tier);
+    let unlocks = reached
+        .filter(|&tier| tier != pickaxe.get_tier())
+        .map(|tier| {
+            MineKind::ALL
+                .into_iter()
+                .filter(|kind| kind.gating_tier() == tier)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    PickaxeDetail {
+        title,
+        crosses_tier_jump: preview.crosses_tier_jump,
+        chain: climbed
+            .iter()
+            .map(|rung| rung_label(rung.tier, rung.efficiency))
+            .collect(),
+        mark: if climbed.is_empty() {
+            Mark::Owned
+        } else {
+            Mark::of(&upgrade::chain_affordability(inventory, pickaxe, target))
+        },
+        costs,
+        dip: preview
+            .is_dip()
+            .then(|| dip_detail(state, ladder, &preview, target)),
+        unlocks,
+        ceiling,
+    }
+}
+
+/// The dip box's numbers, quoted against the block the player is actually mining.
+///
+/// **The *value* cell of the standing mine**, per Enoal's call for phase 6: it is
+/// always defined, unlike the aimed cell on a fresh grid, and it does not change
+/// while the box is being read. It is also the dearer of the two, which is the honest
+/// half of a warning about losing speed.
+fn dip_detail(
+    state: &GameState,
+    ladder: &[upgrade::PickaxeRung],
+    preview: &upgrade::UpgradePreview,
+    to: usize,
+) -> DipDetail {
+    let block = state.current_mine().kind().value_block();
+    let named = |index: usize| {
+        ladder.get(index).map(|rung: &upgrade::PickaxeRung| Repaid {
+            rung: rung_label(rung.tier, rung.efficiency),
+            power: f64::from(
+                state
+                    .player()
+                    .get_pickaxe()
+                    .power_with(rung.tier, rung.efficiency),
+            ),
+            rungs_later: index.saturating_sub(to),
+        })
+    };
+
+    DipDetail {
+        power_before: f64::from(preview.power_before),
+        power_after: f64::from(preview.power_after),
+        block,
+        ticks_before: block.ticks_to_break(preview.power_before),
+        ticks_after: block.ticks_to_break(preview.power_after),
+        repaid_at: preview.repaid_at.and_then(named),
+    }
+}
+
+/// The six enchant tracks, each at its frontier (UI.md §5.4.1).
+///
+/// **The marks here are *independent*, unlike the pickaxe ladder's**, and that is a
+/// property of the tracks rather than a rendering choice: each is paid in its own
+/// materials, so a cheaper track really can be unaffordable while a dearer one is
+/// not. Same three glyphs, two meanings; the sub-tab is what keeps them apart.
+fn enchants_subtab(state: &GameState, cursors: Cursors) -> UpgradeSubtab {
+    let player = state.player();
+    let enchants = player.get_pickaxe().enchants();
+    let world = player.highest_unlocked_world();
+    let inventory = player.get_inventory();
+
+    let rows = cursor::enchant_tracks()
+        .into_iter()
+        .map(|kind| {
+            let level = enchants.get_level(kind);
+            let cap = kind.max_level(player.get_pickaxe().get_tier(), world);
+            let cost = economy::enchant_cost(kind, level, world);
+            UpgradeRow {
+                cells: vec![
+                    kind.name().to_owned(),
+                    if level >= cap {
+                        MAXED.to_owned()
+                    } else {
+                        format!("{} → {}", level_word(level), roman(level + 1))
+                    },
+                    cap.to_string(),
+                ],
+                // A capped track has no price to quote, which is the `—` case and not a
+                // refusal: the player is not short of anything. The same arm catches
+                // the un-priced enchant — [`economy::enchant_cost`] answers [`None`]
+                // for Efficiency alone, which `enchant_tracks` has already filtered
+                // out — so there is no third branch here that no row can reach.
+                mark: match cost {
+                    Some(cost) if level < cap => {
+                        Mark::of(&economy::affordability(inventory, &cost))
+                    }
+                    _ => Mark::NoPrice,
+                },
+                cursor: kind == cursors.enchant,
+                current: false,
+            }
+        })
+        .collect();
+
+    let kind = cursors.enchant;
+    let level = enchants.get_level(kind);
+    let cap = kind.max_level(player.get_pickaxe().get_tier(), world);
+    let cost = (level < cap)
+        .then(|| economy::enchant_cost(kind, level, world))
+        .flatten();
+    let detail = EnchantDetail {
+        kind,
+        level,
+        cap,
+        effect: enchant_effect(kind, level),
+        next: enchant_next(kind, level, cap),
+        mark: cost.as_ref().map_or(Mark::NoPrice, |cost| {
+            Mark::of(&economy::affordability(inventory, cost))
+        }),
+        cost: cost.map(|cost| cost.lines().to_vec()),
+    };
+
+    UpgradeSubtab {
+        header: vec!["Enchant".to_owned(), "Level".to_owned(), "Cap".to_owned()],
+        rows,
+        offset: 0,
+        detail: UpgradeDetail::Enchant(detail),
+        footer: SELECT_FOOTER.to_owned(),
+    }
+}
+
+/// A level as the roadmap prints it: a Roman numeral, or `0` at the bottom.
+///
+/// [`roman`] answers `?` for zero — deliberately, since no *bought* level is zero —
+/// but a track the player has never touched reads `0 → I` in the frame, so the zero
+/// case is spelled here rather than by loosening the numeral table.
+pub fn level_word(level: u8) -> String {
+    if level == 0 {
+        "0".to_owned()
+    } else {
+        roman(level).to_owned()
+    }
+}
+
+/// The twelve mines' two paid tracks each (UI.md §5.4.2).
+///
+/// **The mine's name repeats on both of its rows**, because a scroll window can open
+/// on a richness row whose mine name has gone off the top. Every row must be readable
+/// alone, which is the only state a scrolled row is ever in.
+fn mine_tracks_subtab(state: &GameState, cursors: Cursors) -> UpgradeSubtab {
+    let player = state.player();
+    let inventory = player.get_inventory();
+
+    let rows = cursor::mine_tracks()
+        .into_iter()
+        .map(|(kind, track)| {
+            let (next, mark) = track_row(state, kind, track);
+            UpgradeRow {
+                cells: vec![kind.name().to_owned(), track_word(track).to_owned(), next],
+                mark,
+                cursor: (kind, track) == cursors.mine_track,
+                current: kind == state.current_mine().kind(),
+            }
+        })
+        .collect();
+
+    let (kind, track) = cursors.mine_track;
+    let lock = player.mine_lock(kind);
+    let mine = state.mine(kind);
+    let level = mine.map_or(0, |mine| match track {
+        MineTrack::Size => mine.get_size_level(),
+        MineTrack::Richness => mine.get_richness_level(),
+    });
+    let cost = track_cost(kind, track, level, mine.is_some());
+    let detail = MineTrackDetail {
+        kind,
+        track,
+        level: (level, level + 1),
+        at_next: track_outcome(track, level),
+        held: cost
+            .as_ref()
+            .map(|cost| {
+                cost.lines()
+                    .iter()
+                    .map(|line| {
+                        (
+                            line.material,
+                            inventory.count(Item::Compressed(line.material)),
+                            inventory.count(Item::Raw(line.material)),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        mark: cost.as_ref().map_or(Mark::NoPrice, |cost| {
+            Mark::of(&economy::affordability(inventory, cost))
+        }),
+        cost: cost.map(|cost| cost.lines().to_vec()),
+        blocked: if lock.is_open() {
+            // Open but never walked into: the one refusal a keypress clears.
+            mine.is_none().then_some(TrackBlock::NotEntered)
+        } else {
+            Some(TrackBlock::Locked(lock))
+        },
+    };
+
+    UpgradeSubtab {
+        header: vec!["Mine".to_owned(), "Track".to_owned(), "Next".to_owned()],
+        rows,
+        offset: 0,
+        detail: UpgradeDetail::Mine(detail),
+        footer: SELECT_FOOTER.to_owned(),
+    }
+}
+
+/// One mine-track row's `Next` cell and its mark.
+///
+/// **A locked mine and an unvisited one both read [`Mark::NoPrice`]**, for the same
+/// reason with two different fixes: neither has a price the player could meet today,
+/// so an affordability glyph would be answering a question nobody asked. The `Next`
+/// cell is what tells them apart — a level gate prints `Lv 30`, an unvisited mine
+/// prints what it *would* cost to grow, since that much is knowable without a grid.
+fn track_row(state: &GameState, kind: MineKind, track: MineTrack) -> (String, Mark) {
+    let player = state.player();
+    let lock = player.mine_lock(kind);
+    if let Some(level) = lock.missing_level() {
+        return (format!("Lv {level}"), Mark::NoPrice);
+    }
+
+    let mine = state.mine(kind);
+    let level = mine.map_or(0, |mine| match track {
+        MineTrack::Size => mine.get_size_level(),
+        MineTrack::Richness => mine.get_richness_level(),
+    });
+    let next = match track_outcome(track, level) {
+        TrackOutcome::Maxed => MAXED.to_owned(),
+        TrackOutcome::Size((width, height)) => format!("{width}x{height}"),
+        TrackOutcome::Richness(_) => (level + 1).to_string(),
+    };
+    let mark = match track_cost(kind, track, level, mine.is_some()) {
+        Some(cost) => Mark::of(&economy::affordability(player.get_inventory(), &cost)),
+        None => Mark::NoPrice,
+    };
+    (next, mark)
+}
+
+/// What the next level of a track hands over, or that there is no next level.
+fn track_outcome(track: MineTrack, level: u32) -> TrackOutcome {
+    match track {
+        MineTrack::Size => {
+            let next = Mine::size_for_level(level + 1);
+            if next == Mine::size_for_level(level) {
+                TrackOutcome::Maxed
+            } else {
+                TrackOutcome::Size(next)
+            }
+        }
+        MineTrack::Richness if level >= MAX_RICHNESS_LEVEL => TrackOutcome::Maxed,
+        // The share the *dial* would then be free to reach — the ceiling being bought
+        // is permission, and this is what the permission is worth. Asked of the same
+        // pure function the Mines screen draws its bar from, so the two agree.
+        MineTrack::Richness => TrackOutcome::Richness(Mine::value_weight_percent_for(level + 1)),
+    }
+}
+
+/// What the next level of a track costs, or [`None`] when there is nothing to sell.
+///
+/// `entered` is passed rather than looked up so this stays a pure function of the
+/// numbers: an unvisited mine is still *priced* — the curve is keyed by the level,
+/// which is 0 — and what it is not is *buyable*, which is the pane's business and not
+/// the price's.
+fn track_cost(kind: MineKind, track: MineTrack, level: u32, entered: bool) -> Option<Cost> {
+    if !entered {
+        return None;
+    }
+    match track_outcome(track, level) {
+        TrackOutcome::Maxed => None,
+        _ => Some(match track {
+            MineTrack::Size => economy::mine_size_cost(kind, level),
+            MineTrack::Richness => economy::mine_richness_cost(kind, level),
+        }),
+    }
+}
+
+/// The word a track goes by in its own column.
+fn track_word(track: MineTrack) -> &'static str {
+    match track {
+        MineTrack::Size => "Size",
+        MineTrack::Richness => "Richness",
+    }
+}
+
+/// What an enchant does at the level it is held, in prose.
+///
+/// **Front-end text, like the Mines screen's dial note**, and for the same reason: it
+/// is an explanation of a rule rather than the rule, and the core has no business
+/// carrying a sentence. The shapes it describes are the core's, though — the bands
+/// come from `blast_cells`' own arithmetic, and §5.4.1 is explicit that a pane
+/// promising `5x5` at a level that still blasts `3x3` is promising a reward the rules
+/// do not pay.
+fn enchant_effect(kind: EnchantType, level: u8) -> Vec<String> {
+    let square = |level: u8| {
+        let side = 1 + 2 * (1 + u32::from(level.saturating_sub(1)) / 3).min(3);
+        format!("{side}x{side}")
+    };
+    let lines: Vec<String> = match kind {
+        EnchantType::Fortune => vec![format!("multiplies every drop by {}", 1 + u32::from(level))],
+        EnchantType::Explosive => vec![
+            format!("clears a {} square on a", square(level.max(1))),
+            "proc, centred on the cell".to_owned(),
+        ],
+        EnchantType::Jackhammer => vec![
+            "clears one full-width row on a".to_owned(),
+            "proc — the mine's own width".to_owned(),
+        ],
+        EnchantType::Nuke => vec![
+            "clears the whole grid on a proc.".to_owned(),
+            "The level buys frequency alone.".to_owned(),
+        ],
+        EnchantType::Excavator => vec![
+            "substitutes one Compressed unit".to_owned(),
+            "for a block's whole raw drop".to_owned(),
+        ],
+        EnchantType::Haste => vec![
+            "multiplies mining speed, and".to_owned(),
+            "the Efficiency bonus with it".to_owned(),
+        ],
+        EnchantType::Efficiency => Vec::new(),
+    };
+    lines
+}
+
+/// What the next level changes — the sentence §5.4.1 spends four lines on, because
+/// Explosive's square does *not* grow on every step.
+///
+/// **"Procs more often" is not the universal answer**, even though the frame prints it
+/// on the row it happened to draw. Three of these six enchants never roll a die:
+/// [`proc_permille`](EnchantType::proc_permille) returns `0` for Fortune and Haste
+/// (and for Efficiency, which the shop does not price), because they are permanent
+/// multipliers rather than chances. Telling a player their next Fortune level will
+/// proc more often would describe a mechanic the enchant does not have, so the two
+/// passive ones each name the number they actually move.
+fn enchant_next(kind: EnchantType, level: u8, cap: u8) -> Vec<String> {
+    if level >= cap {
+        return vec!["at its cap — nothing left to buy".to_owned()];
+    }
+    let next = level + 1;
+    match kind {
+        EnchantType::Explosive => {
+            let side = |level: u8| 1 + 2 * (1 + u32::from(level.saturating_sub(1)) / 3).min(3);
+            let (now, grown) = (side(level.max(1)), side(next));
+            if now == grown {
+                vec![
+                    format!("{} — still {now}x{now}. The square", roman(next)),
+                    "grows every third level.".to_owned(),
+                ]
+            } else {
+                vec![format!(
+                    "{} — the square grows to {grown}x{grown}.",
+                    roman(next)
+                )]
+            }
+        }
+        EnchantType::Fortune => vec![format!(
+            "{} — every drop multiplied by {}.",
+            roman(next),
+            1 + u32::from(next)
+        )],
+        EnchantType::Haste => vec![format!(
+            "{} — mining speed x{:.2}.",
+            roman(next),
+            1.0 + HASTE_PER_LEVEL * f32::from(next)
+        )],
+        _ => vec!["procs more often.".to_owned()],
+    }
+}
+
+/// The footer both table sub-tabs share.
+const SELECT_FOOTER: &str =
+    " ↑↓  select     Enter  buy one level     M  buy to cap     Tab  next screen";
 
 /// The prose under a mine's dial: what a player should make of *this* dial.
 ///
@@ -1026,9 +1717,9 @@ fn pickaxe_ladder() -> Vec<UpgradeRow> {
     let mut labels = Vec::new();
     let mut tier = Some(PickaxeTier::Wooden);
     while let Some(current) = tier {
-        labels.push(format!("{} Pickaxe", current.name()));
+        labels.push(rung_label(current, 0));
         for level in 1..=current.efficiency_cap() {
-            labels.push(format!("{} Eff {}", current.name(), roman(level)));
+            labels.push(rung_label(current, level));
         }
         tier = current.next();
     }
@@ -1044,168 +1735,130 @@ fn pickaxe_ladder() -> Vec<UpgradeRow> {
         .map(|(index, text)| UpgradeRow {
             mark: match index {
                 // Owned already, so there is nothing to be able to afford.
-                i if i <= current => "",
+                i if i <= current => Mark::Owned,
                 // Reachable buying every rung from here — the cumulative sense.
-                i if i <= selected => "✓",
+                i if i <= selected => Mark::Affordable,
                 // The third state: the ore is held, the denomination is not.
-                i if i == selected + 1 => "~",
-                _ => "✗",
-            }
-            .to_owned(),
+                i if i == selected + 1 => Mark::CompressFirst,
+                _ => Mark::Refused,
+            },
             cursor: index == selected,
             current: index == current,
-            text,
+            cells: vec![text],
         })
         .collect()
 }
 
-/// The three Upgrades sub-tabs drawn in UI.md §5.4, transcribed from the frames.
+/// The three Upgrades sub-tabs as `docs/UI.md` §5.4 draws them, for the frame tests.
 ///
-/// Pickaxe is active. Every row's marks and every detail pane are fixture data:
-/// the reachability marks are a phase-6 core read, and the dip numbers, costs and
-/// affordability the panes quote are phases 5–6 too. The Pickaxe marks are laid
-/// out to honour the ladder invariant — the `✓` region is a contiguous prefix from
-/// the current rung — so the fixture is a legal ladder, not an arbitrary one.
+/// **A fixture and no longer the screen's data**: [`upgrades_view`] projects all three
+/// from the run. What survives here is the *rich* save the wireframes were counted
+/// against — a level-23 player on a Diamond pickaxe at Efficiency IV, standing one
+/// purchase away from a tier jump — which no fresh run can reach and which the layout
+/// assertions need in order to have a full ladder, a scrolling table and a dip box to
+/// measure.
 fn sample_upgrades() -> UpgradesView {
-    /// `(text, mark, cursor, current)` → one row.
-    fn r(text: &str, mark: &str, cursor: bool, current: bool) -> UpgradeRow {
-        UpgradeRow {
-            text: text.to_owned(),
-            mark: mark.to_owned(),
-            cursor,
-            current,
-        }
-    }
-    /// Turns a slice of `&str` into owned lines.
-    fn lines(raw: &[&str]) -> Vec<String> {
-        raw.iter().map(|s| (*s).to_owned()).collect()
-    }
-
-    let select_footer =
-        " ↑↓  select     Enter  buy one level     M  buy to cap     Tab  next screen";
-
     let pickaxe = UpgradeSubtab {
         header: Vec::new(),
         rows: pickaxe_ladder(),
         offset: PICKAXE_OFFSET,
-        detail: lines(&[
-            " Netherite Pickaxe             tier jump",
-            "",
-            " Chain    Diamond Eff V + the jump      ✓",
-            " Cost     2 Compressed Diamond",
-            "          + 4 Compressed Ancient Debris",
-            "          + 60 Ancient Debris",
-            "",
-            " ┌──────────────────────────────────┐",
-            " │ Power  34.0 → 9.0                │",
-            " │ Ancient Debris  27 → 100 ticks   │",
-            " │ Repaid at Netherite Eff V (35.0) │",
-            " └──────────────────────────────────┘",
-            "",
-            " Unlocks  the End's Amethyst mine,",
-            "          gated behind Netherite",
-            "",
-            " Ceiling  Efficiency 5 → 15",
-            "",
-            " Enter  buy the chain   (confirms: dip)",
-        ]),
+        detail: UpgradeDetail::Pickaxe(Box::new(PickaxeDetail {
+            title: SELECTED_RUNG.to_owned(),
+            crosses_tier_jump: true,
+            chain: vec!["Diamond Eff V".to_owned(), "Netherite Pickaxe".to_owned()],
+            mark: Mark::Affordable,
+            // Diamond Efficiency V, then the jump out of Diamond — the two rungs the
+            // frame's `Chain  Diamond Eff V + the jump` names.
+            costs: vec![
+                CostLine {
+                    material: Material::Diamond,
+                    compressed: 2,
+                    raw: 0,
+                },
+                CostLine {
+                    material: Material::AncientDebris,
+                    compressed: 4,
+                    raw: 60,
+                },
+            ],
+            dip: Some(DipDetail {
+                power_before: 34.0,
+                power_after: 9.0,
+                block: Block::AncientDebris,
+                ticks_before: Some(27),
+                ticks_after: Some(100),
+                repaid_at: Some(Repaid {
+                    rung: "Netherite Eff V".to_owned(),
+                    power: 35.0,
+                    rungs_later: 5,
+                }),
+            }),
+            unlocks: vec![MineKind::Amethyst],
+            ceiling: Some((5, 15)),
+        })),
         footer: " ↑↓  select     Enter  buy to here     M  buy max     Tab  next screen".to_owned(),
     };
 
     let enchants = UpgradeSubtab {
-        header: lines(&["   Enchant     Level     Cap", ""]),
-        rows: vec![
-            r("Fortune     III → IV  10", "✓", false, false),
-            r("Explosive   II → III  6", "✓", true, false),
-            r("Jackhammer  I → II    6", "~", false, false),
-            r("Nuke        0 → I     6", "✗", false, false),
-            r("Excavator   I → II    6", "✗", false, false),
-            r("Haste       0 → I     6", "✗", false, false),
-        ],
+        header: vec!["Enchant".to_owned(), "Level".to_owned(), "Cap".to_owned()],
+        rows: sample_enchant_rows(),
         // Six tracks, and no terminal this crate will draw into is shorter than the
         // nineteen rows they fit in — so this sub-tab never scrolls and its offset is
         // structurally zero rather than merely happening to be.
         offset: 0,
-        detail: lines(&[
-            " Explosive                  level II",
-            "",
-            " Effect   clears a 3x3 square on a",
-            "          proc, centred on the cell",
-            "",
-            " Next     III — still 3x3. The square",
-            "          grows to 5x5 at IV, 7x7 at",
-            "          VII.",
-            "",
-            " Cost     3 Compressed Quartz",
-            "          + 40 Redstone            ✓",
-            "",
-            " Cap      6 — the Nether's, and one",
-            "          number for all five",
-            "          specials. Overworld 3,",
-            "          End 10.",
-            "",
-            " Every level also procs more often.",
-            " Enter  buy one level",
-        ]),
-        footer: select_footer.to_owned(),
+        detail: UpgradeDetail::Enchant(EnchantDetail {
+            kind: EnchantType::Explosive,
+            level: 2,
+            cap: 6,
+            effect: enchant_effect(EnchantType::Explosive, 2),
+            next: enchant_next(EnchantType::Explosive, 2, 6),
+            cost: Some(vec![
+                CostLine {
+                    material: Material::Quartz,
+                    compressed: 3,
+                    raw: 0,
+                },
+                CostLine {
+                    material: Material::Redstone,
+                    compressed: 0,
+                    raw: 40,
+                },
+            ]),
+            mark: Mark::Affordable,
+        }),
+        footer: SELECT_FOOTER.to_owned(),
     };
 
     let mines = UpgradeSubtab {
-        header: lines(&["   Mine           Track    Next"]),
-        // All twelve mines, both tracks each — the six rows above the counted window
-        // (Stone, Coal and Iron, the three already maxed or nearly so) were the ones
-        // the old fixture cut off to fit nineteen rows.
-        rows: vec![
-            r("Stone          Size     maxed", "—", false, false),
-            r("Stone          Richness maxed", "—", false, false),
-            r("Coal           Size     20x10", "~", false, false),
-            r("Coal           Richness 8", "~", false, false),
-            r("Iron           Size     maxed", "—", false, false),
-            r("Iron           Richness 1", "✓", false, false),
-            r("Gold           Size     12x7", "~", false, false),
-            r("Gold           Richness 3", "~", false, false),
-            r("Lapis          Size     10x6", "✗", false, false),
-            r("Lapis          Richness 2", "✗", false, false),
-            r("Redstone       Size     8x5", "✓", false, false),
-            r("Redstone       Richness 1", "✓", false, false),
-            r("Emerald        Size     8x5", "✗", false, false),
-            r("Emerald        Richness 1", "✗", false, false),
-            r("Diamond        Size     10x6", "✗", false, false),
-            r("Diamond        Richness 2", "✗", false, false),
-            r("Quartz         Size     10x6", "✗", false, false),
-            r("Quartz         Richness 4", "✗", false, false),
-            r("Ancient Debris Size     8x5", "✓", false, false),
-            r("Ancient Debris Richness 1", "✓", false, false),
-            r("Obsidian       Size     10x6", "✗", false, false),
-            r("Obsidian       Richness 7", "✗", true, false),
-            r("End            Size     Lv 30", "—", false, false),
-            r("End            Richness Lv 30", "—", false, false),
-        ],
-        // Row 6 (`Gold Size`) at the top, which is where the counted frame starts —
-        // `window(24, 21, 6, 18)` is `6..24`, the cursor on `Obsidian Richness`.
+        header: vec!["Mine".to_owned(), "Track".to_owned(), "Next".to_owned()],
+        rows: sample_mine_rows(),
+        // Row 6 (`Gold Size`) at the top, which is where the counted frame starts.
         offset: 6,
-        detail: lines(&[
-            " Obsidian Mine — richness",
-            "",
-            " Ceiling   level 6 → 7",
-            " Dial      free, on the Mines screen",
-            "",
-            " At 7      Crying Obsidian 73%",
-            "           Obsidian 27%",
-            "",
-            " Cost      2 Compressed Obsidian",
-            "           + 40 Crying Obsidian",
-            "",
-            " You hold  0 Compressed Obsidian, 21",
-            "           raw · 2 Crying Obsidian  ✗",
-            "",
-            " This buys the ceiling only. The",
-            " dial slides anywhere at or below",
-            " it, free and reversible, on the",
-            " Mines screen.",
-            " Enter  buy the next level",
-        ]),
-        footer: select_footer.to_owned(),
+        detail: UpgradeDetail::Mine(MineTrackDetail {
+            kind: MineKind::Obsidian,
+            track: MineTrack::Richness,
+            level: (6, 7),
+            at_next: TrackOutcome::Richness(73),
+            cost: Some(vec![
+                CostLine {
+                    material: Material::Obsidian,
+                    compressed: 2,
+                    raw: 0,
+                },
+                CostLine {
+                    material: Material::CryingObsidian,
+                    compressed: 0,
+                    raw: 40,
+                },
+            ]),
+            held: vec![
+                (Material::Obsidian, 0, 21),
+                (Material::CryingObsidian, 0, 2),
+            ],
+            mark: Mark::Refused,
+            blocked: None,
+        }),
+        footer: SELECT_FOOTER.to_owned(),
     };
 
     UpgradesView {
@@ -1214,6 +1867,107 @@ fn sample_upgrades() -> UpgradesView {
         enchants,
         mines,
     }
+}
+
+/// The six enchant rows the §5.4.1 frame draws, at the levels it draws them.
+fn sample_enchant_rows() -> Vec<UpgradeRow> {
+    let rows: &[(EnchantType, u8, u8, Mark)] = &[
+        (EnchantType::Fortune, 3, 10, Mark::Affordable),
+        (EnchantType::Explosive, 2, 6, Mark::Affordable),
+        (EnchantType::Jackhammer, 1, 6, Mark::CompressFirst),
+        (EnchantType::Nuke, 0, 6, Mark::Refused),
+        (EnchantType::Excavator, 1, 6, Mark::Refused),
+        (EnchantType::Haste, 0, 6, Mark::Refused),
+    ];
+    rows.iter()
+        .map(|&(kind, level, cap, mark)| UpgradeRow {
+            cells: vec![
+                kind.name().to_owned(),
+                format!("{} → {}", level_word(level), roman(level + 1)),
+                cap.to_string(),
+            ],
+            mark,
+            cursor: kind == EnchantType::Explosive,
+            current: false,
+        })
+        .collect()
+}
+
+/// The twenty-four mine-track rows of the §5.4.2 frame.
+fn sample_mine_rows() -> Vec<UpgradeRow> {
+    // `(mine, size next, size mark, richness next, richness mark)` — **two marks per
+    // mine, not one**: a maxed size track has no price to quote while the richness
+    // track beside it may be a purchase away, and one shared mark would have the
+    // fixture asserting a state the rules cannot produce.
+    let tracks: &[(MineKind, &str, Mark, &str, Mark)] = &[
+        (MineKind::Stone, MAXED, Mark::NoPrice, MAXED, Mark::NoPrice),
+        (
+            MineKind::Coal,
+            "20x10",
+            Mark::CompressFirst,
+            "8",
+            Mark::CompressFirst,
+        ),
+        (MineKind::Iron, MAXED, Mark::NoPrice, "1", Mark::Affordable),
+        (
+            MineKind::Gold,
+            "12x7",
+            Mark::CompressFirst,
+            "3",
+            Mark::CompressFirst,
+        ),
+        (MineKind::Lapis, "10x6", Mark::Refused, "2", Mark::Refused),
+        (
+            MineKind::Redstone,
+            "8x5",
+            Mark::Affordable,
+            "1",
+            Mark::Affordable,
+        ),
+        (MineKind::Emerald, "8x5", Mark::Refused, "1", Mark::Refused),
+        (MineKind::Diamond, "10x6", Mark::Refused, "2", Mark::Refused),
+        (MineKind::Quartz, "10x6", Mark::Refused, "4", Mark::Refused),
+        (
+            MineKind::AncientDebris,
+            "8x5",
+            Mark::Affordable,
+            "1",
+            Mark::Affordable,
+        ),
+        (
+            MineKind::Obsidian,
+            "10x6",
+            Mark::Refused,
+            "7",
+            Mark::Refused,
+        ),
+        (
+            MineKind::Amethyst,
+            "Lv 30",
+            Mark::NoPrice,
+            "Lv 30",
+            Mark::NoPrice,
+        ),
+    ];
+    tracks
+        .iter()
+        .flat_map(|&(kind, size, size_mark, richness, richness_mark)| {
+            [
+                (MineTrack::Size, size, size_mark),
+                (MineTrack::Richness, richness, richness_mark),
+            ]
+            .map(|(track, next, mark)| UpgradeRow {
+                cells: vec![
+                    kind.name().to_owned(),
+                    track_word(track).to_owned(),
+                    next.to_owned(),
+                ],
+                mark,
+                cursor: kind == MineKind::Obsidian && track == MineTrack::Richness,
+                current: false,
+            })
+        })
+        .collect()
 }
 
 /// The Mines list and detail pane drawn in UI.md §5.2, from the frame.
@@ -1618,7 +2372,7 @@ fn sample_grid_wireframe_12x7() -> GridFixture {
 mod tests {
     use std::time::UNIX_EPOCH;
 
-    use skylode_core::tunables::BOOST_MULTIPLIER;
+    use skylode_core::{save, tunables::BOOST_MULTIPLIER};
 
     use super::*;
 
@@ -1640,7 +2394,81 @@ mod tests {
     /// nobody reads in front of the thing being tested. The tests that are about the
     /// cursor build one on purpose.
     fn projected(state: &GameState) -> View {
-        View::from_state(state, Cursors::new(state.current_mine().kind()))
+        View::from_state(
+            state,
+            Cursors::new(
+                state.current_mine().kind(),
+                upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
+            ),
+            None,
+        )
+    }
+
+    /// A run further along than a test could plausibly *play* to, built by writing a
+    /// save and reading it back with a few fields rewritten.
+    ///
+    /// **This is a door, not a back door.** A front-end cannot mint a pickaxe tier or
+    /// a pile of ore — `Player::inventory_mut` and `Enchants::upgrade` are
+    /// `pub(crate)` precisely so it cannot — and reaching Netherite by mining would
+    /// take a test the length of the game. What it *can* do is what it will do every
+    /// launch from phase 7 on: hand [`save::from_json`] a document. That path
+    /// [validates](GameState) before it returns, so a patch describing a run the rules
+    /// could not produce is refused here rather than silently projected. The config is
+    /// `()` so this crate needs no serde dependency of its own.
+    ///
+    /// Patches are applied in order and each must match, so a rename in the save format
+    /// fails these tests loudly instead of quietly leaving the field alone. The standing
+    /// mine's grid is then **re-cut to whatever `size_level` now says**, because that
+    /// pairing is an invariant `Mine::validate` enforces: a patch that grows the mine
+    /// would otherwise be refused for a reason that has nothing to do with the test.
+    fn veteran(patches: &[(&str, &str)]) -> GameState {
+        let mut text = match save::to_json(&fresh_run(), &()) {
+            Ok(text) => text,
+            Err(error) => unreachable!("a fresh run must serialise: {error:?}"),
+        };
+        for (from, to) in patches {
+            assert!(text.contains(from), "the save no longer contains {from:?}");
+            text = text.replacen(from, to, 1);
+        }
+        text = recut_grid(&text);
+        match save::from_json::<()>(&text) {
+            Ok(save) => save.state,
+            Err(error) => unreachable!("a patched save must still be legal: {error:?}"),
+        }
+    }
+
+    /// Replaces the standing mine's `grid` with a rectangle of the size its
+    /// `size_level` implies, filled with the mine's common block.
+    ///
+    /// Cut out by its two delimiters rather than matched literally: the grid a fresh
+    /// run draws depends on the seed, so a literal would pin the RNG in a test that is
+    /// not about it.
+    fn recut_grid(text: &str) -> String {
+        let level = text
+            .split_once(r#""size_level":"#)
+            .and_then(|(_, rest)| rest.split_once(','))
+            .and_then(|(level, _)| level.parse::<u32>().ok())
+            .unwrap_or_default();
+        let (head, tail) = match (text.find(r#""grid":"#), text.find(r#","break_progress""#)) {
+            (Some(start), Some(end)) => (&text[..start], &text[end..]),
+            _ => return text.to_owned(),
+        };
+        let (width, height) = Mine::size_for_level(level);
+        let row = format!("[{}]", vec![r#""Stone""#; usize::from(width)].join(","));
+        format!(
+            r#"{head}"grid":[{}]{tail}"#,
+            vec![row; usize::from(height)].join(",")
+        )
+    }
+
+    /// The cursors a test needs when it is *about* the Upgrades screen.
+    fn upgrading(state: &GameState, tab: UpgradeTab) -> Cursors {
+        let mut cursors = Cursors::new(
+            state.current_mine().kind(),
+            upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
+        );
+        cursors.upgrade_tab = tab;
+        cursors
     }
 
     #[test]
@@ -1980,15 +2808,13 @@ mod tests {
              should quote a next step instead of `maxed`"
         );
         let prefix = view.mine_kind.name();
-        let track = view
-            .upgrades
-            .mines
-            .rows
-            .iter()
-            .find(|row| row.text.starts_with(prefix) && row.text.contains("Size"));
+        let track = view.upgrades.mines.rows.iter().find(|row| {
+            row.cells.first().is_some_and(|name| name == prefix)
+                && row.cells.get(1).is_some_and(|track| track == "Size")
+        });
         assert_eq!(
-            track.map(|row| (row.text.contains("maxed"), row.mark.as_str())),
-            Some((true, "—")),
+            track.map(|row| (row.cells.get(2).map(String::as_str), row.mark)),
+            Some((Some(MAXED), Mark::NoPrice)),
             "the Size track still offers {prefix} a step it is already past"
         );
     }
@@ -2021,15 +2847,24 @@ mod tests {
         let ladder = pickaxe_ladder();
         assert_eq!(ladder.len(), 46);
         assert_eq!(
-            ladder.first().map(|row| row.text.as_str()),
+            ladder
+                .first()
+                .and_then(|row| row.cells.first())
+                .map(String::as_str),
             Some("Wooden Pickaxe")
         );
         assert_eq!(
-            ladder.last().map(|row| row.text.as_str()),
+            ladder
+                .last()
+                .and_then(|row| row.cells.first())
+                .map(String::as_str),
             Some("Netherite Eff XV")
         );
         assert_eq!(
-            ladder.get(PICKAXE_OFFSET).map(|row| row.text.as_str()),
+            ladder
+                .get(PICKAXE_OFFSET)
+                .and_then(|row| row.cells.first())
+                .map(String::as_str),
             Some("Diamond Eff III"),
             "the counted window no longer starts where UI-EN.md §5.5 drew it"
         );
@@ -2047,5 +2882,293 @@ mod tests {
             Some("+115 Quartz, +80 A. Debris, +34 Obsidian")
         );
         assert_eq!(level_23.map(|row| row.xp), Some(2_300));
+    }
+
+    #[test]
+    fn a_fresh_runs_ladder_opens_on_the_rung_the_player_stands_on() {
+        let state = fresh_run();
+        let view = projected(&state);
+        let pickaxe = &view.upgrades.pickaxe;
+
+        // Rung 0 is the bare Wooden pickaxe every run starts on, and it is `current`
+        // rather than for sale — `Mark::Owned` is what "nothing to buy" looks like.
+        assert_eq!(pickaxe.rows.len(), upgrade::ladder().len());
+        assert!(pickaxe.rows.first().is_some_and(|row| row.current));
+        match &view.upgrades.active_subtab().detail {
+            UpgradeDetail::Pickaxe(detail) => {
+                assert_eq!(detail.title, "Wooden Pickaxe");
+                assert!(detail.chain.is_empty());
+                assert_eq!(detail.mark, Mark::Owned);
+                assert!(detail.dip.is_none());
+            }
+            other => unreachable!("the Pickaxe sub-tab must project a pickaxe: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_reachability_marks_of_a_real_ladder_form_a_contiguous_prefix() {
+        // The invariant the whole chain-simulation design exists to earn, carried from
+        // the fixture to a run: paying for a rung cannot make the next one *more*
+        // affordable, so once the column leaves `✓` it never comes back. A hole here
+        // would be a bug in `chain_affordability`, not a rendering oddity.
+        let state = veteran(&[(
+            r#""inventory":{}"#,
+            r#""inventory":{"compressed_stone":40,"stone":30}"#,
+        )]);
+        let view = projected(&state);
+
+        let mut left_ticks = false;
+        for row in &view.upgrades.pickaxe.rows {
+            match row.mark {
+                Mark::Affordable => assert!(!left_ticks, "a ✓ came back: {:?}", row.cells),
+                Mark::CompressFirst | Mark::Refused => left_ticks = true,
+                Mark::Owned | Mark::NoPrice => {}
+            }
+        }
+        assert!(left_ticks, "a 40-Compressed purse must run out somewhere");
+    }
+
+    #[test]
+    fn a_chain_through_a_tier_jump_names_the_ceiling_it_raises_and_the_mines_it_opens() {
+        // A Diamond pickaxe at its Efficiency cap, aimed at the Netherite rung: the one
+        // purchase in the game that is worth *less* power than what it replaces, and so
+        // the one that has to say what it buys instead.
+        let state = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Diamond""#),
+            (r#""enchants":{}"#, r#""enchants":{"Efficiency":5}"#),
+        ]);
+        let ladder = upgrade::ladder();
+        let here = upgrade::position(&ladder, state.player().get_pickaxe());
+        let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
+        cursors.pickaxe_rung = here + 1;
+
+        let view = View::from_state(&state, cursors, None);
+        match &view.upgrades.active_subtab().detail {
+            UpgradeDetail::Pickaxe(detail) => {
+                assert_eq!(detail.title, "Netherite Pickaxe");
+                assert!(detail.crosses_tier_jump);
+                // Diamond caps Efficiency at 5, Netherite at 15 — the sentence the
+                // §5.4 frame prints as `Ceiling  Efficiency 5 → 15`.
+                assert_eq!(detail.ceiling, Some((5, 15)));
+                // Asked of `MineKind::gating_tier`, so a thirteenth mine gated on
+                // Netherite would appear here without this projection changing.
+                assert!(!detail.unlocks.is_empty());
+                assert!(
+                    detail
+                        .unlocks
+                        .iter()
+                        .all(|kind| kind.gating_tier() == PickaxeTier::Netherite)
+                );
+            }
+            other => unreachable!("the Pickaxe sub-tab must project a pickaxe: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_tier_jumps_dip_is_quoted_in_the_standing_mines_own_block() {
+        // The dip box exists because the numbers are counter-intuitive, so the test is
+        // the numbers: a maxed Diamond pickaxe is 34.0, a bare Netherite one 9.0, and
+        // the ticks are the same fall told in the unit the player watches.
+        let state = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Diamond""#),
+            (r#""enchants":{}"#, r#""enchants":{"Efficiency":5}"#),
+        ]);
+        let ladder = upgrade::ladder();
+        let here = upgrade::position(&ladder, state.player().get_pickaxe());
+        let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
+        cursors.pickaxe_rung = here + 1;
+
+        let view = View::from_state(&state, cursors, None);
+        match &view.upgrades.active_subtab().detail {
+            UpgradeDetail::Pickaxe(detail) => {
+                let dip = match detail.dip.as_ref() {
+                    Some(dip) => dip,
+                    None => unreachable!("Diamond Eff V → Netherite is the dip"),
+                };
+                assert!((dip.power_before - 34.0).abs() < f64::EPSILON);
+                assert!((dip.power_after - 9.0).abs() < f64::EPSILON);
+                // The *value* block of the mine the player is standing in — Stone here,
+                // since a fresh run has never left it.
+                assert_eq!(dip.block, MineKind::Stone.value_block());
+                assert!(dip.ticks_after > dip.ticks_before);
+                // The power is earned back, and the pane says exactly where.
+                let repaid = match dip.repaid_at.as_ref() {
+                    Some(repaid) => repaid,
+                    None => unreachable!("Netherite Efficiency repays the jump"),
+                };
+                assert!(repaid.rung.starts_with("Netherite Eff"));
+                assert!(repaid.power > dip.power_before);
+                // Five purchases later, which is the §6.7 modal's closing sentence.
+                assert_eq!(repaid.rungs_later, 5);
+            }
+            other => unreachable!("the Pickaxe sub-tab must project a pickaxe: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_enchant_track_says_what_it_does_and_what_the_next_level_changes() {
+        // Six tracks, six pairs of sentences, and none of them may be empty: the pane
+        // is the only place the game explains what an enchant *is*. Walked in one test
+        // rather than six because the assertion is the same one six times.
+        let state = fresh_run();
+        for kind in cursor::enchant_tracks() {
+            let mut cursors = upgrading(&state, UpgradeTab::Enchants);
+            cursors.enchant = kind;
+            let view = View::from_state(&state, cursors, None);
+            match &view.upgrades.active_subtab().detail {
+                UpgradeDetail::Enchant(detail) => {
+                    assert_eq!(detail.kind, kind);
+                    assert!(!detail.effect.is_empty(), "{kind:?} explains nothing");
+                    assert!(!detail.next.is_empty(), "{kind:?} promises nothing");
+                }
+                other => unreachable!("the Enchants sub-tab must project an enchant: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_enchants_that_roll_a_die_are_promised_more_procs() {
+        // `proc_permille` is `0` for Fortune and Haste — they are permanent
+        // multipliers — so telling a player their next level procs more often would
+        // describe a mechanic the enchant does not have.
+        let cap = 6;
+        assert!(
+            enchant_next(EnchantType::Fortune, 0, cap)
+                .join(" ")
+                .contains("multiplied by 2")
+        );
+        assert!(
+            enchant_next(EnchantType::Haste, 0, cap)
+                .join(" ")
+                .contains("speed")
+        );
+        assert_eq!(
+            enchant_next(EnchantType::Nuke, 0, cap),
+            vec!["procs more often.".to_owned()]
+        );
+        // Explosive's square grows every third level and says so on the levels it
+        // does not grow — the one track whose sentence needed four lines in §5.4.1.
+        assert!(
+            enchant_next(EnchantType::Explosive, 1, cap)
+                .join(" ")
+                .contains("still 3x3")
+        );
+        assert!(
+            enchant_next(EnchantType::Explosive, 3, cap)
+                .join(" ")
+                .contains("grows to 5x5")
+        );
+        assert_eq!(
+            enchant_next(EnchantType::Nuke, cap, cap),
+            vec!["at its cap — nothing left to buy".to_owned()]
+        );
+    }
+
+    #[test]
+    fn efficiency_has_no_sentence_here_because_the_shop_does_not_sell_it() {
+        // `cursor::enchant_tracks` drops it on the price — `economy::enchant_cost`
+        // answers `None` for Efficiency and only Efficiency — so this arm exists to
+        // keep the match exhaustive, not because a pane can reach it. Asserted rather
+        // than assumed: if the filter ever changed, the pane would print a blank
+        // Effect block instead of failing here.
+        assert!(enchant_effect(EnchantType::Efficiency, 5).is_empty());
+        assert!(!cursor::enchant_tracks().contains(&EnchantType::Efficiency));
+    }
+
+    #[test]
+    fn a_capped_enchant_is_priceless_rather_than_unaffordable() {
+        // `—`, not `✗`: the player is not short of anything, there is simply nothing
+        // left to sell them. Efficiency 3 is the Overworld cap a fresh run lives under.
+        let state = veteran(&[(r#""enchants":{}"#, r#""enchants":{"Fortune":3}"#)]);
+        let cursors = upgrading(&state, UpgradeTab::Enchants);
+        let view = View::from_state(&state, cursors, None);
+
+        let fortune = view
+            .upgrades
+            .enchants
+            .rows
+            .iter()
+            .find(|row| row.cells.first().is_some_and(|cell| cell == "Fortune"));
+        assert_eq!(fortune.map(|row| row.mark), Some(Mark::NoPrice));
+        assert!(fortune.is_some_and(|row| row.cells.get(1).is_some_and(|cell| cell == MAXED)));
+        match &view.upgrades.active_subtab().detail {
+            UpgradeDetail::Enchant(detail) => assert!(detail.cost.is_none()),
+            other => unreachable!("the Enchants sub-tab must project an enchant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_locked_mine_prints_its_level_gate_and_an_unvisited_one_prints_a_size() {
+        // Two rows that both read `—`, told apart by the `Next` cell alone: the End is
+        // shut behind a level, Coal is merely unopened, and only one of those is
+        // something the player can do anything about today.
+        let state = fresh_run();
+        let view = projected(&state);
+        let rows = &view.upgrades.mines.rows;
+        let cell = |kind: MineKind, track: MineTrack| {
+            rows.iter()
+                .find(|row| {
+                    row.cells.first().is_some_and(|name| name == kind.name())
+                        && row
+                            .cells
+                            .get(1)
+                            .is_some_and(|word| word == track_word(track))
+                })
+                .cloned()
+        };
+
+        let end = cell(MineKind::Amethyst, MineTrack::Size);
+        assert_eq!(end.as_ref().map(|row| row.mark), Some(Mark::NoPrice));
+        assert!(end.is_some_and(|row| row.cells.get(2).is_some_and(|next| next.starts_with("Lv"))));
+
+        let coal = cell(MineKind::Coal, MineTrack::Richness);
+        assert_eq!(coal.as_ref().map(|row| row.mark), Some(Mark::NoPrice));
+        assert!(coal.is_some_and(|row| row.cells.get(2).is_some_and(|next| next == "1")));
+
+        // Two rows per mine, and every one of the twelve gets both.
+        assert_eq!(rows.len(), MineKind::ALL.len() * MineTrack::ALL.len());
+    }
+
+    #[test]
+    fn an_unvisited_mines_pane_sends_the_player_there_rather_than_pricing_it() {
+        let state = fresh_run();
+        let mut cursors = upgrading(&state, UpgradeTab::Mines);
+        cursors.mine_track = (MineKind::Coal, MineTrack::Size);
+
+        let view = View::from_state(&state, cursors, None);
+        match &view.upgrades.active_subtab().detail {
+            UpgradeDetail::Mine(detail) => {
+                assert_eq!(detail.blocked, Some(TrackBlock::NotEntered));
+                assert!(detail.cost.is_none());
+            }
+            other => unreachable!("the Mines sub-tab must project a mine track: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_maxed_track_has_no_next_level_to_quote() {
+        // Both ends of both tracks: a size at the top of `MINE_SIZES` and a richness at
+        // `MAX_RICHNESS_LEVEL` are `—` rather than a price, and the `Next` cell says so
+        // in words instead of a number that would be a lie.
+        let state = veteran(&[(
+            r#""size_level":0,"richness_level":0,"richness_setting":0"#,
+            &format!(
+                r#""size_level":9,"richness_level":{MAX_RICHNESS_LEVEL},"richness_setting":0"#
+            ),
+        )]);
+
+        for track in MineTrack::ALL {
+            let mut cursors = upgrading(&state, UpgradeTab::Mines);
+            cursors.mine_track = (MineKind::Stone, track);
+            let view = View::from_state(&state, cursors, None);
+            match &view.upgrades.active_subtab().detail {
+                UpgradeDetail::Mine(detail) => {
+                    assert_eq!(detail.at_next, TrackOutcome::Maxed, "{track:?}");
+                    assert!(detail.cost.is_none(), "{track:?}");
+                    assert_eq!(detail.mark, Mark::NoPrice, "{track:?}");
+                }
+                other => unreachable!("the Mines sub-tab must project a mine track: {other:?}"),
+            }
+        }
     }
 }

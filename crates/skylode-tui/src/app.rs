@@ -17,25 +17,28 @@ use ratatui::{
     widgets::Tabs,
 };
 use skylode_core::{
+    economy::{self, Affordability, Shortfall},
+    enchant::EnchantType,
     game::GameState,
     material::{Item, Material},
     mine::Mine,
     mine_kind::MineKind,
     tunables::RAW_PER_COMPRESSED,
+    upgrade,
 };
 
 use crate::{
     action::Action,
     config::Config,
-    cursor::{self, Cursors},
+    cursor::{self, Cursors, MineTrack, UpgradeTab},
     event::{Event, Events},
-    format::grouped,
+    format::{grouped, roman, rung_label},
     keymap,
-    overlay::{Conversion, Modal, compression, help, too_small},
+    overlay::{Conversion, Modal, compression, dip, help, too_small},
     screen::Screen,
     theme,
     toast::{TOAST_TTL, Toasts},
-    view::View,
+    view::{CompressHint, UpgradeDetail, View},
 };
 
 /// The widest the interface is ever drawn, whatever the terminal offers.
@@ -53,6 +56,18 @@ const MAX_WIDTH: u16 = 2 * too_small::MIN_WIDTH;
 /// the Mine screen's grid is a game constant, so a 90-row terminal would strand it
 /// in the middle of an enormous empty box.
 const MAX_HEIGHT: u16 = 2 * too_small::MIN_HEIGHT;
+
+/// How far a purchase on the Upgrades screen goes.
+///
+/// The only difference between `Enter` and `M`, named so that
+/// [`App::buy_at_cursor`] can take it as an argument instead of existing twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reach {
+    /// Up to the row the cursor is on — `Enter`.
+    ToCursor,
+    /// Up to whatever the inventory allows — `M`.
+    AsFarAsPossible,
+}
 
 /// The whole front-end state.
 #[derive(Debug)]
@@ -85,9 +100,8 @@ pub struct App {
     /// Rebuilt by [`sync_view`](App::sync_view) before each draw rather than inside
     /// `render`, for two reasons. `render` takes `&self` and stays a pure read, which
     /// is what lets a test draw an `App` it does not own; and the projection still
-    /// rebuilds `View::sample`'s fixture for the three screens phases 6-7 have not
-    /// wired, which is worth doing when the state changes and not thirty times a
-    /// second.
+    /// rebuilds `View::sample`'s fixture for the two screens phase 7 has not wired,
+    /// which is worth doing when the state changes and not thirty times a second.
     pub view: View,
     /// Where the player is pointing on each list — front-end state, never the run's.
     ///
@@ -95,6 +109,19 @@ pub struct App {
     /// row is not something a save should carry and not something the rules may
     /// consult. [`View::from_state`] reads both to build one snapshot.
     pub cursors: Cursors,
+    /// The last purchase refused for a *denomination*, kept for the Inventory screen.
+    ///
+    /// **The §8.4 loop's only piece of memory.** A `CompressFirst` refusal sends the
+    /// player to `3 Inventory` to convert by hand, and the panel there has to name what
+    /// they came for — a screen that just said `Compressible now: 4` would have lost
+    /// the question. The other half of that loop, *"the Upgrades selection is
+    /// remembered"*, costs nothing: the cursors live here and not in the screens, so
+    /// they survive the walk already.
+    ///
+    /// **Only the compress-first branch is kept.** `Insufficient` is answered by
+    /// mining, not by anything on the Inventory screen, so remembering it would put a
+    /// note on a screen that cannot act on it.
+    pub refused: Option<CompressHint>,
     /// Front-end preferences — read while drawing, edited by Settings (phase 7).
     pub config: Config,
 }
@@ -113,9 +140,14 @@ impl App {
     /// and hands it here, where today's caller builds a new one.
     pub fn new(state: GameState) -> Self {
         // Seeded from the run, so opening the Mines tab highlights where the player
-        // actually is rather than the top of the list.
-        let cursors = Cursors::new(state.current_mine().kind());
-        let view = View::from_state(&state, cursors);
+        // actually is rather than the top of the list — and the Upgrades ladder opens
+        // on the rung they are standing on, which is the same question asked of the
+        // other axis of progression.
+        let cursors = Cursors::new(
+            state.current_mine().kind(),
+            upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
+        );
+        let view = View::from_state(&state, cursors, None);
         Self {
             should_quit: false,
             screen: Screen::Mine,
@@ -124,6 +156,7 @@ impl App {
             state,
             view,
             cursors,
+            refused: None,
             config: Config::default(),
         }
     }
@@ -135,7 +168,7 @@ impl App {
     /// guard here starts earning its keep; today a session only changes when a key is
     /// pressed, so the projection runs about as often as it would anyway.
     fn sync_view(&mut self) {
-        self.view = View::from_state(&self.state, self.cursors);
+        self.view = View::from_state(&self.state, self.cursors, self.refused.as_ref());
     }
 
     /// Draws, then blocks for the next event, until asked to quit.
@@ -209,9 +242,10 @@ impl App {
     /// the rule.** A modal captures the keyboard — [`keymap`] already gives it first
     /// refusal on every *key* — so it must also own what those keys decode to, or a
     /// `←` meant for the compression spinner would slide the richness dial on the
-    /// screen behind the box. The five overlays phases 6 and 7 still owe inherit this
-    /// seam rather than re-deriving it, which is why the split lives here in one line
-    /// and not as a condition repeated in each arm.
+    /// screen behind the box. Phase 6's dip modal was the first to inherit the seam
+    /// rather than re-derive it — it cost one arm — and phase 7's four remaining
+    /// overlays will do the same, which is why the split lives here in one line and
+    /// not as a condition repeated in each arm.
     pub fn update(&mut self, action: Action) {
         // Returns `true` when the stacked modal consumed the gesture, so the screen
         // below never sees it.
@@ -236,8 +270,8 @@ impl App {
             Action::OpenHelp => self.modal = Some(Modal::Help),
             Action::CloseModal => self.modal = None,
             // The list gestures are decoded without a screen in mind, so this is
-            // where one is chosen. Mines and Inventory answer today; phases 6-7 add
-            // arms.
+            // where one is chosen. Mines, Inventory and Upgrades answer today;
+            // phase 7 adds arms.
             Action::CursorUp => self.step_list_cursor(-1),
             Action::CursorDown => self.step_list_cursor(1),
             Action::AdjustLeft => {
@@ -250,9 +284,31 @@ impl App {
                     self.step_richness_dial(1);
                 }
             }
-            Action::Confirm => {
-                if self.screen == Screen::Mines {
-                    self.enter_selected_mine();
+            Action::Confirm => match self.screen {
+                Screen::Mines => self.enter_selected_mine(),
+                Screen::Upgrades => self.buy_at_cursor(Reach::ToCursor),
+                _ => {}
+            },
+            // `M`, and only where something is for sale. It reaches the *same* buy as
+            // `Enter` with a further target, which is what keeps "buy to here" and
+            // "buy max" from being two implementations of one purchase.
+            Action::BuyMax => {
+                if self.screen == Screen::Upgrades {
+                    self.buy_at_cursor(Reach::AsFarAsPossible);
+                }
+            }
+            // The sub-tab ring. Guarded on the screen even though `keymap` only emits
+            // these there, because the reducer is the place a gesture's meaning is
+            // decided and a guard that lives in only one of the two is a guard that
+            // moves when the binding does.
+            Action::NextSubTab => {
+                if self.screen == Screen::Upgrades {
+                    self.cursors.upgrade_tab = self.cursors.upgrade_tab.next();
+                }
+            }
+            Action::PrevSubTab => {
+                if self.screen == Screen::Upgrades {
+                    self.cursors.upgrade_tab = self.cursors.upgrade_tab.prev();
                 }
             }
             // Nothing to adjust to its maximum outside the spinner, which
@@ -265,39 +321,75 @@ impl App {
 
     /// Offers `action` to the stacked modal, answering whether it took it.
     ///
-    /// **Only the compression dialog answers anything**, because it is the only modal
-    /// with a value in it. Help swallows keys in [`keymap`] and never reaches here
-    /// with a gesture at all; `Esc` deliberately falls through to
-    /// [`Action::CloseModal`] in the main `match`, so closing a modal stays one
-    /// implementation for every modal there will ever be.
+    /// **Only the two modals with a *state* answer anything** — a spinner's count and
+    /// a caret's side. Help swallows keys in [`keymap`] and never reaches here with a
+    /// gesture at all; `Esc` deliberately falls through to [`Action::CloseModal`] in
+    /// the main `match`, so closing a modal stays one implementation for every modal
+    /// there will ever be.
     ///
     /// Returning a `bool` rather than an `Option<Action>` to re-dispatch: a modal
     /// either consumed the gesture or did not, and translating one gesture into
     /// another would give the reducer a second dispatch path to reason about.
     fn update_modal(&mut self, action: &Action) -> bool {
-        let Some(Modal::Compress {
-            material,
-            direction,
-            units,
-        }) = self.modal
-        else {
-            return false;
-        };
-
-        match action {
-            // `saturating_sub` on the way down and a clamp on the way up: the floor
-            // is 1, since a conversion of nothing is not something the dialog should
-            // be able to offer, and `Esc` is how a player who changed their mind
-            // leaves.
-            Action::AdjustLeft => self.set_spinner(material, direction, units.saturating_sub(1)),
-            Action::AdjustRight => self.set_spinner(material, direction, units.saturating_add(1)),
-            // `a` — *all*. Asking for more than the pile holds and letting the clamp
-            // answer, rather than reading the ceiling twice.
-            Action::AdjustMax => self.set_spinner(material, direction, u32::MAX),
-            Action::Confirm => self.apply_conversion(material, direction, units),
-            _ => return false,
+        match self.modal {
+            Some(Modal::Compress {
+                material,
+                direction,
+                units,
+            }) => {
+                match action {
+                    // `saturating_sub` on the way down and a clamp on the way up: the
+                    // floor is 1, since a conversion of nothing is not something the
+                    // dialog should be able to offer, and `Esc` is how a player who
+                    // changed their mind leaves.
+                    Action::AdjustLeft => {
+                        self.set_spinner(material, direction, units.saturating_sub(1));
+                    }
+                    Action::AdjustRight => {
+                        self.set_spinner(material, direction, units.saturating_add(1));
+                    }
+                    // `a` — *all*. Asking for more than the pile holds and letting the
+                    // clamp answer, rather than reading the ceiling twice.
+                    Action::AdjustMax => self.set_spinner(material, direction, u32::MAX),
+                    Action::Confirm => self.apply_conversion(material, direction, units),
+                    _ => return false,
+                }
+                true
+            }
+            // Two options, so the gestures **clamp** rather than wrap: a caret that
+            // rolled off `Not yet` onto `Buy it` would put the dangerous option one
+            // repeat of a held key away from the safe one.
+            Some(Modal::Dip { to, buy }) => {
+                match action {
+                    Action::AdjustLeft => self.modal = Some(Modal::Dip { to, buy: true }),
+                    Action::AdjustRight => self.modal = Some(Modal::Dip { to, buy: false }),
+                    Action::Confirm => self.confirm_dip(to, buy),
+                    _ => return false,
+                }
+                true
+            }
+            _ => false,
         }
-        true
+    }
+
+    /// Takes the focused option of the dip modal, and closes it either way.
+    ///
+    /// **Declining is a close and nothing else**, which is why there is no toast on
+    /// that side: the player asked a question, read the answer, and said no — a line
+    /// announcing that they did not buy anything would be the interface talking about
+    /// itself. Buying goes through the same [`buy_pickaxe_chain`](App::buy_pickaxe_chain)
+    /// path as an undipped purchase, so there is one implementation of *what a chain
+    /// costs and announces* and the modal only decides whether it runs.
+    ///
+    /// **Takes the pair rather than re-reading `self.modal`**, the same device
+    /// [`set_spinner`](App::set_spinner) uses: the caller has just destructured it, so
+    /// reading it again would need an `else { return }` for a case the caller has
+    /// proved impossible — a branch no test could justify.
+    fn confirm_dip(&mut self, to: usize, buy: bool) {
+        self.modal = None;
+        if buy {
+            self.climb_to(to);
+        }
     }
 
     /// Moves the spinner to `requested`, clamped into what the pile can actually
@@ -409,6 +501,280 @@ impl App {
         self.modal = None;
     }
 
+    /// Buys whatever the Upgrades cursor is sitting on, and announces the outcome.
+    ///
+    /// **One entry point for `Enter` and `M`**, because they differ only in *how far*:
+    /// [`Reach`] is that difference and nothing else. Two functions would be two
+    /// places for the refusal wording, the toast and the dip check to drift.
+    fn buy_at_cursor(&mut self, reach: Reach) {
+        match self.cursors.upgrade_tab {
+            UpgradeTab::Pickaxe => self.buy_pickaxe_chain(reach),
+            UpgradeTab::Enchants => self.buy_enchant_levels(reach),
+            UpgradeTab::Mines => self.buy_mine_track(reach),
+        }
+    }
+
+    /// Climbs the pickaxe roadmap to the cursor, or as far as the ore reaches —
+    /// stopping to ask first when the climb would cost power.
+    ///
+    /// **The question is asked here and not in [`climb_to`](App::climb_to)**, so the
+    /// modal's own confirm can reach the purchase without meeting its own guard again.
+    /// Asked of [`upgrade::preview`], which is the core's single definition of a dip:
+    /// a front-end that re-derived "did we lose power" would be free to disagree with
+    /// the pane that has just drawn the box.
+    fn buy_pickaxe_chain(&mut self, reach: Reach) {
+        let inventory = self.state.player().get_inventory();
+        let pickaxe = self.state.player().get_pickaxe();
+        let from = upgrade::position(&upgrade::ladder(), pickaxe);
+        let to = match reach {
+            Reach::ToCursor => self.cursors.pickaxe_rung,
+            // **At least the next rung, even when nothing is affordable.** `M` on a
+            // penniless run would otherwise target the rung the player is already on,
+            // and the chain to *there* is affordable by definition — so the screen
+            // would answer "nothing to buy" to a player whose actual problem is that
+            // they are short of ore. Aiming one rung further makes the refusal the
+            // real one.
+            Reach::AsFarAsPossible => {
+                upgrade::max_affordable(inventory, pickaxe).max(from.saturating_add(1))
+            }
+        };
+
+        if upgrade::preview(pickaxe, to).is_dip() {
+            self.modal = Some(Modal::Dip { to, buy: false });
+            return;
+        }
+        self.climb_to(to);
+    }
+
+    /// Buys the chain to `to` and announces what happened.
+    ///
+    /// **The refusal is read from [`upgrade::chain_affordability`] and not from the
+    /// purchase**, which is the §8.4 rule: the two branches are different news and the
+    /// core already computed which one applies, with the shortfall attached. Asking
+    /// after a `0`-rung climb is asking the same question the row's mark answered, so
+    /// the toast and the `✓ ~ ✗` cannot contradict each other.
+    fn climb_to(&mut self, to: usize) {
+        if self.state.buy_pickaxe_chain(to) == 0 {
+            let refusal = upgrade::chain_affordability(
+                self.state.player().get_inventory(),
+                self.state.player().get_pickaxe(),
+                to,
+            );
+            self.announce_refusal(&refusal);
+            // **The rung that stopped the chain, not the one aimed at.** A chain is
+            // simulated rung by rung, so the price the player is actually short of is
+            // the first unaffordable one's — and the ladder answers where that is
+            // without a second walk: it is one past where the affordable prefix ends.
+            self.remember_chain_refusal();
+            return;
+        }
+
+        // **The rung the pickaxe is *on*, read off the pickaxe** — not the count, and
+        // not a lookup back into the ladder. "Bought Netherite Pickaxe" is what the
+        // player was looking at; "bought 6 rungs" is what the loop did. Naming it from
+        // the tool means there is no index that could miss, and therefore no fallback
+        // sentence for a case that cannot happen.
+        let pickaxe = self.state.player().get_pickaxe();
+        let label = rung_label(
+            pickaxe.get_tier(),
+            pickaxe.enchants().get_level(EnchantType::Efficiency),
+        );
+        self.refused = None;
+        self.toasts.push(format!("Bought {label}"), TOAST_TTL);
+    }
+
+    /// Records the compress-first hint for the rung a chain stopped at, if any.
+    ///
+    /// Split out of [`climb_to`](App::climb_to) because the ladder has to be walked to
+    /// find the rung and then indexed to price it, and doing that inline would put four
+    /// lines of lookup between the refusal and the toast that announces it.
+    fn remember_chain_refusal(&mut self) {
+        let ladder = upgrade::ladder();
+        let blocked = upgrade::max_affordable(
+            self.state.player().get_inventory(),
+            self.state.player().get_pickaxe(),
+        )
+        .saturating_add(1);
+        let Some(cost) = ladder.get(blocked).and_then(|rung| rung.cost.clone()) else {
+            self.refused = None;
+            return;
+        };
+        let label = ladder
+            .get(blocked)
+            .map_or_else(String::new, |rung| rung_label(rung.tier, rung.efficiency));
+        self.remember_refusal(&label, &cost);
+    }
+
+    /// Buys one level of the enchant under the cursor, or every level it can reach.
+    ///
+    /// `M` here means *buy to cap* rather than *buy to the end of a chain*, and the
+    /// two are the same act on a track where every level is independently priced:
+    /// [`economy::buy_repeatedly`] stops at the first refusal, which is the cap or the
+    /// purse, whichever comes first.
+    fn buy_enchant_levels(&mut self, reach: Reach) {
+        let kind = self.cursors.enchant;
+        let wanted = match reach {
+            Reach::ToCursor => 1,
+            Reach::AsFarAsPossible => u32::MAX,
+        };
+        let bought = economy::buy_repeatedly(wanted, || self.state.buy_enchant(kind));
+        if bought == 0 {
+            // Asked again for the *reason*, which is free: a refusal changes nothing,
+            // so the second call re-derives the same `Err` against the same state.
+            //
+            // Bound to a local first because `self.announce_core_refusal(self.state
+            // .buy_enchant(kind))` does not compile: the receiver borrows all of
+            // `self` mutably before the argument is evaluated, and the argument wants
+            // `self.state` mutably too. Two-phase borrows do not reach through a
+            // `&mut self` method call.
+            let refusal = self.state.buy_enchant(kind);
+            self.announce_core_refusal(refusal);
+            let player = self.state.player();
+            let level = player.get_pickaxe().enchants().get_level(kind);
+            if let Some(cost) = economy::enchant_cost(kind, level, player.highest_unlocked_world())
+            {
+                self.remember_refusal(&format!("{} {}", kind.name(), roman(level + 1)), &cost);
+            }
+            return;
+        }
+
+        let level = self.state.player().get_pickaxe().enchants().get_level(kind);
+        self.refused = None;
+        self.toasts.push(
+            format!("Bought {} {}", kind.name(), roman(level)),
+            TOAST_TTL,
+        );
+    }
+
+    /// Buys the next level of the mine track under the cursor, or every level it can
+    /// reach.
+    fn buy_mine_track(&mut self, reach: Reach) {
+        let (kind, track) = self.cursors.mine_track;
+        let wanted = match reach {
+            Reach::ToCursor => 1,
+            Reach::AsFarAsPossible => u32::MAX,
+        };
+        let what = match track {
+            MineTrack::Size => "size",
+            MineTrack::Richness => "richness",
+        };
+        let bought = economy::buy_repeatedly(wanted, || match track {
+            MineTrack::Size => self.state.buy_mine_size(kind),
+            MineTrack::Richness => self.state.buy_mine_richness(kind),
+        });
+        if bought == 0 {
+            let refusal = match track {
+                MineTrack::Size => self.state.buy_mine_size(kind),
+                MineTrack::Richness => self.state.buy_mine_richness(kind),
+            };
+            self.announce_core_refusal(refusal);
+            // A mine this run never entered has no level to price from, so there is
+            // nothing to compress *for* — and the toast has already said to go there.
+            if let Some(level) = self.state.mine(kind).map(|mine| match track {
+                MineTrack::Size => mine.get_size_level(),
+                MineTrack::Richness => mine.get_richness_level(),
+            }) {
+                let cost = match track {
+                    MineTrack::Size => economy::mine_size_cost(kind, level),
+                    MineTrack::Richness => economy::mine_richness_cost(kind, level),
+                };
+                let label = format!("{} {what} {}", kind.name(), level + 1);
+                self.remember_refusal(&label, &cost);
+            }
+            return;
+        }
+
+        let level = self.state.mine(kind).map_or(0, |mine| match track {
+            MineTrack::Size => mine.get_size_level(),
+            MineTrack::Richness => mine.get_richness_level(),
+        });
+        self.refused = None;
+        self.toasts
+            .push(format!("{} {what} → level {level}", kind.name()), TOAST_TTL);
+    }
+
+    /// Toasts an [`Affordability`] verdict in the words its branch calls for.
+    ///
+    /// **The two refusals are different news** (`docs/UI.md` §8.4), and the wording is
+    /// what routes the player: `Insufficient` sends them back to a mine,
+    /// `CompressFirst` to the Inventory screen. The shortfall named is the *first*
+    /// one — a price short in three materials is still one trip, and three toasts
+    /// stacked on top of each other are three the player reads none of.
+    fn announce_refusal(&mut self, verdict: &Affordability) {
+        let message = match verdict {
+            // Reachable when the chain is affordable and bought nothing anyway, which
+            // means there was nothing to buy: the cursor is at or behind the rung the
+            // player stands on.
+            Affordability::Affordable => "Nothing to buy here".to_owned(),
+            Affordability::CompressFirst(shortfalls) => match shortfalls.first() {
+                Some(Shortfall { item, needed, held }) => format!(
+                    "Compress first — need {} {item}, you have {}",
+                    grouped(*needed),
+                    grouped(*held)
+                ),
+                None => "Compress first".to_owned(),
+            },
+            Affordability::Insufficient(shortfalls) => match shortfalls.first() {
+                Some(Shortfall { item, needed, held }) => format!(
+                    "Not enough {item} — {} needed, {} held",
+                    grouped(*needed),
+                    grouped(*held)
+                ),
+                None => "Not enough ore".to_owned(),
+            },
+        };
+        self.toasts.push(message, TOAST_TTL);
+    }
+
+    /// Toasts whatever a core purchase refused with, verbatim.
+    ///
+    /// **Verbatim, and that is the point of [`CoreError`]'s own wording**: a maxed
+    /// track, a spent pickaxe and an unvisited mine each say what they are, and a
+    /// front-end re-phrasing them would be a second copy of the rule. An `Ok` here
+    /// means the retry succeeded, which cannot happen — the caller only asks after a
+    /// count of zero — so it is silent rather than announcing a purchase twice.
+    ///
+    /// [`CoreError`]: skylode_core::error::CoreError
+    fn announce_core_refusal(&mut self, outcome: Result<(), skylode_core::error::CoreError>) {
+        if let Err(refusal) = outcome {
+            self.toasts.push(refusal.to_string(), TOAST_TTL);
+        }
+    }
+
+    /// Remembers a refusal the Inventory screen can help with, and forgets any other.
+    ///
+    /// **Asked of the price rather than read off the refusal**, and that is forced
+    /// twice over. [`InsufficientItems`](skylode_core::error::CoreError::InsufficientItems)
+    /// is one variant for both branches —
+    /// deliberately, since from the till they are the same event — so which loop the
+    /// player should run is a question only [`economy::affordability`] answers. And the
+    /// panel prints the *whole* price in that material (`6 Compressed + 50`), which a
+    /// shortfall does not carry: it says what is missing, not what was asked for.
+    ///
+    /// The line is looked up by material in the `Cost` that was refused, so what the
+    /// Inventory screen shows is the same [`CostLine`](skylode_core::economy::CostLine)
+    /// the Upgrades pane quoted — one number, two screens, no arithmetic in between.
+    ///
+    /// **Every other outcome clears it**, including a plain `Insufficient`: a note that
+    /// outlived its refusal would send the player to compress for a purchase they can
+    /// no longer be short of in that way.
+    fn remember_refusal(&mut self, purchase: &str, cost: &economy::Cost) {
+        let verdict = economy::affordability(self.state.player().get_inventory(), cost);
+        self.refused = match verdict {
+            Affordability::CompressFirst(shortfalls) => shortfalls
+                .first()
+                .and_then(|shortfall| {
+                    let material = shortfall.item.material();
+                    cost.lines().iter().find(|line| line.material == material)
+                })
+                .map(|needed| CompressHint {
+                    purchase: purchase.to_owned(),
+                    needed: *needed,
+                }),
+            _ => None,
+        };
+    }
+
     /// Moves whichever list the open screen owns by one row.
     ///
     /// **The screen is chosen here and not in [`keymap`], which is the whole shape of
@@ -429,6 +795,26 @@ impl App {
                 self.cursors.material =
                     cursor::step_in(&Material::ALL, self.cursors.material, delta);
             }
+            // One screen, three lists — which is why the sub-tab is a cursor and not a
+            // screen of its own: the gesture is the same `↑`, and what it moves is
+            // whatever is showing.
+            Screen::Upgrades => match self.cursors.upgrade_tab {
+                UpgradeTab::Pickaxe => {
+                    self.cursors.pickaxe_rung = cursor::step_index(
+                        upgrade::ladder().len(),
+                        self.cursors.pickaxe_rung,
+                        delta,
+                    );
+                }
+                UpgradeTab::Enchants => {
+                    self.cursors.enchant =
+                        cursor::step_in(&cursor::enchant_tracks(), self.cursors.enchant, delta);
+                }
+                UpgradeTab::Mines => {
+                    self.cursors.mine_track =
+                        cursor::step_in(&cursor::mine_tracks(), self.cursors.mine_track, delta);
+                }
+            },
             _ => {}
         }
     }
@@ -548,6 +934,15 @@ impl App {
                     direction,
                     units,
                 ),
+                // The opposite choice to the dialog above, and for the opposite reason:
+                // the dip is about a purchase whose numbers the player has *already
+                // read* in the pane behind, so it draws that same projection rather
+                // than a second reading of the run that could disagree with it.
+                Modal::Dip { buy, .. } => {
+                    if let UpgradeDetail::Pickaxe(detail) = &self.view.upgrades.pickaxe.detail {
+                        dip::render(frame, area, detail, buy);
+                    }
+                }
             }
         }
     }
@@ -593,7 +988,7 @@ mod tests {
         buffer::Buffer,
         crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     };
-    use skylode_core::game::Input;
+    use skylode_core::{game::Input, pickaxe::PickaxeTier, save};
 
     use super::*;
 
@@ -1528,5 +1923,683 @@ mod tests {
         app.sync_view();
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("never entered"), "{frame}");
+    }
+
+    // --- The Upgrades screen ---
+
+    /// A session on the Upgrades tab, on the sub-tab named.
+    fn upgrading(tab: UpgradeTab) -> App {
+        let mut app = session();
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = tab;
+        app
+    }
+
+    /// A session over a run further along than a test can *play* to, built by writing a
+    /// save and reading it back with a few fields rewritten.
+    ///
+    /// **A door, not a back door.** A front-end cannot mint ore — `Player::inventory_mut`
+    /// is `pub(crate)` exactly so it cannot — and no enchant in the game is priced in a
+    /// material the opening Stone mine drops, so *buying one* is unreachable from a run
+    /// a test could mine. What a front-end can do is what it will do every launch from
+    /// phase 7 on: hand [`save::from_json`] a document. That path validates before it
+    /// returns, so a patch describing a run the rules could not produce is refused here
+    /// rather than quietly played. The config is `()` so this crate needs no serde
+    /// dependency; each patch must match, so a save-format rename fails loudly.
+    fn veteran(patches: &[(&str, &str)]) -> App {
+        let mut text = match save::to_json(&GameState::new(SEED, std::time::UNIX_EPOCH), &()) {
+            Ok(text) => text,
+            Err(error) => unreachable!("a fresh run must serialise: {error:?}"),
+        };
+        for (from, to) in patches {
+            assert!(text.contains(from), "the save no longer contains {from:?}");
+            text = text.replacen(from, to, 1);
+        }
+        match save::from_json::<()>(&text) {
+            Ok(save) => App::new(save.state),
+            Err(error) => unreachable!("a patched save must still be legal: {error:?}"),
+        }
+    }
+
+    /// **The sub-tab ring wraps, and the lists inside it clamp.** Two rules in one
+    /// screen, which is exactly why they are two functions — [`UpgradeTab::next`] and
+    /// [`cursor::step_index`] — rather than one helper with a flag.
+    #[test]
+    fn the_sub_tabs_are_a_ring_and_the_rows_inside_them_are_not() {
+        let mut app = upgrading(UpgradeTab::Pickaxe);
+
+        app.update(Action::NextSubTab);
+        assert_eq!(app.cursors.upgrade_tab, UpgradeTab::Enchants);
+        app.update(Action::NextSubTab);
+        assert_eq!(app.cursors.upgrade_tab, UpgradeTab::Mines);
+        app.update(Action::NextSubTab);
+        assert_eq!(
+            app.cursors.upgrade_tab,
+            UpgradeTab::Pickaxe,
+            "the sub-tab bar did not wrap"
+        );
+        app.update(Action::PrevSubTab);
+        assert_eq!(app.cursors.upgrade_tab, UpgradeTab::Mines, "nor backwards");
+
+        // The ladder, by contrast, stops. A fresh run stands on rung 0, so `↑` has
+        // nowhere to go and must not land on a maxed Netherite pickaxe.
+        app.cursors.upgrade_tab = UpgradeTab::Pickaxe;
+        app.update(Action::CursorUp);
+        assert_eq!(app.cursors.pickaxe_rung, 0);
+        app.update(Action::CursorDown);
+        assert_eq!(app.cursors.pickaxe_rung, 1);
+    }
+
+    /// The sub-tab binding is inert on every other screen, and the gesture is checked
+    /// in the reducer as well as in the keymap — two guards for one rule, because the
+    /// reducer is where a gesture's meaning is decided and a binding can be rebound.
+    #[test]
+    fn a_sub_tab_gesture_does_nothing_off_the_upgrades_screen() {
+        let mut app = session();
+        app.screen = Screen::Mines;
+
+        app.update(Action::NextSubTab);
+
+        assert_eq!(app.cursors.upgrade_tab, UpgradeTab::Pickaxe);
+    }
+
+    /// Each sub-tab moves its **own** cursor and leaves the other two alone — the
+    /// property that makes one `↑` serve three lists.
+    #[test]
+    fn each_sub_tab_walks_only_its_own_list() {
+        let mut app = upgrading(UpgradeTab::Enchants);
+        let before = app.cursors;
+
+        app.update(Action::CursorDown);
+
+        assert_ne!(app.cursors.enchant, before.enchant, "the list did not move");
+        assert_eq!(app.cursors.pickaxe_rung, before.pickaxe_rung);
+        assert_eq!(app.cursors.mine_track, before.mine_track);
+
+        // And the Mines sub-tab walks a mine's two rows before reaching the next mine,
+        // which is what makes each row readable alone (UI.md §5.4.2).
+        let mut app = upgrading(UpgradeTab::Mines);
+        assert_eq!(app.cursors.mine_track, (MineKind::Stone, MineTrack::Size));
+        app.update(Action::CursorDown);
+        assert_eq!(
+            app.cursors.mine_track,
+            (MineKind::Stone, MineTrack::Richness)
+        );
+        app.update(Action::CursorDown);
+        assert_eq!(app.cursors.mine_track, (MineKind::Coal, MineTrack::Size));
+    }
+
+    /// **The `✓` prefix, spent.** A run that has mined and compressed can buy the
+    /// first rung, and the toast names the rung it *reached* rather than counting
+    /// what the loop did.
+    #[test]
+    fn enter_buys_the_chain_up_to_the_cursor_and_names_where_it_landed() {
+        let mut app = upgrading(UpgradeTab::Pickaxe);
+        // Efficiency I costs 100 raw Stone, which quotes as one Compressed unit and
+        // nothing loose — so the walk to the Inventory screen is mandatory even here.
+        holding_stone(&mut app);
+        assert_eq!(app.state.compress(Material::Stone, 1), Ok(()));
+        app.cursors.pickaxe_rung = 1;
+
+        app.update(Action::Confirm);
+
+        let pickaxe = app.state.player().get_pickaxe();
+        assert_eq!(pickaxe.enchants().get_level(EnchantType::Efficiency), 1);
+        assert_eq!(app.toasts.len(), 1, "a purchase happened in silence");
+    }
+
+    /// The other branch of §8.4, and the one a fresh run hits: the value is in the
+    /// bag, the *denomination* is not, so the news is "go and compress" and not "go
+    /// and mine".
+    #[test]
+    fn a_purchase_short_of_the_denomination_asks_for_a_conversion() {
+        let mut app = upgrading(UpgradeTab::Pickaxe);
+        holding_stone(&mut app);
+        // Deliberately *not* compressed: over a hundred raw Stone held against a price
+        // of one Compressed unit.
+        app.cursors.pickaxe_rung = 1;
+
+        app.update(Action::Confirm);
+
+        assert_eq!(
+            app.state
+                .player()
+                .get_pickaxe()
+                .enchants()
+                .get_level(EnchantType::Efficiency),
+            0,
+            "the purchase went through on the wrong denomination"
+        );
+        assert_eq!(app.toasts.len(), 1, "the refusal was swallowed");
+    }
+
+    /// `M` reaches the same purchase with a further target, so a run that can afford
+    /// nothing buys nothing — and the refusal is the **real** one.
+    ///
+    /// A penniless `M` targets the rung the player is standing on, and a chain of no
+    /// purchases is affordable by definition — so without the `max(from + 1)` in
+    /// [`App::buy_pickaxe_chain`] this would answer *"nothing to buy here"* to a
+    /// player whose problem is that they have not mined anything.
+    #[test]
+    fn buy_max_on_a_penniless_run_names_the_ore_it_is_short_of() {
+        let mut app = upgrading(UpgradeTab::Pickaxe);
+
+        app.update(Action::BuyMax);
+
+        assert_eq!(
+            upgrade::position(&upgrade::ladder(), app.state.player().get_pickaxe()),
+            0
+        );
+        assert_eq!(app.toasts.len(), 1);
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Not enough"),
+            "a penniless buy-max did not name the shortage"
+        );
+    }
+
+    // --- The tier-jump dip (UI.md §6.7) ---
+
+    /// A run one rung short of Netherite, holding enough Ancient Debris to take it.
+    ///
+    /// The one chain in the game that *costs* power, which is the only thing that
+    /// opens the modal — so every test below has to start from a pickaxe a fresh run
+    /// could not have.
+    fn at_the_jump() -> App {
+        let mut app = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Diamond""#),
+            (r#""enchants":{}"#, r#""enchants":{"Efficiency":5}"#),
+            (
+                r#""inventory":{}"#,
+                r#""inventory":{"compressed_diamond":99,"diamond":99}"#,
+            ),
+        ]);
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = UpgradeTab::Pickaxe;
+        app.cursors.pickaxe_rung =
+            upgrade::position(&upgrade::ladder(), app.state.player().get_pickaxe()) + 1;
+        app.sync_view();
+        app
+    }
+
+    #[test]
+    fn a_chain_that_costs_power_asks_before_it_buys() {
+        // The purchase does *not* happen on `Enter`: the box opens instead, and the
+        // pickaxe is still the one the player had. That ordering is the whole point of
+        // §6.7 — a warning you commit to rather than one you discover.
+        let mut app = at_the_jump();
+        let tier = app.state.player().get_pickaxe().get_tier();
+
+        app.update(Action::Confirm);
+
+        assert!(matches!(app.modal, Some(Modal::Dip { buy: false, .. })));
+        assert_eq!(app.state.player().get_pickaxe().get_tier(), tier);
+        assert!(app.toasts.is_empty(), "a question is not news");
+    }
+
+    #[test]
+    fn an_ordinary_efficiency_step_is_bought_without_a_question() {
+        // The other half of the same rule: a modal on every purchase is a modal nobody
+        // reads, so a climb that only gains power never opens one.
+        let mut app = veteran(&[(
+            r#""inventory":{}"#,
+            r#""inventory":{"compressed_stone":40,"stone":99}"#,
+        )]);
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = UpgradeTab::Pickaxe;
+        app.cursors.pickaxe_rung = 1;
+
+        app.update(Action::Confirm);
+
+        assert!(app.modal.is_none());
+        assert_eq!(
+            upgrade::position(&upgrade::ladder(), app.state.player().get_pickaxe()),
+            1
+        );
+    }
+
+    #[test]
+    fn declining_the_dip_closes_the_box_and_buys_nothing() {
+        let mut app = at_the_jump();
+        let tier = app.state.player().get_pickaxe().get_tier();
+        app.update(Action::Confirm);
+
+        // The caret opens on `Not yet`, so a reflex `Enter` is the *safe* answer.
+        app.update(Action::Confirm);
+
+        assert!(app.modal.is_none());
+        assert_eq!(app.state.player().get_pickaxe().get_tier(), tier);
+        assert!(app.toasts.is_empty(), "declining is not news");
+    }
+
+    #[test]
+    fn confirming_the_dip_buys_the_chain_and_announces_it_like_any_other() {
+        let mut app = at_the_jump();
+        app.update(Action::Confirm);
+
+        app.update(Action::AdjustLeft);
+        app.update(Action::Confirm);
+
+        assert!(app.modal.is_none());
+        assert_eq!(
+            app.state.player().get_pickaxe().get_tier(),
+            PickaxeTier::Netherite
+        );
+        // The same sentence an undipped chain prints, because it is the same code.
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Bought Netherite Pickaxe"),
+            "{}",
+            whole_frame(&render_to_buffer(&app))
+        );
+    }
+
+    /// **The caret clamps, it does not wrap.** Two options and a held key: a ring would
+    /// put `Buy it` one repeat away from the answer the player was aiming at.
+    #[test]
+    fn the_dip_caret_clamps_at_both_ends() {
+        let mut app = at_the_jump();
+        app.update(Action::Confirm);
+
+        app.update(Action::AdjustRight);
+        assert!(matches!(app.modal, Some(Modal::Dip { buy: false, .. })));
+        app.update(Action::AdjustLeft);
+        app.update(Action::AdjustLeft);
+        assert!(matches!(app.modal, Some(Modal::Dip { buy: true, .. })));
+    }
+
+    #[test]
+    fn the_dip_box_draws_the_numbers_the_pane_behind_it_drew() {
+        // One projection read twice: if these ever disagree, the player is being asked
+        // to confirm a trade they were never shown.
+        let mut app = at_the_jump();
+        app.update(Action::Confirm);
+        app.sync_view();
+
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(
+            frame.contains("Mining power      34.0   →   9.0"),
+            "{frame}"
+        );
+        assert!(frame.contains("This resets Efficiency V to 0."), "{frame}");
+        assert!(frame.contains("Not yet"), "{frame}");
+    }
+
+    // --- The compress-first loop (UI.md §8.4) ---
+
+    /// A run holding the *value* of a pickaxe rung but not its *denomination*.
+    ///
+    /// Wooden Efficiency I is priced at 100 Stone, which quotes as `1 Compressed + 0`
+    /// — so a player sitting on 100 raw Stone is exactly rich enough and is still
+    /// refused. That is the whole of §8.4 in one purse.
+    fn holding_the_value_but_not_the_denomination() -> App {
+        let mut app = veteran(&[(r#""inventory":{}"#, r#""inventory":{"stone":150}"#)]);
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = UpgradeTab::Pickaxe;
+        app.cursors.pickaxe_rung = 1;
+        app
+    }
+
+    #[test]
+    fn a_refusal_of_the_denomination_is_remembered_for_the_inventory_screen() {
+        let mut app = holding_the_value_but_not_the_denomination();
+
+        app.update(Action::Confirm);
+
+        // The toast routes the player; the memory is what greets them when they get
+        // there. Both are needed — the toast is gone in a few seconds.
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Compress first"), "{frame}");
+        match &app.refused {
+            Some(hint) => {
+                assert_eq!(hint.purchase, "Wooden Eff I");
+                assert_eq!(hint.needed.material, Material::Stone);
+                assert_eq!(hint.needed.compressed, 1);
+            }
+            None => unreachable!("a compress-first refusal must be remembered"),
+        }
+    }
+
+    #[test]
+    fn the_inventory_panel_names_the_refusal_on_its_own_row_and_no_other() {
+        let mut app = holding_the_value_but_not_the_denomination();
+        app.update(Action::Confirm);
+        app.screen = Screen::Inventory;
+
+        // Stone is `Material::ALL`'s first row, so a fresh Inventory cursor is already
+        // on the pile the refusal is about.
+        app.cursors.material = Material::Stone;
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Wooden Eff I wants"), "{frame}");
+
+        // Move to any other pile and the note goes with it: a price in Stone printed
+        // beside the Coal row would attach a number to the wrong thing.
+        app.cursors.material = Material::Coal;
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(!frame.contains("wants"), "{frame}");
+    }
+
+    #[test]
+    fn compressing_by_hand_and_coming_back_completes_the_loop() {
+        // The §8.4 walk, end to end: refused, over to the Inventory, `c` and `Enter`,
+        // back to Upgrades — and the cursor is still on the rung they left, because
+        // it lives in `Cursors` and never went anywhere.
+        let mut app = holding_the_value_but_not_the_denomination();
+        app.update(Action::Confirm);
+        assert!(app.refused.is_some());
+
+        app.screen = Screen::Inventory;
+        app.cursors.material = Material::Stone;
+        app.update(Action::Compress);
+        app.update(Action::Confirm);
+
+        app.screen = Screen::Upgrades;
+        assert_eq!(app.cursors.pickaxe_rung, 1, "the selection was not kept");
+        app.update(Action::Confirm);
+
+        assert_eq!(
+            upgrade::position(&upgrade::ladder(), app.state.player().get_pickaxe()),
+            1
+        );
+        assert!(
+            app.refused.is_none(),
+            "a cleared refusal was still remembered"
+        );
+    }
+
+    #[test]
+    fn a_shortage_the_inventory_cannot_fix_is_not_remembered() {
+        // `Insufficient` is answered by mining. Leaving a note on the Inventory screen
+        // would send the player somewhere that can do nothing for them.
+        let mut app = upgrading(UpgradeTab::Pickaxe);
+        app.cursors.pickaxe_rung = 1;
+
+        app.update(Action::Confirm);
+
+        assert!(app.refused.is_none());
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Not enough"),
+            "{}",
+            whole_frame(&render_to_buffer(&app))
+        );
+    }
+
+    #[test]
+    fn a_refused_enchant_is_remembered_by_the_level_it_was_refused_at() {
+        // 10 Compressed Emerald for Fortune I, against a purse holding the value in
+        // raw: the enchant track's own instance of the same refusal.
+        let mut app = veteran(&[(r#""inventory":{}"#, r#""inventory":{"emerald":1500}"#)]);
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = UpgradeTab::Enchants;
+        app.cursors.enchant = EnchantType::Fortune;
+
+        app.update(Action::Confirm);
+
+        match &app.refused {
+            Some(hint) => {
+                assert_eq!(hint.purchase, "Fortune I");
+                assert_eq!(hint.needed.material, Material::Emerald);
+            }
+            None => unreachable!("a compress-first refusal must be remembered"),
+        }
+    }
+
+    #[test]
+    fn a_refused_mine_track_is_remembered_by_the_level_it_was_refused_at() {
+        // Both tracks, because each is priced by its own curve and each names itself
+        // in the hint — a player who was refused a richness ceiling should not be sent
+        // to the Inventory to buy a size.
+        for (track, purchase) in [
+            (MineTrack::Size, "Stone size 1"),
+            (MineTrack::Richness, "Stone richness 1"),
+        ] {
+            let mut app = veteran(&[(r#""inventory":{}"#, r#""inventory":{"stone":150}"#)]);
+            app.screen = Screen::Upgrades;
+            app.cursors.upgrade_tab = UpgradeTab::Mines;
+            app.cursors.mine_track = (MineKind::Stone, track);
+
+            app.update(Action::Confirm);
+
+            match &app.refused {
+                Some(hint) => {
+                    assert_eq!(hint.purchase, purchase);
+                    assert_eq!(hint.needed.material, Material::Stone);
+                }
+                None => unreachable!("a compress-first refusal must be remembered"),
+            }
+        }
+    }
+
+    /// The top of the ladder: `Enter` there buys nothing, and there is no rung past it
+    /// whose price could be quoted — so nothing is remembered rather than a blank one.
+    #[test]
+    fn a_chain_that_stops_at_the_end_of_the_ladder_remembers_nothing() {
+        let mut app = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Netherite""#),
+            (r#""enchants":{}"#, r#""enchants":{"Efficiency":15}"#),
+        ]);
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = UpgradeTab::Pickaxe;
+        app.cursors.pickaxe_rung = upgrade::ladder().len() - 1;
+
+        app.update(Action::Confirm);
+
+        assert!(app.refused.is_none());
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Nothing to buy here"),
+            "{}",
+            whole_frame(&render_to_buffer(&app))
+        );
+    }
+
+    /// **`n` and `Esc` close it through the path every modal shares.** `update_modal`
+    /// *declines* [`Action::CloseModal`] — that is what its catch-all is for — and the
+    /// reducer's one `CloseModal` arm does the closing, so there is a single
+    /// implementation of *shut the box* rather than one per modal.
+    #[test]
+    fn declining_the_dip_goes_through_the_close_every_modal_shares() {
+        let mut app = at_the_jump();
+        app.update(Action::Confirm);
+        let tier = app.state.player().get_pickaxe().get_tier();
+
+        app.update(Action::CloseModal);
+
+        assert!(app.modal.is_none());
+        assert_eq!(app.state.player().get_pickaxe().get_tier(), tier);
+    }
+
+    #[test]
+    fn a_bought_enchant_level_is_announced_by_its_new_roman_numeral() {
+        // Fortune I is priced at 10 Compressed Emerald — a material the Overworld's
+        // opening mine does not drop, which is why this needs a run that has been
+        // somewhere. The toast names the level *reached*, not the one paid for: the
+        // player asked for "one more", and the answer they want is where they are now.
+        let mut app = veteran(&[(
+            r#""inventory":{}"#,
+            r#""inventory":{"compressed_emerald":10}"#,
+        )]);
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = UpgradeTab::Enchants;
+        app.cursors.enchant = EnchantType::Fortune;
+
+        app.update(Action::Confirm);
+
+        assert_eq!(
+            app.state
+                .player()
+                .get_pickaxe()
+                .enchants()
+                .get_level(EnchantType::Fortune),
+            1
+        );
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Bought Fortune I"),
+            "{}",
+            whole_frame(&render_to_buffer(&app))
+        );
+    }
+
+    /// The cursor at or behind the rung the player stands on: there is genuinely
+    /// nothing to buy, and *that* is what the toast should say. The one path to the
+    /// [`Affordability::Affordable`] arm of the announcement.
+    #[test]
+    fn enter_on_a_rung_already_owned_says_there_is_nothing_to_buy() {
+        let mut app = upgrading(UpgradeTab::Pickaxe);
+        app.cursors.pickaxe_rung = 0;
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.toasts.len(), 1);
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Nothing to buy"),
+            "the standing rung reported a shortage instead"
+        );
+    }
+
+    /// **The two totality guards in the announcement**, reached directly because
+    /// nothing in the core produces them: a refusal always carries at least one
+    /// shortfall, so an empty list is the "cannot happen" this crate answers rather
+    /// than traps on.
+    #[test]
+    fn a_refusal_carrying_no_shortfall_still_says_which_loop_to_run() {
+        // One session each: only the **newest** toast is drawn, deliberately, so two
+        // pushed into one session would leave the first unassertable.
+        for (verdict, expected) in [
+            (Affordability::CompressFirst(Vec::new()), "Compress first"),
+            (Affordability::Insufficient(Vec::new()), "Not enough ore"),
+        ] {
+            let mut app = session();
+            app.announce_refusal(&verdict);
+
+            let frame = whole_frame(&render_to_buffer(&app));
+            assert!(frame.contains(expected), "{verdict:?} drew {frame}");
+        }
+    }
+
+    /// `Enter` means nothing on a screen that sells nothing and selects nothing —
+    /// the catch-all arm, which must stay a no-op rather than falling through to
+    /// whichever screen was wired last.
+    #[test]
+    fn confirm_does_nothing_on_a_screen_that_owns_no_selection() {
+        let mut app = session();
+        app.screen = Screen::Stats;
+        let before = app.cursors;
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.cursors, before);
+        assert!(app.toasts.is_empty());
+    }
+
+    /// **A mine track bought for real**, which is as far as a front-end test can get:
+    /// the size track of the opening mine is priced in the one ore a fresh run can
+    /// actually dig.
+    #[test]
+    fn a_mine_track_is_bought_for_the_mine_under_the_cursor() {
+        let mut app = upgrading(UpgradeTab::Mines);
+        holding_stone(&mut app);
+        assert_eq!(app.state.compress(Material::Stone, 1), Ok(()));
+        app.cursors.mine_track = (MineKind::Stone, MineTrack::Size);
+        let before = app.state.current_mine().get_size_level();
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.current_mine().get_size_level(), before + 1);
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Stone size"),
+            "the purchase was not announced by name"
+        );
+    }
+
+    /// `M` on the same track spends everything the purse allows in one keypress, and
+    /// the richness *ceiling* is the other of the two tracks — the one whose name has
+    /// to stay apart from the free dial on the Mines screen.
+    #[test]
+    fn buy_max_on_a_mine_track_spends_what_it_can_and_stops() {
+        let mut app = upgrading(UpgradeTab::Mines);
+        holding_stone(&mut app);
+        assert_eq!(app.state.compress(Material::Stone, 1), Ok(()));
+        app.cursors.mine_track = (MineKind::Stone, MineTrack::Richness);
+
+        app.update(Action::BuyMax);
+
+        assert!(
+            app.state.current_mine().get_richness_level() >= 1,
+            "buy-max bought nothing it could afford"
+        );
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Stone richness"),
+            "the purchase was not announced by name"
+        );
+    }
+
+    /// `M` on the enchant track is the same gesture again — and on a fresh run it
+    /// stops immediately, since no enchant in the game is priced in an ore the
+    /// opening mine drops.
+    #[test]
+    fn buy_max_on_an_unaffordable_enchant_track_stops_at_once() {
+        let mut app = upgrading(UpgradeTab::Enchants);
+
+        app.update(Action::BuyMax);
+
+        assert_eq!(
+            app.state
+                .player()
+                .get_pickaxe()
+                .enchants()
+                .get_level(app.cursors.enchant),
+            0
+        );
+        assert_eq!(app.toasts.len(), 1);
+    }
+
+    /// **A mine the run has never opened refuses, and says where to go.** Enoal's
+    /// call for phase 6: the grid is minted lazily, and minting one to upgrade it
+    /// would let a purchase advance the run's dice.
+    #[test]
+    fn upgrading_an_unvisited_mine_sends_the_player_there_instead() {
+        // Both tracks, because they are two doors onto one rule and a guard on only
+        // one of them is exactly the shape this would fail as.
+        for track in MineTrack::ALL {
+            let mut app = upgrading(UpgradeTab::Mines);
+            app.cursors.mine_track = (MineKind::Coal, track);
+
+            app.update(Action::Confirm);
+
+            assert!(
+                app.state.mine(MineKind::Coal).is_none(),
+                "a grid was minted"
+            );
+            assert_eq!(app.toasts.len(), 1, "{track:?} was refused in silence");
+            assert!(
+                whole_frame(&render_to_buffer(&app)).contains("enter the Coal mine"),
+                "the refusal did not say where to go"
+            );
+        }
+    }
+
+    /// The enchant track refuses in the core's own words, verbatim — a maxed track, a
+    /// missing ore and a shut world each already say what they are.
+    #[test]
+    fn an_unaffordable_enchant_is_refused_in_the_cores_own_words() {
+        let mut app = upgrading(UpgradeTab::Enchants);
+        let before = app
+            .state
+            .player()
+            .get_pickaxe()
+            .enchants()
+            .get_level(app.cursors.enchant);
+
+        app.update(Action::Confirm);
+
+        assert_eq!(
+            app.state
+                .player()
+                .get_pickaxe()
+                .enchants()
+                .get_level(app.cursors.enchant),
+            before
+        );
+        assert_eq!(app.toasts.len(), 1);
     }
 }

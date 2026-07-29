@@ -13,19 +13,25 @@
 
 use ratatui::{
     Frame,
-    crossterm::event::KeyEvent,
+    crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::Paragraph,
 };
 
+use skylode_core::economy::CostLine;
+
 use crate::{
     action::Action,
-    format::justified,
+    cursor::{MineTrack, UpgradeTab},
+    format::{MAXED, grouped, justified},
     screen::{panel, scrollbar, window},
     theme,
-    view::{UpgradeSubtab, UpgradeTab, UpgradesView, View},
+    view::{
+        EnchantDetail, MineTrackDetail, NOTHING, PickaxeDetail, TrackBlock, TrackOutcome,
+        UpgradeDetail, UpgradeSubtab, UpgradesView, View, level_word,
+    },
 };
 
 /// The master (list) side's share of the box, against [`DETAIL_WEIGHT`] — the
@@ -78,10 +84,7 @@ fn subtab_bar(frame: &mut Frame, area: Rect, upgrades: &UpgradesView) {
     let mut before = " ".to_owned();
     let mut active = String::new();
     let mut after = String::new();
-    for (index, tab) in [UpgradeTab::Pickaxe, UpgradeTab::Enchants, UpgradeTab::Mines]
-        .into_iter()
-        .enumerate()
-    {
+    for (index, tab) in UpgradeTab::ALL.into_iter().enumerate() {
         let piece = if index == 0 {
             label(tab)
         } else {
@@ -184,13 +187,64 @@ fn master_detail(frame: &mut Frame, area: Rect) -> (Rect, Rect) {
     (list, detail)
 }
 
-/// The master list: the header rows, then the entries, with a scrollbar on the two
+/// The width of each column, measured over the header and every row.
+///
+/// **The alignment lives here and not in the read model**, which is phase 6's
+/// instance of the lesson phases 4 and 5 both learned: a projection that pads its own
+/// strings has decided a layout without knowing the pane's width, and a name one
+/// character longer breaks every row under it. Measuring is cheap — forty-six rows at
+/// worst, once per redraw — and it is right by construction.
+fn columns(subtab: &UpgradeSubtab) -> Vec<usize> {
+    let mut widths: Vec<usize> = Vec::new();
+    let rows = std::iter::once(&subtab.header).chain(subtab.rows.iter().map(|row| &row.cells));
+    for cells in rows {
+        for (index, cell) in cells.iter().enumerate() {
+            let width = cell.chars().count();
+            match widths.get_mut(index) {
+                Some(current) => *current = (*current).max(width),
+                None => widths.push(width),
+            }
+        }
+    }
+    widths
+}
+
+/// Lays `cells` out in `widths`, two spaces between columns and none after the last.
+fn columned(cells: &[String], widths: &[usize]) -> String {
+    let mut out = String::new();
+    for (index, cell) in cells.iter().enumerate() {
+        if index > 0 {
+            out.push_str(COLUMN_GAP);
+        }
+        out.push_str(cell);
+        // The final column is not padded: a trailing run of spaces would push the
+        // flush-right mark off the edge on a narrow pane for no visible gain.
+        if index + 1 < cells.len() {
+            let pad = widths.get(index).copied().unwrap_or(0);
+            for _ in cell.chars().count()..pad {
+                out.push(' ');
+            }
+        }
+    }
+    out
+}
+
+/// The gap between two columns of a sub-tab's table.
+///
+/// **One space, and it is a budget rather than a taste.** The widest Mines row is
+/// `Ancient Debris` (14) + `Richness` (8) + `Lv 30` (5), which with the three-column
+/// lead mark already spends 30 of the list pane's 34 — at two spaces it spends 34, and
+/// the flush-right reachability mark has nowhere left to go. A table that silently
+/// drops the column it exists to show is worse than a tight one.
+const COLUMN_GAP: &str = " ";
+
+/// The master list: the header row, then the entries, with a scrollbar on the two
 /// sub-tabs that overflow.
 fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
     // How many rows fit, and therefore whether this list scrolls at all — both read
     // off the `Rect` rather than off the view. Reserving the scrollbar column narrows
     // the rows but not their number, so the count is taken first and stands.
-    let header_rows = u16::try_from(subtab.header.len()).unwrap_or(u16::MAX);
+    let header_rows = u16::from(!subtab.header.is_empty());
     let visible = usize::from(area.height.saturating_sub(header_rows));
     let range = window(subtab.rows.len(), subtab.cursor(), subtab.offset, visible);
     let scrolls = subtab.rows.len() > visible;
@@ -206,11 +260,15 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
     };
 
     let width = rows_area.width as usize;
-    let mut lines: Vec<Line> = subtab
-        .header
-        .iter()
-        .map(|h| Line::from(h.clone()).style(Style::default().fg(theme::MUTED)))
-        .collect();
+    let widths = columns(subtab);
+    let mut lines: Vec<Line> = Vec::new();
+    if !subtab.header.is_empty() {
+        // Indented by the lead-mark column, so a title sits over its own cells.
+        lines.push(
+            Line::from(format!("   {}", columned(&subtab.header, &widths)))
+                .style(Style::default().fg(theme::MUTED)),
+        );
+    }
     for row in &subtab.rows[range.clone()] {
         // Two mark channels: the cursor/current mark leads the row, the reachability
         // mark sits flush right where the eye scans a column of `✓ ~ ✗`.
@@ -225,7 +283,11 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
         // row's own text can never crowd into its mark.
         // Both channels are coloured by the same pass, because both are marks: the
         // lead takes accent or magenta, the trailing `✓ ~ ✗` its reachability hue.
-        let line = justified(&format!("{lead}{}", row.text), &row.mark, width);
+        let line = justified(
+            &format!("{lead}{}", columned(&row.cells, &widths)),
+            row.mark.glyph(),
+            width,
+        );
         lines.push(theme::marked(&line));
     }
     frame.render_widget(Paragraph::new(lines), rows_area);
@@ -245,24 +307,321 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
     }
 }
 
-/// The detail pane: the selected entry's block of text, laid out in the fixture.
+/// The detail pane: the selected row, described.
+///
+/// **The pane is composed here, from typed data** — it used to be a `Vec<String>` the
+/// view handed over whole, which was honest while every number in it was a
+/// placeholder and impossible once they became real.
 fn detail(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
-    // Through `marked` too: the dip block quotes the affordability of what is
-    // selected, so the same `✓ ~ ✗` appear here as in the list beside it.
-    let lines: Vec<Line> = subtab.detail.iter().map(|l| theme::marked(l)).collect();
+    let text = match &subtab.detail {
+        UpgradeDetail::Pickaxe(detail) => pickaxe_pane(detail),
+        UpgradeDetail::Enchant(detail) => enchant_pane(detail),
+        UpgradeDetail::Mine(detail) => mine_pane(detail),
+    };
+    // Through `marked`: the pane quotes the affordability of what is selected, so the
+    // same `✓ ~ ✗` appear here as in the list beside it, in the same hues.
+    let lines: Vec<Line> = text.iter().map(|line| theme::marked(line)).collect();
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// No contextual bindings yet; the sub-tab binding is configurable (§9).
-pub fn map_key(_key: KeyEvent) -> Option<Action> {
-    None
+/// A labelled block: the label once, then one line per value, the rest indented under
+/// it — the shape every pane in §5.4 repeats.
+fn block(label: &str, values: &[String]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (index, value) in values.iter().enumerate() {
+        if index == 0 {
+            lines.push(format!(" {label:<9} {value}"));
+        } else {
+            lines.push(format!("           {value}"));
+        }
+    }
+    lines
+}
+
+/// A cost line as the panes quote it: `2 Compressed Diamond + 60 Ancient Debris`, one
+/// denomination per entry so a price is never rounded into the wrong shape.
+fn cost_lines(costs: &[CostLine]) -> Vec<String> {
+    costs
+        .iter()
+        .flat_map(CostLine::requirements)
+        .map(|(item, amount)| format!("{} {item}", grouped(amount)))
+        .collect()
+}
+
+/// The Pickaxe pane (UI.md §5.4).
+fn pickaxe_pane(detail: &PickaxeDetail) -> Vec<String> {
+    let mut lines = vec![justified(
+        &format!(" {}", detail.title),
+        if detail.crosses_tier_jump {
+            "tier jump "
+        } else {
+            ""
+        },
+        DETAIL_WIDTH,
+    )];
+    lines.push(String::new());
+
+    if detail.chain.is_empty() {
+        lines.push(" Owned already — nothing to buy here.".to_owned());
+        return lines;
+    }
+
+    let rungs = if detail.chain.len() == 1 {
+        "1 rung".to_owned()
+    } else {
+        format!("{} rungs", detail.chain.len())
+    };
+    lines.push(justified(
+        &format!(" {:<9} {rungs}", "Chain"),
+        &format!("{} ", detail.mark.glyph()),
+        DETAIL_WIDTH,
+    ));
+    lines.extend(block("Cost", &cost_lines(&detail.costs)));
+
+    if let Some(dip) = &detail.dip {
+        lines.push(String::new());
+        lines.push(" ┌────────────────────────────────────┐".to_owned());
+        lines.push(boxed(&format!(
+            "Power  {:.1} → {:.1}",
+            dip.power_before, dip.power_after
+        )));
+        lines.push(boxed(&format!(
+            "{}  {} → {} ticks",
+            dip.block.name(),
+            ticks(dip.ticks_before),
+            ticks(dip.ticks_after)
+        )));
+        if let Some(repaid) = &dip.repaid_at {
+            lines.push(boxed(&format!(
+                "Repaid at {} ({:.1})",
+                repaid.rung, repaid.power
+            )));
+        }
+        lines.push(" └────────────────────────────────────┘".to_owned());
+    }
+
+    if !detail.unlocks.is_empty() {
+        lines.push(String::new());
+        let names: Vec<String> = detail
+            .unlocks
+            .iter()
+            .map(|kind| format!("the {} mine", kind.name()))
+            .collect();
+        lines.extend(block("Unlocks", &names));
+    }
+    if let Some((before, after)) = detail.ceiling {
+        lines.push(String::new());
+        lines.extend(block(
+            "Ceiling",
+            &[format!("Efficiency {before} → {after}")],
+        ));
+    }
+    lines
+}
+
+/// One line inside the dip box's art.
+fn boxed(text: &str) -> String {
+    format!(" │ {text:<34} │")
+}
+
+/// A tick count, or the em dash for a pickaxe that would never break the block.
+///
+/// [`None`] is unreachable through a real pickaxe — every tier's base power is above
+/// zero — and it reads `—` rather than a number for the same reason the empty gauges
+/// do: a count would assert that the block eventually falls.
+fn ticks(count: Option<u32>) -> String {
+    count.map_or_else(|| NOTHING.to_owned(), grouped)
+}
+
+/// The Enchants pane (UI.md §5.4.1).
+fn enchant_pane(detail: &EnchantDetail) -> Vec<String> {
+    let mut lines = vec![
+        justified(
+            &format!(" {}", detail.kind.name()),
+            &format!("level {} ", level_word(detail.level)),
+            DETAIL_WIDTH,
+        ),
+        String::new(),
+    ];
+    lines.extend(block("Effect", &detail.effect));
+    lines.push(String::new());
+    lines.extend(block("Next", &detail.next));
+    lines.push(String::new());
+
+    match &detail.cost {
+        Some(cost) => {
+            let quoted = cost_lines(cost);
+            lines.extend(block("Cost", &quoted));
+            // The mark goes on the *last* cost line, where the eye lands after
+            // reading the price — the frame's own placement.
+            if let Some(last) = lines.last_mut() {
+                *last = justified(last, &format!("{} ", detail.mark.glyph()), DETAIL_WIDTH);
+            }
+        }
+        None => lines.extend(block("Cost", &["nothing left to buy".to_owned()])),
+    }
+
+    lines.push(String::new());
+    lines.extend(block(
+        "Cap",
+        &[
+            format!("{} — the world's, and one", detail.cap),
+            "number for all five specials".to_owned(),
+        ],
+    ));
+    lines
+}
+
+/// The Mines pane (UI.md §5.4.2).
+///
+/// **Four lines of it are spent refusing one conflation**, and that is the frame's own
+/// choice: richness is the only word in the game that appears next to a price *and*
+/// next to a free cursor, and this is the one place both senses are on screen at once.
+fn mine_pane(detail: &MineTrackDetail) -> Vec<String> {
+    let track = match detail.track {
+        MineTrack::Size => "size",
+        MineTrack::Richness => "richness",
+    };
+    let mut lines = vec![
+        format!(" {} Mine — {track}", detail.kind.name()),
+        String::new(),
+    ];
+
+    if let Some(blocked) = detail.blocked {
+        lines.extend(match blocked {
+            // **Two independent `if`s, not a match on the pair**, mirroring the shape
+            // `MineLock` itself chose: the two axes are independent, so a match would
+            // need a fourth arm for the both-open case that no locked track can be in.
+            // Built as a list, the sentence reads the same and there is no arm the
+            // tests can only reach by fabricating a lock the projection never makes.
+            TrackBlock::Locked(lock) => {
+                let mut needs = Vec::new();
+                if let Some(level) = lock.missing_level() {
+                    needs.push(format!("needs level {level}"));
+                }
+                if let Some(tier) = lock.missing_tier() {
+                    let lead = if needs.is_empty() { "needs" } else { "and" };
+                    needs.push(format!("{lead} a {} pickaxe", tier.name()));
+                }
+                block("Locked", &needs)
+            }
+            TrackBlock::NotEntered => block(
+                "Not yet",
+                &[
+                    "this run has never opened it.".to_owned(),
+                    "Enter it once from 2 Mines and".to_owned(),
+                    "its tracks open.".to_owned(),
+                ],
+            ),
+        });
+        return lines;
+    }
+
+    let (level, next) = detail.level;
+    lines.extend(block(
+        match detail.track {
+            MineTrack::Size => "Size",
+            MineTrack::Richness => "Ceiling",
+        },
+        &[match detail.at_next {
+            TrackOutcome::Maxed => format!("level {level} — {MAXED}"),
+            _ => format!("level {level} → {next}"),
+        }],
+    ));
+
+    match detail.at_next {
+        TrackOutcome::Size((width, height)) => {
+            lines.extend(block(
+                &format!("At {next}"),
+                &[format!("{width}x{height} cells")],
+            ));
+        }
+        TrackOutcome::Richness(percent) => {
+            lines.extend(block("Dial", &["free, on the Mines screen".to_owned()]));
+            lines.push(String::new());
+            lines.extend(block(
+                &format!("At {next}"),
+                &[format!("{} {percent}%", detail.kind.value_block().name())],
+            ));
+        }
+        TrackOutcome::Maxed => {}
+    }
+
+    lines.push(String::new());
+    match &detail.cost {
+        Some(cost) => {
+            lines.extend(block("Cost", &cost_lines(cost)));
+            lines.push(String::new());
+            // **Two lines per material, the name then the amounts.** One line reads
+            // better and does not fit: `0 Compressed Crying Obsidian, 2 raw` is 35
+            // columns against the 31 a labelled block leaves, so it would be cut off
+            // exactly where the number the player came to read sits.
+            let held: Vec<String> = detail
+                .held
+                .iter()
+                .flat_map(|(material, compressed, raw)| {
+                    [
+                        material.name().to_owned(),
+                        format!("{} Compressed, {} raw", grouped(*compressed), grouped(*raw)),
+                    ]
+                })
+                .collect();
+            lines.extend(block("You hold", &held));
+            if let Some(last) = lines.last_mut() {
+                *last = justified(last, &format!("{} ", detail.mark.glyph()), DETAIL_WIDTH);
+            }
+        }
+        None => lines.extend(block("Cost", &["nothing left to buy".to_owned()])),
+    }
+
+    if detail.track == MineTrack::Richness {
+        lines.push(String::new());
+        lines.push(" This buys the ceiling only. The".to_owned());
+        lines.push(" dial slides anywhere at or below".to_owned());
+        lines.push(" it, free and reversible, on the".to_owned());
+        lines.push(" Mines screen.".to_owned());
+    }
+    lines
+}
+
+/// The width the panes justify their right-hand marks against.
+///
+/// The counted frame's detail pane, and a plain constant rather than the `Rect`'s own
+/// width: these lines are prose the wireframes were drawn around, so widening the
+/// terminal should give the pane more room, not stretch a `tier jump` tag to the far
+/// edge of a 200-column screen.
+const DETAIL_WIDTH: usize = DETAIL_WEIGHT as usize;
+
+/// `↑↓` walk the rows, `Enter` buys to the cursor, `M` buys as far as the ore goes.
+///
+/// **`←/→` is deliberately absent** (UI.md §9): the richness *dial* is never set here
+/// — this screen buys the ceiling — so the lateral axis is left free for the
+/// configurable sub-tab binding, which [`crate::keymap`] resolves before this
+/// function is reached because it is the only place that can see the config.
+///
+/// `M` and not `m`: it spends an inventory, and the shifted key is one the hand does
+/// not reach for by accident.
+pub fn map_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Up => Some(Action::CursorUp),
+        KeyCode::Down => Some(Action::CursorDown),
+        KeyCode::Enter => Some(Action::Confirm),
+        KeyCode::Char('M') => Some(Action::BuyMax),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
+    use skylode_core::{
+        enchant::EnchantType, game::GameState, material::Material, mine_kind::MineKind,
+    };
 
     use super::*;
+    use crate::view::Mark;
 
     /// Renders `view` through the Upgrades screen into an 80×24 buffer.
     fn render_view(view: &View) -> Buffer {
@@ -373,14 +732,16 @@ mod tests {
     fn the_reachability_marks_form_a_contiguous_tick_prefix() {
         // The ladder invariant: a cost cannot make an unaffordable chain affordable,
         // so once the marks leave `✓` they never return to it — `✓✓ ~ ✗✗`, never a
-        // hole. Asserted on the fixture, the way the real ladder will be in phase 6.
+        // hole. Asserted here on the fixture; `view` asserts the same of a real run.
         let rows = &View::sample().upgrades.pickaxe.rows;
         let mut left_ticks = false;
         for row in rows {
-            match row.mark.as_str() {
-                "✓" => assert!(!left_ticks, "a ✓ followed a non-✓: {:?}", row.text),
-                "~" | "✗" => left_ticks = true,
-                _ => {}
+            match row.mark {
+                Mark::Affordable => {
+                    assert!(!left_ticks, "a ✓ followed a non-✓: {:?}", row.cells)
+                }
+                Mark::CompressFirst | Mark::Refused => left_ticks = true,
+                Mark::Owned | Mark::NoPrice => {}
             }
         }
     }
@@ -551,5 +912,138 @@ mod tests {
         assert_eq!(fg_of(&buffer, "┬"), Some(theme::MUTED));
         assert_eq!(fg_of(&buffer, "┴"), Some(theme::MUTED));
         assert_eq!(fg_of(&buffer, "╭"), Some(theme::MUTED), "the border moved");
+    }
+
+    /// Renders the Mines sub-tab with `detail` swapped into the fixture.
+    ///
+    /// The pane's job is turning a *typed* detail into lines, so the test hands it the
+    /// type rather than a run that would happen to project to it: reaching a maxed
+    /// richness ceiling or a locked mine by play is `view`'s problem, and it is tested
+    /// there. What is tested here is the sentence each shape prints.
+    fn mine_pane_frame(detail: MineTrackDetail) -> String {
+        let mut view = View::sample();
+        view.upgrades.active = UpgradeTab::Mines;
+        view.upgrades.mines.detail = UpgradeDetail::Mine(detail);
+        whole_frame(&render_view(&view))
+    }
+
+    /// The Obsidian richness track the §5.4.2 frame draws, as a starting point to vary.
+    fn a_mine_track() -> MineTrackDetail {
+        MineTrackDetail {
+            kind: MineKind::Obsidian,
+            track: MineTrack::Richness,
+            level: (6, 7),
+            at_next: TrackOutcome::Richness(73),
+            cost: Some(vec![CostLine {
+                material: Material::Obsidian,
+                compressed: 2,
+                raw: 0,
+            }]),
+            held: vec![(Material::Obsidian, 0, 21)],
+            mark: Mark::Refused,
+            blocked: None,
+        }
+    }
+
+    #[test]
+    fn a_size_track_prints_the_grid_the_next_level_would_grow_to() {
+        // Cells, not a percentage: the size track's whole product is a bigger grid, and
+        // the number the player is buying is the one the Mine screen will draw.
+        let frame = mine_pane_frame(MineTrackDetail {
+            track: MineTrack::Size,
+            at_next: TrackOutcome::Size((12, 7)),
+            ..a_mine_track()
+        });
+        assert!(frame.contains("Obsidian Mine — size"), "{frame}");
+        assert!(frame.contains("Size      level 6 → 7"), "{frame}");
+        assert!(frame.contains("At 7      12x7 cells"), "{frame}");
+        // The four lines about the dial belong to the richness track alone.
+        assert!(!frame.contains("This buys the ceiling only"), "{frame}");
+    }
+
+    #[test]
+    fn a_maxed_track_quotes_no_price_and_promises_no_next_level() {
+        // `—` in the level line and "nothing left to buy" where a price would be: two
+        // readings of one fact, because the pane's two halves are read separately.
+        let frame = mine_pane_frame(MineTrackDetail {
+            at_next: TrackOutcome::Maxed,
+            cost: None,
+            held: Vec::new(),
+            mark: Mark::NoPrice,
+            ..a_mine_track()
+        });
+        assert!(
+            frame.contains(&format!("Ceiling   level 6 — {MAXED}")),
+            "{frame}"
+        );
+        assert!(frame.contains("nothing left to buy"), "{frame}");
+        assert!(!frame.contains("At 7"), "{frame}");
+    }
+
+    #[test]
+    fn a_locked_mine_says_what_it_is_waiting_for_rather_than_what_it_costs() {
+        // Both axes at once, which is what the End is on a fresh run: a level *and* a
+        // tier, printed as one sentence over two lines rather than as two refusals.
+        let state = GameState::new(1, UNIX_EPOCH);
+        let lock = state.player().mine_lock(MineKind::Amethyst);
+        let frame = mine_pane_frame(MineTrackDetail {
+            kind: MineKind::Amethyst,
+            blocked: Some(TrackBlock::Locked(lock)),
+            ..a_mine_track()
+        });
+        assert!(frame.contains("Locked"), "{frame}");
+        assert!(frame.contains("needs level 30"), "{frame}");
+        assert!(frame.contains("and a Netherite pickaxe"), "{frame}");
+        // A locked track prints no price at all — there is nothing to weigh yet.
+        assert!(!frame.contains("You hold"), "{frame}");
+    }
+
+    #[test]
+    fn an_unopened_mine_is_sent_to_the_mines_screen_rather_than_priced() {
+        // The one refusal on this screen the player fixes by *going somewhere*, so the
+        // pane names the tab and the key instead of a shortfall they do not have.
+        let frame = mine_pane_frame(MineTrackDetail {
+            kind: MineKind::Coal,
+            blocked: Some(TrackBlock::NotEntered),
+            ..a_mine_track()
+        });
+        assert!(frame.contains("Not yet"), "{frame}");
+        assert!(frame.contains("2 Mines"), "{frame}");
+        assert!(!frame.contains("Cost"), "{frame}");
+    }
+
+    #[test]
+    fn a_capped_enchant_pane_says_there_is_nothing_left_to_buy() {
+        let mut view = View::sample();
+        view.upgrades.active = UpgradeTab::Enchants;
+        view.upgrades.enchants.detail = UpgradeDetail::Enchant(EnchantDetail {
+            kind: EnchantType::Explosive,
+            level: 6,
+            cap: 6,
+            effect: vec!["clears a 5x5 square on a proc".to_owned()],
+            next: vec!["at its cap — nothing left to buy".to_owned()],
+            cost: None,
+            mark: Mark::NoPrice,
+        });
+        let frame = whole_frame(&render_view(&view));
+        assert!(frame.contains("nothing left to buy"), "{frame}");
+    }
+
+    #[test]
+    fn a_chain_of_one_is_a_rung_and_not_rungs() {
+        // A plural that is wrong on the single commonest purchase in the game — one
+        // Efficiency level — is worth the branch it costs.
+        let mut view = View::sample();
+        let detail = match &view.upgrades.pickaxe.detail {
+            UpgradeDetail::Pickaxe(detail) => PickaxeDetail {
+                chain: vec!["Diamond Eff V".to_owned()],
+                ..(**detail).clone()
+            },
+            other => unreachable!("the fixture's Pickaxe pane is a pickaxe: {other:?}"),
+        };
+        view.upgrades.pickaxe.detail = UpgradeDetail::Pickaxe(Box::new(detail));
+        let frame = whole_frame(&render_view(&view));
+        assert!(frame.contains("Chain     1 rung"), "{frame}");
+        assert!(!frame.contains("1 rungs"), "{frame}");
     }
 }
