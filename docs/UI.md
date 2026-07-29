@@ -568,15 +568,23 @@ Pickaxe ladder proves. Each track is paid in its own materials, so a cheaper tra
 really can be unaffordable while a dearer one is not. Same three glyphs, two
 meanings; the sub-tab is what keeps them apart.
 
-**The `Cap` column is a property of the world, not of the enchant.** All five
-specials share one number — 3 / 6 / 10 by world (`World::enchant_cap`) — while
-Fortune's 10 is its own and Efficiency is absent entirely, because it is capped by
-the pickaxe tier and lives on the ladder.
+**The `Cap` column is a property of the world, not of the enchant.** All six
+tracks share one number — 3 / 6 / 10 by world (`World::enchant_cap`) — and
+Efficiency is absent entirely, because it is capped by the pickaxe tier and lives on
+the ladder.
+
+Fortune is one of the six. This section used to read *"while Fortune's 10 is its
+own"*, which predates the amendment in
+[DECISIONS.md](DECISIONS.md) rows 31 and 50: the ceiling of 10 stands, but it is now
+reached in three steps rather than one, so that no lever in the game is maxable at
+level 1. `EnchantType::max_level` implements the amendment.
 
 **The detail pane must name band boundaries.** `explosive_radius` is
 `1 + min((level - 1) / 3, 2)`, so the square is 3x3 at I-III, 5x5 at IV-VI and 7x7
 from VII: at II → III it does **not** grow, and a pane printing `5x5` there would
-promise a reward the core does not pay.
+promise a reward the core does not pay. The front-end asks
+`EnchantType::explosive_side` rather than transcribing that formula — it held two
+copies of it, and this paragraph is the argument against holding any.
 
 #### 5.4.2 Mines
 
@@ -669,6 +677,56 @@ Recorded when the screen was wired. The frames above are left as drawn.
 - **A price is drawn in the colour of its own affordability mark**, green, yellow or
   red, and the `Cost` / `Chain` / `Effect` labels beside it are muted. §4.5 explains why
   this is not a new entry in the chrome table.
+- **The mark and the colour sit on each *line* of a price, not on the block.** The block
+  was verdicted once, from `economy::affordability` over the whole `Cost` — and that
+  query answers `Insufficient` on a mixed shortage by design, so a two-material price
+  short of a single ore was painted red end to end and said which *price* was refused
+  without ever saying which *material* refused it. Every line now carries its own
+  `✓ ~ ✗`, and a line that is not affordable is followed by an untinted
+  `hold 2 — short 38`. The wealth question is asked per **material** and the shape
+  question per **item**, so a `Compressed` row and a raw row of the same ore can never
+  disagree over one pile.
+- **`You hold` is gone from the Mines pane**, and no pane gained it. §5.4.2 drew it and
+  §5.4 / §5.4.1 did not, which was three frames drawn on different days rather than a
+  rule; the shortfall line above says the same thing on the row it is about, in one
+  line instead of two, and now says it on all three sub-tabs.
+- **The pickaxe chain's price is summed per material *and denomination*, and clamped.**
+  One `CostLine` per rung is what `upgrade::chain_affordability` walks, and at forty-five
+  rungs that block alone was longer than the pane — it pushed the dip box, `Unlocks` and
+  `Ceiling` off the bottom. The rule those two carry is about the **re-split**: adding
+  `30 raw` to `80 raw` and quoting `1 Compressed + 10` names a payment the player is
+  never asked to make. Summing *inside* a denomination invents nothing — `economy::pay`
+  is strict per denomination and converts nothing, and no ore enters the purse between
+  two rungs, so the multiset of demands the walk makes is exactly this sum. The verdict
+  is still the core's: the `Chain` line reads `chain_affordability`, the same answer the
+  list column shows. Where the two can differ is *which* refusal they name — the walk
+  stops at the first rung that fails, the lines report every material independently —
+  and the lines are the richer answer. A price still too long for the pane ends in
+  `…+ N more lines`, counting lines rather than rungs, since rungs are no longer what
+  was cut.
+- **The `Power` block is drawn on every rung; the box art stays the dip's.** The pane
+  quoted power only under `is_dip()`, so the one number a speed upgrade is bought for
+  was printed only when it went the wrong way. An ordinary rung now gets a labelled
+  `Power  36.0 → 41.0` and a `Ticks` line naming the reference block; the `┌─…─┐` frame
+  is kept for a regression alone, because a warning drawn on all forty-six rungs stops
+  being read as one — and its five rows are what the price block above needs back on a
+  long chain. The block is named *inside* the `Ticks` value rather than used as a label:
+  `Crying Obsidian` is fifteen columns against the nine a label gets.
+- **`Next` became `At <level>`, and states numbers instead of a sentence.** §5.4.1's
+  prose left the player to work out whether *this* level was the third; `square 3x3 →
+  3x3` says it. Each track names the stat it actually moves — `drops`, `square`, `row`,
+  `blast`, `yield`, `speed`/`power` — and the four that roll a die add `procs`, quoted as
+  a percentage. Permille is the core's unit because the roll is an integer comparison a
+  save resumes; it is not a unit anyone reads. One prose line survives, on Explosive
+  alone and only where the square stands still.
+- **`At <level>` on the Mines pane states both sides too**, and the `Cap` column reads
+  `3/10`. A share or a grid quoted only *after* leaves the player to remember what they
+  are moving from, and both numbers are free — the two tracks are pure functions of a
+  level. The `Cap` cell showed the world's ceiling as if it were the game's, and the two
+  call for opposite decisions: stop buying, or go open the Nether. The pane's `Cap` block
+  spells the rest out — the world in force, the two the player is not in, and that
+  Efficiency is capped by the tier instead. It is the one prose block on this screen
+  whose line breaks move with the run, so it is wrapped rather than hand-broken.
 
 ### 5.5 Stats
 
