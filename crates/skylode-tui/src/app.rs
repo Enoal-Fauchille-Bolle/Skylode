@@ -32,12 +32,12 @@ use crate::{
     config::Config,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     event::{Event, Events},
-    format::{grouped, roman, rung_label},
+    format::{denominations, grouped, roman, rung_label},
     keymap,
     overlay::{Conversion, Modal, compression, dip, help, too_small},
     screen::Screen,
     theme,
-    toast::{TOAST_TTL, Toasts},
+    toast::{TOAST_TTL, Toasts, Tone},
     view::{CompressHint, UpgradeDetail, View},
 };
 
@@ -263,7 +263,7 @@ impl App {
                     self.screen = screen;
                 }
             }
-            Action::ShowToast(text) => self.toasts.push(text, TOAST_TTL),
+            Action::ShowToast(text) => self.toasts.push(text, Tone::Neutral, TOAST_TTL),
             // `?` stacks Help over the current screen; `Esc`/`?` clear it. The
             // keymap only emits `OpenHelp` when nothing is stacked, so this never
             // buries one modal under another.
@@ -459,7 +459,7 @@ impl App {
             ),
             Conversion::Decompress => format!("Nothing to decompress — no Compressed {name} held"),
         };
-        self.toasts.push(refusal, TOAST_TTL);
+        self.toasts.push(refusal, Tone::Refusal, TOAST_TTL);
     }
 
     /// Performs the conversion the dialog is set to, announces it, and closes.
@@ -490,14 +490,18 @@ impl App {
             ),
         };
 
-        let message = match outcome {
+        // The tone travels with the sentence rather than being derived from it after
+        // the fact: the `Err` arm prints whatever the core said, and matching that
+        // string back to a colour would be a parser standing where a `Result` already
+        // is.
+        let (message, tone) = match outcome {
             Ok(()) => {
                 let (item, amount) = gained;
-                format!("+{} {item}", grouped(amount))
+                (format!("+{} {item}", grouped(amount)), Tone::Success)
             }
-            Err(refusal) => refusal.to_string(),
+            Err(refusal) => (refusal.to_string(), Tone::Refusal),
         };
-        self.toasts.push(message, TOAST_TTL);
+        self.toasts.push(message, tone, TOAST_TTL);
         self.modal = None;
     }
 
@@ -580,7 +584,8 @@ impl App {
             pickaxe.enchants().get_level(EnchantType::Efficiency),
         );
         self.refused = None;
-        self.toasts.push(format!("Bought {label}"), TOAST_TTL);
+        self.toasts
+            .push(format!("Bought {label}"), Tone::Success, TOAST_TTL);
     }
 
     /// Records the compress-first hint for the rung a chain stopped at, if any.
@@ -628,11 +633,11 @@ impl App {
             // `self.state` mutably too. Two-phase borrows do not reach through a
             // `&mut self` method call.
             let refusal = self.state.buy_enchant(kind);
-            self.announce_core_refusal(refusal);
             let player = self.state.player();
             let level = player.get_pickaxe().enchants().get_level(kind);
-            if let Some(cost) = economy::enchant_cost(kind, level, player.highest_unlocked_world())
-            {
+            let cost = economy::enchant_cost(kind, level, player.highest_unlocked_world());
+            self.announce_purchase_refusal(refusal, cost.as_ref());
+            if let Some(cost) = cost {
                 self.remember_refusal(&format!("{} {}", kind.name(), roman(level + 1)), &cost);
             }
             return;
@@ -642,6 +647,7 @@ impl App {
         self.refused = None;
         self.toasts.push(
             format!("Bought {} {}", kind.name(), roman(level)),
+            Tone::Success,
             TOAST_TTL,
         );
     }
@@ -667,17 +673,19 @@ impl App {
                 MineTrack::Size => self.state.buy_mine_size(kind),
                 MineTrack::Richness => self.state.buy_mine_richness(kind),
             };
-            self.announce_core_refusal(refusal);
             // A mine this run never entered has no level to price from, so there is
-            // nothing to compress *for* — and the toast has already said to go there.
-            if let Some(level) = self.state.mine(kind).map(|mine| match track {
+            // nothing to compress *for* — and no price to word the refusal in either,
+            // which is what leaves `MineNotEntered` speaking the core's own sentence.
+            let priced = self.state.mine(kind).map(|mine| match track {
                 MineTrack::Size => mine.get_size_level(),
                 MineTrack::Richness => mine.get_richness_level(),
-            }) {
-                let cost = match track {
-                    MineTrack::Size => economy::mine_size_cost(kind, level),
-                    MineTrack::Richness => economy::mine_richness_cost(kind, level),
-                };
+            });
+            let cost = priced.map(|level| match track {
+                MineTrack::Size => economy::mine_size_cost(kind, level),
+                MineTrack::Richness => economy::mine_richness_cost(kind, level),
+            });
+            self.announce_purchase_refusal(refusal, cost.as_ref());
+            if let (Some(level), Some(cost)) = (priced, cost) {
                 let label = format!("{} {what} {}", kind.name(), level + 1);
                 self.remember_refusal(&label, &cost);
             }
@@ -689,8 +697,11 @@ impl App {
             MineTrack::Richness => mine.get_richness_level(),
         });
         self.refused = None;
-        self.toasts
-            .push(format!("{} {what} → level {level}", kind.name()), TOAST_TTL);
+        self.toasts.push(
+            format!("{} {what} → level {level}", kind.name()),
+            Tone::Success,
+            TOAST_TTL,
+        );
     }
 
     /// Toasts an [`Affordability`] verdict in the words its branch calls for.
@@ -701,29 +712,52 @@ impl App {
     /// one — a price short in three materials is still one trip, and three toasts
     /// stacked on top of each other are three the player reads none of.
     fn announce_refusal(&mut self, verdict: &Affordability) {
-        let message = match verdict {
+        // **The tone is the branch, not a reading of the sentence.** The verdict is
+        // already the three-way answer the `✓ ~ ✗` column draws, so a toast takes the
+        // colour its own mark would have taken — one table, and a refusal that could
+        // not be miscoloured by a reworded sentence.
+        let (message, tone) = match verdict {
             // Reachable when the chain is affordable and bought nothing anyway, which
             // means there was nothing to buy: the cursor is at or behind the rung the
-            // player stands on.
-            Affordability::Affordable => "Nothing to buy here".to_owned(),
-            Affordability::CompressFirst(shortfalls) => match shortfalls.first() {
-                Some(Shortfall { item, needed, held }) => format!(
-                    "Compress first — need {} {item}, you have {}",
-                    grouped(*needed),
-                    grouped(*held)
-                ),
-                None => "Compress first".to_owned(),
-            },
-            Affordability::Insufficient(shortfalls) => match shortfalls.first() {
-                Some(Shortfall { item, needed, held }) => format!(
-                    "Not enough {item} — {} needed, {} held",
-                    grouped(*needed),
-                    grouped(*held)
-                ),
-                None => "Not enough ore".to_owned(),
-            },
+            // player stands on. Neutral rather than green — nothing was bought.
+            Affordability::Affordable => ("Nothing to buy here".to_owned(), Tone::Neutral),
+            Affordability::CompressFirst(shortfalls) => (
+                match shortfalls.first() {
+                    Some(Shortfall { item, needed, held }) => format!(
+                        "Compress first — need {} {item}, you have {}",
+                        grouped(*needed),
+                        grouped(*held)
+                    ),
+                    None => "Compress first".to_owned(),
+                },
+                Tone::CompressFirst,
+            ),
+            // **Quoted in the denominations the price is quoted in.** The core's first
+            // pass answers in raw, because *"is the ore there at all"* is a question
+            // with no denomination — but the pane the player is reading prices the same
+            // purchase as `1 Compressed Stone`, and a toast saying `100 Stone` under it
+            // reads as a second, larger price. `denominations` re-splits it by
+            // `CostLine`'s own rule; `held` goes through the same call so the two
+            // numbers stay comparable.
+            //
+            // The material is named from `item.material()` rather than by printing the
+            // `Item`: the denomination now lives in the numbers, so `Item`'s `Display`
+            // would name it twice the day the core's first pass stops returning a raw
+            // one.
+            Affordability::Insufficient(shortfalls) => (
+                match shortfalls.first() {
+                    Some(Shortfall { item, needed, held }) => format!(
+                        "Not enough {} — {} needed, {} held",
+                        item.material().name(),
+                        denominations(*needed),
+                        denominations(*held)
+                    ),
+                    None => "Not enough ore".to_owned(),
+                },
+                Tone::Refusal,
+            ),
         };
-        self.toasts.push(message, TOAST_TTL);
+        self.toasts.push(message, tone, TOAST_TTL);
     }
 
     /// Toasts whatever a core purchase refused with, verbatim.
@@ -737,7 +771,44 @@ impl App {
     /// [`CoreError`]: skylode_core::error::CoreError
     fn announce_core_refusal(&mut self, outcome: Result<(), skylode_core::error::CoreError>) {
         if let Err(refusal) = outcome {
-            self.toasts.push(refusal.to_string(), TOAST_TTL);
+            self.toasts
+                .push(refusal.to_string(), Tone::Refusal, TOAST_TTL);
+        }
+    }
+
+    /// Announces a refused purchase in the price's words when there is a price, and in
+    /// the core's when there is not.
+    ///
+    /// **One sentence for all four purchase doors**, which they did not have: the
+    /// pickaxe chain read [`announce_refusal`](App::announce_refusal) while the enchant
+    /// and mine tracks fell through to [`CoreError`]'s own `Display` — a different
+    /// shape (`need 1000 Compressed Emerald, have 0`), and one that never passes through
+    /// [`grouped`], so the longest numbers in the game were the only ones printed
+    /// without a separator.
+    ///
+    /// **The second arm is load-bearing and stays.** `EnchantCapped`, `PickaxeMaxed`
+    /// and `MineNotEntered` are not price refusals: there is no shortfall to word, and
+    /// the core already says what each of them is. Re-phrasing those here would be a
+    /// second copy of the rule, which is exactly what
+    /// [`announce_core_refusal`](App::announce_core_refusal) exists to avoid. So the
+    /// price's wording is preferred only when a price exists *and* is what was refused.
+    ///
+    /// [`CoreError`]: skylode_core::error::CoreError
+    /// [`grouped`]: crate::format::grouped
+    fn announce_purchase_refusal(
+        &mut self,
+        outcome: Result<(), skylode_core::error::CoreError>,
+        cost: Option<&economy::Cost>,
+    ) {
+        let verdict =
+            cost.map(|cost| economy::affordability(self.state.player().get_inventory(), cost));
+        match verdict {
+            Some(verdict) if verdict != Affordability::Affordable => {
+                self.announce_refusal(&verdict);
+            }
+            // Affordable and still refused means the refusal was about something other
+            // than the purse — a cap, a gate — and the core is the one holding that word.
+            _ => self.announce_core_refusal(outcome),
         }
     }
 
@@ -864,7 +935,10 @@ impl App {
     fn enter_selected_mine(&mut self) {
         match self.state.select_mine(self.cursors.mine) {
             Ok(()) => self.screen = Screen::Mine,
-            Err(refusal) => self.toasts.push(refusal.to_string(), TOAST_TTL),
+            Err(refusal) => {
+                self.toasts
+                    .push(refusal.to_string(), Tone::Refusal, TOAST_TTL);
+            }
         }
     }
 
@@ -2456,6 +2530,45 @@ mod tests {
         );
     }
 
+    /// The defect this wording was rewritten for: the pane prices `Wooden Eff I` at
+    /// `1 Compressed Stone` and the toast under it used to answer `100 Stone`.
+    ///
+    /// Two numbers for one price, side by side, and the player has no way to know they
+    /// are the same one. The shortfall is still the core's — raw, because that pass has
+    /// no denomination to give — and only the *wording* re-splits it.
+    #[test]
+    fn a_price_is_refused_in_the_denomination_the_pane_quotes_it_in() {
+        let mut app = upgrading(UpgradeTab::Pickaxe);
+        app.cursors.pickaxe_rung = 1;
+
+        app.update(Action::Confirm);
+
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(
+            frame.contains("Not enough Stone — 1 Compressed needed, 0 held"),
+            "the toast still speaks raw: {frame}"
+        );
+    }
+
+    /// The same sentence from the other door, which used to print `CoreError`'s own.
+    ///
+    /// The enchant and mine tracks fell through to
+    /// [`App::announce_core_refusal`] — a different shape, and one that skips
+    /// [`grouped`], so `10 Compressed Emerald` was the only kind of price in the game
+    /// whose thousands went unseparated.
+    #[test]
+    fn every_purchase_door_refuses_in_the_same_sentence() {
+        let mut app = upgrading(UpgradeTab::Enchants);
+
+        app.update(Action::Confirm);
+
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(
+            frame.contains("Not enough Emerald — 10 Compressed needed, 0 held"),
+            "the enchant door kept the core's wording: {frame}"
+        );
+    }
+
     /// **The two totality guards in the announcement**, reached directly because
     /// nothing in the core produces them: a refusal always carries at least one
     /// shortfall, so an empty list is the "cannot happen" this crate answers rather
@@ -2571,9 +2684,18 @@ mod tests {
                 "a grid was minted"
             );
             assert_eq!(app.toasts.len(), 1, "{track:?} was refused in silence");
+            let frame = whole_frame(&render_to_buffer(&app));
             assert!(
-                whole_frame(&render_to_buffer(&app)).contains("enter the Coal mine"),
+                frame.contains("enter the Coal mine"),
                 "the refusal did not say where to go"
+            );
+            // **The arm that keeps the unified refusal honest.** Every priced door now
+            // words its shortfall itself, and this one has no price: an unopened mine
+            // has no level to quote from. Re-phrasing it would invent a shortage the
+            // player does not have and send them to a mine face instead of to `2 Mines`.
+            assert!(
+                !frame.contains("Not enough"),
+                "an unopened mine reported a shortage instead"
             );
         }
     }

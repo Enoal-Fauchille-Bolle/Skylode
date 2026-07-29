@@ -11,7 +11,7 @@
 //! grouping and the alignment cannot drift between the XP gauge and the inventory
 //! table.
 
-use skylode_core::pickaxe::PickaxeTier;
+use skylode_core::{pickaxe::PickaxeTier, tunables::RAW_PER_COMPRESSED};
 
 /// Groups `n` into space-separated thousands: `1240` becomes `"1 240"`.
 ///
@@ -55,6 +55,36 @@ pub fn justified(left: &str, right: &str, width: usize) -> String {
     }
     out.push_str(right);
     out
+}
+
+/// A raw total in the denominations a price is quoted in, the material unnamed:
+/// `1 Compressed`, `6 Compressed + 50`, `40`, `0`.
+///
+/// **Here so that a refusal and the price it refuses cannot split the same number two
+/// ways.** The Upgrades panes quote a price through
+/// [`CostLine::requirements`](skylode_core::economy::CostLine::requirements), which
+/// drops a denomination that rounds to nothing; a toast built from
+/// [`Affordability::Insufficient`](skylode_core::economy::Affordability::Insufficient)
+/// reads its shortfall in **raw**, because the core's first pass asks *"is the ore
+/// there at all"* and that question has no denomination. Both are right, and side by
+/// side they contradicted each other — the pane said `1 Compressed Stone` over a toast
+/// saying `100 Stone`. This is the one place the split is spelled for the front-end,
+/// and it repeats `requirements`' rule rather than inventing a second one.
+///
+/// **The material is deliberately absent.** Every caller has already named it —
+/// `Not enough Stone — …` — and a second `Stone` inside the number would read as a
+/// different pile.
+///
+/// A total under [`RAW_PER_COMPRESSED`] is bare, including zero: `0 held` is what a
+/// penniless player holds, and `0 Compressed + 0` states it twice.
+pub fn denominations(total: u32) -> String {
+    let compressed = total / RAW_PER_COMPRESSED;
+    let raw = total % RAW_PER_COMPRESSED;
+    match (compressed, raw) {
+        (0, _) => grouped(raw),
+        (_, 0) => format!("{} Compressed", grouped(compressed)),
+        _ => format!("{} Compressed + {}", grouped(compressed), grouped(raw)),
+    }
 }
 
 /// Roman numerals `I`..=`XV` — exactly the range an Efficiency level can take, since
@@ -165,6 +195,38 @@ mod tests {
         // 1000 is the first value that groups: the separator sits after the 1, not
         // before it, which is the off-by-one `count > 0` guards against.
         assert_eq!(grouped(1_000), "1 000");
+    }
+
+    #[test]
+    fn a_total_below_a_compressed_unit_is_quoted_bare() {
+        // Including zero, which is what a penniless player holds: `0 Compressed + 0`
+        // says the same thing twice and reads as two shortfalls.
+        assert_eq!(denominations(0), "0");
+        assert_eq!(denominations(40), "40");
+        assert_eq!(denominations(99), "99");
+    }
+
+    #[test]
+    fn a_whole_number_of_units_drops_the_raw_half() {
+        // `CostLine::requirements`' own rule, repeated: a denomination that rounds to
+        // nothing is not owed, so naming it would quote a payment nobody makes.
+        assert_eq!(denominations(100), "1 Compressed");
+        assert_eq!(denominations(1_000), "10 Compressed");
+    }
+
+    #[test]
+    fn a_mixed_total_names_both_denominations_in_the_order_they_are_paid() {
+        // The wireframes' own form, and the number that started this: a price of 650
+        // is `6 Compressed + 50`, never the flat `650` the same value would make.
+        assert_eq!(denominations(650), "6 Compressed + 50");
+        assert_eq!(denominations(101), "1 Compressed + 1");
+    }
+
+    #[test]
+    fn the_compressed_count_is_grouped_like_every_other_number() {
+        // The cross-cutting rule of §5.6 reaches inside a price too: a six-figure
+        // count of units is still read by a human.
+        assert_eq!(denominations(1_240_000), "12 400 Compressed");
     }
 
     #[test]
