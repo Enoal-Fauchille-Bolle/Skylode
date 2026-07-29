@@ -602,6 +602,39 @@ lines of detail pane spent refusing the conflation.
 **The End's rows are drawn locked with the reason** (`Lv 30`), not hidden: its gate
 is a level, not a price, so the affordability mark has nothing to say.
 
+#### 5.4.3 Recorded departures from these three frames
+
+Recorded when the screen was wired. The frames above are left as drawn.
+
+- **A mine this run has never entered refuses its upgrades**, and its detail pane says
+  so instead of quoting a price. Creating a mine draws its whole grid from the run's
+  RNG, and the draw order is a save-compatibility contract — so pricing an unvisited
+  mine's *next* level (which is knowable: the curve is keyed by the level, and it is 0)
+  is free, while *buying* one would have to build a grid the player never asked for and
+  shift every later draw in the run. The list row still prints what the level would
+  buy; only the pane and the purchase refuse, and both name `2 Mines` as the fix.
+- **The `Chain` line counts rungs rather than naming them.** The frame writes
+  `Chain  Diamond Eff V + the jump`, which is a sentence for a chain of exactly two;
+  `M` can aim at nine. The pane prints `2 rungs` and the cost lines below it already
+  name every material. The §6.7 modal keeps the frame's sentence at length two, since
+  there it is the whole content of the decision, and falls back to a count past that.
+- **Three sentences the frames print unconditionally are conditional.** §5.4.1's
+  *"Every level also procs more often"* is false for Fortune and Haste —
+  `EnchantType::proc_permille` is `0` for both, they are permanent multipliers — so
+  each names the number it actually moves. §5.4.2's `At 7` block is absent on a maxed
+  track, where there is no next level to describe. And the `Enter  buy …` line inside
+  each pane is dropped: it repeats the footer one row below it.
+- **`You hold` is two lines per material, not one.** The frame's
+  `0 Compressed Obsidian, 21 raw · 2 Crying Obsidian` is 35 columns against the 31 a
+  labelled block leaves in a 42-column pane, so it would be cut off exactly where the
+  number the player came to read sits. The name goes on its own line, the two
+  denominations under it.
+- **The columns are measured, and the gap between them is one space.** The frames are
+  drawn with fixed two-space gaps; the widest real Mines row (`Ancient Debris` ·
+  `Richness` · a size) then fills the pane exactly and pushes the mark column off the
+  right edge. Widths are measured over the header and every row, which also means the
+  Enchants table's `Level` column is narrow on a fresh run and wide at the cap.
+
 ### 5.5 Stats
 
 ```text
@@ -938,6 +971,22 @@ below the power it started at — and never on an ordinary Efficiency step, beca
 modal on every purchase is a modal nobody reads. It is **not a warning**: the dip is
 a deliberate decision point, so the frame states the trade and offers the deal, with
 `Not yet` as the default focus.
+
+**Three departures, recorded when it was wired.** The frame above is left as drawn.
+
+- **The caret opens on `Not yet`**, where the wireframe draws it on `Buy it`. The prose
+  directly above says `Not yet` is the default focus, and the prose wins: this box only
+  appears on the one purchase in the game that costs power, so the reflex `Enter` must
+  not be the one that takes it. `←`/`→` move the caret and **clamp** rather than wrap —
+  two options and a held key, and a ring would put `Buy it` one repeat away from the
+  answer the player was aiming at.
+- **The count is a digit** (`5 purchases later`, not `five`), matching every other
+  number the interface prints, and singular at one.
+- **The box draws from the same projection as the pane behind it**, so its numbers
+  cannot disagree with the ones the player has just read. A chain of three rungs or
+  more prints a count in place of the frame's `Buying Diamond Efficiency V, then…`
+  (§5.4.3), and the last rung of the ladder — where nothing can earn the power back —
+  says so rather than leaving the sentence out.
 
 ### 6.8 Prestige preview
 
@@ -1437,9 +1486,12 @@ this document wins for the signature** — and a disagreement is a bug to reconc
 | `GameState::set_mine_richness_setting(kind, n)` | the dial, which belongs to the mine under the *cursor* (§5.2) | 4 | **done** — the old setter reached only the mine underfoot |
 | `economy::affordability(&inv, &cost) -> Affordability`, each refusal **carrying its shortfalls** | the `✓ ~ ✗` column and the refusal toast (§5.5, §6.4) | 5 | **done** — a free function over a `Cost`, not a method on an upgrade, since one price shape serves all four tracks. `can_afford` is now `== Affordable`, so screen and till read one rule |
 | `Material::ALL`, `GameState::compress` / `decompress` | listing the fifteen rows, and converting by hand (§5.3, §6.6) | 5 | **done** — two gaps this table had not predicted: an enum cannot enumerate itself, and the front-end held no `&mut Inventory` |
-| `Upgrade::preview(&state, n) -> UpgradePreview` | the dip box and modal (§5.5, §5.7.7) | 5 | new |
-| `Upgrade::max_affordable(&inv) -> u32` | `M`, and the `✓` prefix length (§5.5) | 5 | new |
-| `Pickaxe::ladder() -> impl Iterator<Item = PickaxeRung>` | the roadmap (§5.5) | 5 | new |
+| `upgrade::preview(&pickaxe, n) -> UpgradePreview` | the dip box and modal (§5.4, §6.7) | 6 | **done** — `is_dip()` is the single definition of a net regression, read by the pane and the modal alike, so neither can disagree about the boundary case |
+| `upgrade::max_affordable(&inv, &pickaxe) -> usize` | `M`, and the `✓` prefix length (§5.4) | 6 | **done** — one walk answers where the ticks stop; asking each rung on its own would be 46 chances for the column to come out with a hole in it |
+| `upgrade::ladder() -> Vec<PickaxeRung>` | the roadmap (§5.4) | 6 | **done** — a `Vec` and not an iterator, because the screen indexes it (the cursor is a rung number) and prices a slice of it |
+| `upgrade::chain_affordability(&inv, &pickaxe, n)` | the cumulative `✓ ~ ✗` column (§5.4) | 6 | **done** — a chain is **simulated** rung by rung against a cloned inventory, never summed: adding two prices and re-splitting them into denominations describes a payment the player is never asked to make |
+| `Block::ticks_to_break(power)`, `Pickaxe::power_with(tier, eff)` | the dip in ticks per block, and a rung the player does not own (§5.4, §6.7) | 6 | **done** — `TICKS_PER_HARDNESS` was private to `mine`, and `Enchants::upgrade` is `pub(crate)`, so the front-end could compute neither |
+| `EnchantType::ALL`, `GameState::buy_pickaxe_chain` / `buy_enchant` / `buy_mine_size(kind)` / `buy_mine_richness(kind)` | the three sub-tabs and their purchases (§5.4) | 6 | **done** — the two mine doors take a `MineKind`, since the cursor may sit on a mine the player is not standing in |
 | `loot_for_level(n)` / `xp_for_level(n)` | the Levels roadmap (§5.7.5) | 6 | new |
 | `tick(&mut self, input) -> Vec<Event>` | toasts, history, the proc flash — **all of them** (§5.6) | 7 | new, and it changes the signature |
 | spatial `Event`s carrying **their cell list** | the proc flash (§5.9) | 7 | new |
