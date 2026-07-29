@@ -36,6 +36,8 @@
 //! - [`save`]: a run as text, and back — the half of the save system that has
 //!   no I/O in it.
 //! - [`tunables`]: the open balance constants the design left to implementation.
+//! - [`upgrade`]: the pickaxe roadmap — every rung, its price, and how far the
+//!   player could climb in one go.
 //! - [`error`]: what the rules refuse, and why.
 
 pub mod block;
@@ -55,6 +57,7 @@ pub mod reward;
 pub mod rng;
 pub mod save;
 pub mod tunables;
+pub mod upgrade;
 pub mod world;
 
 /// The two lines every save test writes, in one place.
