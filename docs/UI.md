@@ -1270,8 +1270,21 @@ carries **which cells** — deterministic data the seeded PRNG already produced,
 testable exactly as it is today:
 
 ```rust
-Event::Explosive { origin: (u8, u8), cells: Vec<(u8, u8)> }   // phase 7
+GameEvent::SpatialProc {
+    kind: EnchantType,
+    origin: (u8, u8),
+    cells: Vec<(u8, u8)>,   // the shape, holes included — what the flash paints
+    broken: usize,          // what actually stood there — what the toast counts
+}
 ```
+
+**`broken` is a departure from the paragraph below, added when the toast was
+written.** One field was not enough: the shape deliberately covers ground the swing
+had already cleared, so a toast reading `Nuke — 200 blocks` off `cells.len()` would
+quote a haul the inventory never received. The two readers want two different
+answers, so there are two fields — and the core already made the distinction
+internally (`SpatialProc::cells` against `SpatialProc::broken`), which is why the
+addition cost one line rather than a new query.
 
 The **decay over wall-clock frames** is TUI state, keyed on an `Instant` the
 front-end owns. So the core gains no timer, no animation state, and no test
@@ -1561,7 +1574,70 @@ than binding `c` in place (§6.4). No two bindings fight.
   **Consequence, applied:** §5.6's Stats footer becomes
   `↑↓  scroll history · p  prestige · Tab  next screen · ?  help`.
 
+### 9.1 How a hold is detected, and why `Space` is one binding and two events
+
+Recorded when the tick landed, because the table above says `Space | mine (hold)`
+and a terminal cannot report a hold.
+
+**A terminal sends nothing when a key comes up.** The legacy encoding is "one key =
+its character", inherited from teletypes where a key *was* a character and a
+character has no duration; the release is not lost in transit, it is never encoded.
+So *hold Space* is not expressible by default, and the front-end answers it in two
+layers that meet on **one** piece of state — the instant the mine key was last heard
+from:
+
+- **The window**, everywhere: the key counts as down for `HOLD_WINDOW` (1100 ms)
+  after the last press. Auto-repeat keeps refreshing it while the key is held, and
+  the 1100 must outlast the longest *initial* repeat delay an OS setting can produce
+  (Windows caps at 1000 ms) or mining would hitch in the gap before the second press.
+- **The release**, where the kitty keyboard protocol is available: `main` pushes
+  `REPORT_EVENT_TYPES | REPORT_ALL_KEYS_AS_ESCAPE_CODES` at startup and a real
+  release arrives, which simply **clears that instant early**. Both flags are needed:
+  the first alone still delivers `Space` as raw UTF-8, with no event type on it.
+
+The consequence for this table: `Space` decodes to **two** actions rather than one
+(`MinePressed`, `MineReleased`), and every *other* binding must ignore releases
+outright — otherwise `Tab` would advance two tabs per keystroke on a terminal that
+reports them and one everywhere else. That filter is the first branch of
+`keymap::resolve`, above even the modal capture: a modal cannot use a release, and
+swallowing it would leave the pickaxe swinging behind the box.
+
+The accepted cost is up to 1.1 s of over-mining after a release on a terminal
+without the protocol. It is invisible against a seven-day offline cap, and the
+alternative — a shorter window — is a stutter the player feels on every hold.
+
 ## 10. Ratatui mapping
+
+### 10.1 The three clocks
+
+The wireframes were drawn against "a fixed 20 tps tick, rendering decoupled at
+~30 fps, redraw on change". Implemented, that is three periods and not two, and the
+third is the one worth writing down.
+
+| Clock | Period | Where it lives | What it is |
+| --- | --- | --- | --- |
+| heartbeat | 10 ms | the event thread | **a sampling rate, not a cadence**: it only wakes the loop so it can look at the wall clock |
+| simulation | 50 ms | `App::next_tick` | one `GameState::tick`, with catch-up |
+| redraw | 33 ms | `App::next_frame` | a **ceiling**, not a metronome |
+
+**The simulation is a deadline with catch-up, not a counter.** A pass that arrives
+three periods late runs three steps, so 20 tps survives a busy machine — a
+decremented countdown would instead drift by whatever each pass overshot, and the
+tick rate would become a description of the hardware. Arrears past one second are
+**dropped and the clock re-anchored**: a laptop closed mid-session would otherwise
+replay seventy-two thousand ticks in one frame, and what the player is owed for that
+hour is the offline accrual's answer — a multiplication, not a replay.
+
+**"Redraw on change" is answered by a flag, and today it saves nothing.** Any step
+that ran raises it, because the auto-miner credits on every step and a haul that went
+stale would be a lie. So the real redraw rate is the simulation's, ~20 fps, and the
+33 ms ceiling never binds. It is separate anyway because the proc flash (§7) changes
+the screen *between* two steps, and that is the one thing the second clock is for.
+
+**Input is exempt from the ceiling.** A key that meant something draws on the spot:
+the only burst input can produce is bounded by the terminal's own repeat rate, and
+33 ms of latency in the one place the player is looking costs more than a frame
+nobody asked for.
 
 | Need                 | Widget                                                                  |
 | -------------------- | ----------------------------------------------------------------------- |
@@ -1604,8 +1680,9 @@ this document wins for the signature** — and a disagreement is a bug to reconc
 | `Block::ticks_to_break(power)`, `Pickaxe::power_with(tier, eff)` | the dip in ticks per block, and a rung the player does not own (§5.4, §6.7) | 6 | **done** — `TICKS_PER_HARDNESS` was private to `mine`, and `Enchants::upgrade` is `pub(crate)`, so the front-end could compute neither |
 | `EnchantType::ALL`, `GameState::buy_pickaxe_chain` / `buy_enchant` / `buy_mine_size(kind)` / `buy_mine_richness(kind)` | the three sub-tabs and their purchases (§5.4) | 6 | **done** — the two mine doors take a `MineKind`, since the cursor may sit on a mine the player is not standing in |
 | `loot_for_level(n)` / `xp_for_level(n)` | the Levels roadmap (§5.7.5) | 6 | new |
-| `tick(&mut self, input) -> Vec<Event>` | toasts, history, the proc flash — **all of them** (§5.6) | 7 | new, and it changes the signature |
-| spatial `Event`s carrying **their cell list** | the proc flash (§5.9) | 7 | new |
+| `tick(&mut self, input) -> Vec<GameEvent>` | toasts, history, the proc flash — **all of them** (§5.5) | 7 | **done** — the front-end drives it from a 20 tps deadline (§10.1) and words each event in `announce` |
+| spatial `Event`s carrying **their cell list** | the proc flash (§7) | 7 | **done** — plus `broken`, a count the list could not stand in for: the shape includes ground already dug, so the toast and the flash need different numbers (§7) |
+| `tunables::TICKS_PER_SECOND` | the simulation deadline (§10.1) | 7 | **already public** — read rather than mirrored: a front-end spelling `50 ms` would give the tick rate a second definition that no balance pass can see |
 
 The two that change shape rather than add a function:
 
