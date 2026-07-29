@@ -171,9 +171,31 @@ impl Pickaxe {
     /// into a struct the save serialises as an inert `(tier, enchants)` pair. Phase
     /// 5 keeps it on the game state and folds it in where the two meet, in the
     /// tick: `pickaxe.mining_power() * boost`.
-    fn haste_multiplier(&self) -> f32 {
-        let level = self.enchants.get_level(EnchantType::Haste);
+    ///
+    /// **An associated function over the level, not a method over the tool**, because
+    /// [`power_at_haste`](Pickaxe::power_at_haste) asks it about a level this pickaxe
+    /// does not carry. Reading the level off `self` here would have made that
+    /// counterfactual impossible to write without a second copy of the formula, which
+    /// is the one thing the whole power path is arranged to avoid.
+    fn haste_multiplier(level: u8) -> f32 {
         1.0 + HASTE_PER_LEVEL * level as f32
+    }
+
+    /// The power formula itself, over the three levels that feed it and nothing else.
+    ///
+    /// The single place `(base + eff_bonus) * haste` is written. Every public power
+    /// question — [`mining_power`](Pickaxe::mining_power),
+    /// [`power_with`](Pickaxe::power_with),
+    /// [`power_at_haste`](Pickaxe::power_at_haste) — is this function with a different
+    /// mix of "the pickaxe's own" and "the one being priced", so a preview cannot drift
+    /// from the swing it predicts.
+    fn power_at(tier: PickaxeTier, efficiency: u8, haste: u8) -> f32 {
+        let eff_bonus = if efficiency > 0 {
+            (efficiency as f32).powi(2) + 1.0
+        } else {
+            0.0
+        };
+        (tier.base_power() + eff_bonus) * Self::haste_multiplier(haste)
     }
 
     /// Computes the total mining power applied against block hardness.
@@ -199,11 +221,11 @@ impl Pickaxe {
     /// sum is what lets an additive lever and a multiplicative one sit on different
     /// layers and stack, which is the reason the game has both.
     ///
-    /// **The arithmetic itself lives in [`power_with`](Pickaxe::power_with)**, which
-    /// answers the same question about a tier and level this pickaxe does not have.
-    /// This method is that one asked about the tool as it stands — one formula, so
-    /// the roadmap the Upgrades screen draws cannot promise a power the swing then
-    /// fails to deliver.
+    /// **The arithmetic itself lives in [`power_at`](Pickaxe::power_at)**, which the
+    /// two counterfactuals — [`power_with`](Pickaxe::power_with) and
+    /// [`power_at_haste`](Pickaxe::power_at_haste) — also go through. This method is
+    /// that one formula asked about the tool as it stands, so the roadmap the Upgrades
+    /// screen draws cannot promise a power the swing then fails to deliver.
     pub fn mining_power(&self) -> f32 {
         self.power_with(self.tier, self.enchants.get_level(EnchantType::Efficiency))
     }
@@ -235,12 +257,36 @@ impl Pickaxe {
     /// does not sell anything, and a caller walking a ladder past a cap is describing
     /// a rung the ladder will not contain rather than cheating.
     pub fn power_with(&self, tier: PickaxeTier, efficiency: u8) -> f32 {
-        let eff_bonus = if efficiency > 0 {
-            (efficiency as f32).powi(2) + 1.0
-        } else {
-            0.0
-        };
-        (tier.base_power() + eff_bonus) * self.haste_multiplier()
+        Self::power_at(
+            tier,
+            efficiency,
+            self.enchants.get_level(EnchantType::Haste),
+        )
+    }
+
+    /// What this pickaxe's [`mining_power`](Pickaxe::mining_power) *would* be at
+    /// another [`Haste`](EnchantType::Haste) level, keeping its tier and Efficiency.
+    ///
+    /// **The counterfactual [`power_with`](Pickaxe::power_with) deliberately cannot
+    /// express.** That method holds Haste fixed at the tool's own — which is exactly
+    /// right for the pickaxe ladder, where Haste is not what is being bought — and so
+    /// it can price an Efficiency rung and a tier jump but not a level of Haste. The
+    /// Upgrades screen sells all three, and `x1.40 → x1.60` is a multiplier the player
+    /// has no feel for: what they read is `36.0 → 41.1`, and this is the only way to
+    /// get it without handing out a way to forge an enchanted pickaxe.
+    ///
+    /// The `haste` is **not** checked against [`World::enchant_cap`]: like
+    /// `power_with`'s uncapped Efficiency, this answers a question rather than selling
+    /// anything, and a caller asking past the cap is describing a level the shop will
+    /// not offer rather than cheating.
+    ///
+    /// [`World::enchant_cap`]: crate::world::World::enchant_cap
+    pub fn power_at_haste(&self, haste: u8) -> f32 {
+        Self::power_at(
+            self.tier,
+            self.enchants.get_level(EnchantType::Efficiency),
+            haste,
+        )
     }
 
     /// Advances the pickaxe one step along its upgrade path.
@@ -741,6 +787,57 @@ mod tests {
                 power > previous,
                 "Haste {haste} ({power}) mines no faster than Haste {} ({previous})",
                 haste - 1
+            );
+            previous = power;
+        }
+    }
+
+    /// [`power_at_haste`](Pickaxe::power_at_haste) asked about the level the pickaxe
+    /// already carries must be [`mining_power`](Pickaxe::mining_power), at every tier
+    /// and every Efficiency.
+    ///
+    /// **The identity that makes the counterfactual trustworthy**, and the same one
+    /// `power_with_at_its_own_tier_and_level_is_mining_power` establishes on the other
+    /// axis. Both are asked here at Haste levels above zero: at Haste 0 the multiplier
+    /// is `1.0` and the two expressions coincide whatever the formula does, so a test
+    /// swept only through zero would pass while proving nothing.
+    #[test]
+    fn power_at_the_pickaxes_own_haste_is_its_mining_power() {
+        for tier in ALL_TIERS {
+            let cap = EnchantType::Haste.max_level(tier, HASTE_WORLD);
+            for haste in 0..=cap {
+                for efficiency in 0..=tier.efficiency_cap() {
+                    let pickaxe = enchanted(tier, efficiency, haste);
+                    assert_eq!(
+                        pickaxe.power_at_haste(haste),
+                        pickaxe.mining_power(),
+                        "{tier:?} Eff {efficiency} Haste {haste} previews its own haste wrong"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The Upgrades pane's whole reason for the method: a level of Haste it does not
+    /// own yet must quote *more* power, and quote it on the pickaxe's real tier and
+    /// Efficiency rather than on a bare one.
+    ///
+    /// Netherite at Efficiency 15 is the case that separates the two: a preview that
+    /// forgot the tier or the square would answer `2.4` where the tool is worth `41.1`.
+    #[test]
+    fn a_haste_level_can_be_priced_before_it_is_bought() {
+        let tier = PickaxeTier::Netherite;
+        let cap = EnchantType::Haste.max_level(tier, HASTE_WORLD);
+        let pickaxe = enchanted(tier, 15, 0);
+
+        let mut previous = pickaxe.power_at_haste(0);
+        assert_eq!(previous, pickaxe.mining_power());
+
+        for haste in 1..=cap {
+            let power = pickaxe.power_at_haste(haste);
+            assert!(
+                power > previous,
+                "the pane would offer Haste {haste} ({power}) as no better than {previous}"
             );
             previous = power;
         }

@@ -416,8 +416,17 @@ impl EnchantType {
     /// provisional; phase 10 balance sets the final ones, and the *shape* — a linear
     /// ramp bounded at both ends — is what is settled.
     ///
+    /// **`pub`, unlike the two methods that *apply* an enchant.**
+    /// [`blast_cells`](EnchantType::blast_cells) and
+    /// [`Enchants::upgrade`](Enchants::upgrade) are `pub(crate)` because they change a
+    /// run; this one only answers a question, and it is a question the Upgrades pane
+    /// has to ask about a level the player has *not* bought — `4.0% → 6.0%` is the
+    /// whole of what a Jackhammer or Nuke level sells, so a front-end unable to read
+    /// the curve could only offer the purchase blind. A pure function of a `u8`
+    /// guards nothing by being hidden.
+    ///
     /// [`Rng::chance_permille`]: crate::rng::Rng
-    pub(crate) fn proc_permille(self, level: u8) -> u32 {
+    pub fn proc_permille(self, level: u8) -> u32 {
         let (first, last) = match self {
             Self::Explosive => (20, 200),
             Self::Jackhammer => (15, 150),
@@ -436,6 +445,43 @@ impl EnchantType {
         // on it.
         let step = u32::from(level - 1).min(PROC_RAMP_SPAN);
         first + (last - first) * step / PROC_RAMP_SPAN
+    }
+
+    /// The side of [`Explosive`](EnchantType::Explosive)'s square at `level` — 3, 5 or
+    /// 7 — and `0` for every other enchant, which breaks no square at all.
+    ///
+    /// **The one geometric number a front-end may read, and it is `pub` for the reason
+    /// `docs/UI.md` §5.4.1 gives in full**: the square grows only every
+    /// [`EXPLOSIVE_RADIUS_BAND`] levels, so a pane that printed `5x5` on the step from
+    /// II to III would promise a reward the core does not pay. That paragraph is a
+    /// warning about *transcribing* the curve, and a front-end handed no way to ask has
+    /// no other option — the two copies of `1 + 2 * (1 + (level - 1) / 3).min(3)` that
+    /// grew in `skylode-tui`'s read model are what this method deletes.
+    ///
+    /// Diameter and not the [`explosive_radius`] behind it, because the radius is an
+    /// internal convenience — [`blast_cells`](EnchantType::blast_cells) needs a
+    /// Chebyshev reach to clip against the grid edges, a player reads `7x7`. Keeping
+    /// the radius private is what stops a caller from re-deriving the side and getting
+    /// the `2r + 1` wrong.
+    ///
+    /// `0` rather than [`Option`] for the six enchants with no square: the caller is a
+    /// pane that draws a row per moving stat, and "no square" is a row it does not
+    /// draw. A `None` would say the same thing one `match` later.
+    ///
+    /// Level 0 answers `3`, not `0` — the same band-one square
+    /// [`explosive_radius`] clamps to. That is deliberate and it is what the pane
+    /// wants: a player at Explosive 0 is being shown what level I would buy, and
+    /// `blast_cells` refuses level 0 on its own, before any geometry is asked for.
+    pub fn explosive_side(self, level: u8) -> u8 {
+        match self {
+            Self::Explosive => 2 * explosive_radius(level) + 1,
+            Self::Efficiency
+            | Self::Fortune
+            | Self::Jackhammer
+            | Self::Nuke
+            | Self::Excavator
+            | Self::Haste => 0,
+        }
     }
 
     /// The cells a proc of this enchant breaks, radiating from the `impact` cell in
@@ -1123,6 +1169,44 @@ mod tests {
     fn the_explosive_square_grows_in_three_bands() {
         let radii: Vec<u8> = (1..=10).map(explosive_radius).collect();
         assert_eq!(radii, vec![1, 1, 1, 2, 2, 2, 3, 3, 3, 3]);
+    }
+
+    /// The side a front-end prints must be the side a proc actually breaks.
+    ///
+    /// **Measured off [`blast_cells`](EnchantType::blast_cells) rather than off
+    /// [`explosive_radius`]**, which would only restate `2r + 1` in a second place.
+    /// The blast is taken in the middle of the largest mine so no edge clips it, and
+    /// its cell count is squared back into a side — the number the pane writes.
+    #[test]
+    fn the_explosive_side_is_the_square_a_proc_really_clears() {
+        let centre = (FULL_MINE.0 / 2, FULL_MINE.1 / 2);
+        for level in 1..=10 {
+            let broken = cells(EnchantType::Explosive, level, centre, FULL_MINE);
+            let side = usize::from(EnchantType::Explosive.explosive_side(level));
+            assert_eq!(
+                side * side,
+                broken,
+                "Explosive {level} is drawn {side}x{side} and breaks {broken} cells"
+            );
+        }
+    }
+
+    /// Six of the seven break no square, and must say `0` rather than the band-one
+    /// `3x3` a bare call to [`explosive_radius`] would hand back.
+    ///
+    /// The `match` in [`explosive_side`](EnchantType::explosive_side) is what makes a
+    /// new variant a compile error here instead of a silent square; this is what holds
+    /// the six existing arms to what they claim.
+    #[test]
+    fn only_explosive_has_a_square_to_name() {
+        for kind in EnchantType::ALL {
+            let side = kind.explosive_side(5);
+            if kind == EnchantType::Explosive {
+                assert!(side > 0, "Explosive must name a square");
+            } else {
+                assert_eq!(side, 0, "{} breaks no square", kind.name());
+            }
+        }
     }
 
     /// The alignment [`EXPLOSIVE_RADIUS_BAND`] exists to produce: each dimension
