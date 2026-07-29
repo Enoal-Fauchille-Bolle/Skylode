@@ -6,7 +6,7 @@
 //! Keeping the split means a list cursor never leaks into a save file, and the
 //! core stays testable without a terminal.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use color_eyre::Result;
 use ratatui::{
@@ -19,16 +19,17 @@ use ratatui::{
 use skylode_core::{
     economy::{self, Affordability, Shortfall},
     enchant::EnchantType,
-    game::GameState,
+    game::{GameState, Input},
     material::{Item, Material},
     mine::Mine,
     mine_kind::MineKind,
-    tunables::RAW_PER_COMPRESSED,
+    tunables::{RAW_PER_COMPRESSED, TICKS_PER_SECOND},
     upgrade,
 };
 
 use crate::{
     action::Action,
+    announce,
     config::Config,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     event::{Event, Events},
@@ -56,6 +57,69 @@ const MAX_WIDTH: u16 = 2 * too_small::MIN_WIDTH;
 /// the Mine screen's grid is a game constant, so a 90-row terminal would strand it
 /// in the middle of an enormous empty box.
 const MAX_HEIGHT: u16 = 2 * too_small::MIN_HEIGHT;
+
+/// One simulation step, derived from the core's own tick rate.
+///
+/// **Derived and not written down**, because 20 tps is a game rule
+/// (`docs/MECHANICS.md`) and a front-end that spelled `50` would be a second copy of
+/// it — one that could be edited without the balance pass noticing. The division is
+/// exact for any rate that divides a second evenly, and nanoseconds are what make it
+/// exact at all: at 30 tps, milliseconds would floor to 33 and lose 1% of the day.
+const SIM_PERIOD: Duration = Duration::from_nanos(1_000_000_000 / TICKS_PER_SECOND);
+
+/// The shortest gap between two draws — a **ceiling on the redraw rate**, not a
+/// cadence.
+///
+/// The loop draws when something changed *and* this much time has passed, so a burst
+/// of held keys cannot ask the terminal for two hundred frames a second. It is
+/// deliberately shorter than [`SIM_PERIOD`]: today the simulation is the only thing
+/// that changes the screen, so the real rate is 20 fps and this ceiling never binds —
+/// but the proc flash (two stages of ~100 ms, `docs/UI.md` §7) changes the screen
+/// *between* ticks, and it is the reason the two clocks are separate now rather than
+/// separated later.
+/// **Input is exempt**: a key that meant something draws on the spot, because the
+/// only burst it can produce is bounded by the terminal's own repeat rate, and 33 ms
+/// of latency in the one place the player is looking is worse than a frame nobody
+/// asked for.
+const FRAME_PERIOD: Duration = Duration::from_millis(33);
+
+/// How long after the mine key was last heard from the player still counts as
+/// holding it (`docs/SYSTEMS.md`).
+///
+/// **1100 ms is not a preference.** A terminal that cannot report a release leaves
+/// only OS auto-repeat to observe, and this window must outlast the longest *initial*
+/// repeat delay a user setting can produce — Windows caps that at 1000 ms — or mining
+/// would cut out in the gap between the first press and the second, hitching on every
+/// hold. The cost is up to 1.1 s of over-mining after a release, which is invisible
+/// against a seven-day offline cap; the alternative cost is a stutter the player feels
+/// every single time.
+const HOLD_WINDOW: Duration = Duration::from_millis(1_100);
+
+/// The most simulation steps one [`App::advance`] will run before giving up and
+/// resynchronising.
+///
+/// A second's worth. Without it, a laptop closed mid-session would hand the loop an
+/// hour of arrears and replay seventy-two thousand ticks in one frame — freezing the
+/// interface to compute what the offline accrual computes with one multiplication
+/// (`GameState::resume`). Dropping the surplus is therefore not a rounding error but
+/// a deferral to the mechanism that owns long absences.
+const MAX_CATCHUP_TICKS: u32 = 20;
+
+/// What the keyboard last said about the mine key, pending
+/// [`App::advance`]'s reading of it.
+///
+/// **An edge, not a state.** The state — *is the player mining* — is a question about
+/// time, and neither [`crate::keymap`] nor [`App::update`] may read a clock: one is a
+/// pure decode, the other a pure reducer, and both are unit-tested on that basis. So
+/// the reducer records only *what happened*, and `advance` stamps it with the instant
+/// it already has in hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MineKeyEdge {
+    /// Pressed, or auto-repeated, which the window treats identically.
+    Down,
+    /// Released — reportable only under the kitty keyboard protocol.
+    Up,
+}
 
 /// How far a purchase on the Upgrades screen goes.
 ///
@@ -89,8 +153,8 @@ pub struct App {
     /// The run itself — the rules, and every number the screens report.
     ///
     /// **`App` owns it rather than borrowing it**, because the run has no other
-    /// home: `main` builds one and hands it over, and phase 7's tick will mutate it
-    /// from inside the loop. The boundary this crate keeps is not "the front-end
+    /// home: `main` builds one and hands it over, and the tick mutates it from inside
+    /// the loop. The boundary this crate keeps is not "the front-end
     /// may not hold game state" — it is that the front-end holds no game *rules*.
     /// Every field of `GameState` is private and every mutation goes through a
     /// method that can refuse.
@@ -124,6 +188,40 @@ pub struct App {
     pub refused: Option<CompressHint>,
     /// Front-end preferences — read while drawing, edited by Settings (phase 7).
     pub config: Config,
+    /// When the next simulation step falls due.
+    ///
+    /// **A deadline, not a countdown**, which is what makes the 20 tps rate survive a
+    /// late wake-up: [`advance`](App::advance) runs steps *until* this passes `now`
+    /// and adds [`SIM_PERIOD`] to it each time, so a frame that took 80 ms runs the
+    /// step it owed and stays on the same grid. A remaining-time counter decremented
+    /// by the elapsed time would instead drift by whatever each frame overshot, and a
+    /// run's pace would depend on how busy the machine was.
+    next_tick: Instant,
+    /// The earliest the next draw may happen — [`FRAME_PERIOD`]'s ceiling.
+    next_frame: Instant,
+    /// Whether anything has changed since the last draw.
+    ///
+    /// *Redraw on change* in the one form the front-end can answer cheaply: raised by
+    /// a key that was acted on, a resize, and any simulation step that ran. The last
+    /// of those is why this is not a saving today — a step always runs, because the
+    /// auto-miner credits on every one of them and the Haul strip would go stale if
+    /// it did not. What the flag buys now is that a *quiet* loop — no ticks due, no
+    /// input — asks the terminal for nothing at all.
+    dirty: bool,
+    /// When the mine key was last heard from, or [`None`] if it is up.
+    ///
+    /// The whole of "is the player mining", and deliberately one field rather than
+    /// two paths. A terminal that reports releases writes [`None`] here the moment the
+    /// key comes up; one that cannot lets [`HOLD_WINDOW`] answer instead. The exact
+    /// path is an *early cut* of the inferred one, not a rival to it, so nothing
+    /// downstream has to know which terminal it is running on.
+    last_mine_key: Option<Instant>,
+    /// What the keyboard said about that key since the last [`advance`](App::advance).
+    ///
+    /// Collapsed to the latest edge rather than queued: at a 10 ms sampling period, a
+    /// press and a release inside one window is not a gesture a human can make, and a
+    /// queue would be a mechanism for a case that cannot occur.
+    mine_key_edge: Option<MineKeyEdge>,
 }
 
 impl App {
@@ -148,6 +246,10 @@ impl App {
             upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
         );
         let view = View::from_state(&state, cursors, None);
+        // Both clocks start due, so the first pass through the loop draws and the
+        // first step falls in one period rather than one period from whenever the
+        // session happened to be built.
+        let now = Instant::now();
         Self {
             should_quit: false,
             screen: Screen::Mine,
@@ -158,15 +260,21 @@ impl App {
             cursors,
             refused: None,
             config: Config::default(),
+            next_tick: now + SIM_PERIOD,
+            next_frame: now,
+            dirty: true,
+            last_mine_key: None,
+            mine_key_edge: None,
         }
     }
 
     /// Rebuilds the read model from the run.
     ///
-    /// Called once per frame, before drawing, and unconditional. Redraw-on-change is
-    /// phase 7's, where the 20 tps tick makes most frames identical to the last and a
-    /// guard here starts earning its keep; today a session only changes when a key is
-    /// pressed, so the projection runs about as often as it would anyway.
+    /// Called before drawing, and only when a draw is actually about to happen: the
+    /// guard is [`dirty`](App#structfield.dirty), on the caller's side, so a pass that
+    /// asks the terminal for nothing does not project a snapshot nobody reads. Which
+    /// is what keeps this affordable now that a 20 tps tick changes the run whether
+    /// the player touches anything or not.
     fn sync_view(&mut self) {
         self.view = View::from_state(&self.state, self.cursors, self.refused.as_ref());
     }
@@ -210,23 +318,49 @@ impl App {
         E: Events,
     {
         while !self.should_quit {
-            // Before the draw, not after the event: the first frame must show the
-            // run as it stands, and `new` has already projected it once so this is
-            // the identity on the opening pass.
-            self.sync_view();
-            terminal.draw(|frame| self.render(frame))?;
+            let now = Instant::now();
+            // Before the wait, not after: the first frame must show the run as it
+            // stands rather than appearing on the first keypress. `new` starts both
+            // flags due, so the opening pass always draws.
+            if self.dirty && now >= self.next_frame {
+                self.sync_view();
+                terminal.draw(|frame| self.render(frame))?;
+                self.dirty = false;
+                self.next_frame = now + FRAME_PERIOD;
+            }
 
             match events.next()? {
-                Event::Tick => self.on_tick(),
+                // **Nothing.** The heartbeat's whole job is to end the block above's
+                // wait so that `advance` below gets to look at the clock; how many
+                // beats arrived is not a quantity anything here counts. That is the
+                // difference between a heartbeat and a cadence, and it is what lets
+                // the simulation keep 20 tps whatever rate this channel runs at.
+                Event::Tick => {}
                 Event::Key(key) => {
                     if let Some(action) = keymap::resolve(&self, key) {
                         self.update(action);
+                        // Only a key that *meant* something redraws. An unbound key
+                        // changed nothing, and a frame that redraws the same buffer
+                        // is work the terminal has to undo.
+                        self.dirty = true;
+                        // **And it redraws now, not at the next allowed frame.** The
+                        // ceiling exists to stop the *simulation* from asking for two
+                        // hundred frames a second; input cannot ask for more than the
+                        // keyboard repeats, and a tab that appears 33 ms after the key
+                        // is latency the player feels in the one place they are
+                        // looking. Bursts stay bounded because a terminal's repeat
+                        // rate is.
+                        self.next_frame = now;
                     }
                 }
-                // Nothing to do: ratatui lays out against the new size on the
-                // next draw, which the loop is about to perform anyway.
-                Event::Resize => {}
+                // ratatui lays out against the new size on the next draw; all this
+                // has to do is make sure there is one.
+                Event::Resize => self.dirty = true,
             }
+
+            // After the event and not before: a key pressed this pass should reach
+            // the step it belongs to, not the one after it.
+            self.advance(Instant::now());
         }
         Ok(())
     }
@@ -263,7 +397,11 @@ impl App {
                     self.screen = screen;
                 }
             }
-            Action::ShowToast(text) => self.toasts.push(text, Tone::Neutral, TOAST_TTL),
+            // Recorded, not acted on. `update` has no clock — that is the property
+            // every test of it relies on — so the instant is stamped by `advance`,
+            // which is called immediately after this returns.
+            Action::MinePressed => self.mine_key_edge = Some(MineKeyEdge::Down),
+            Action::MineReleased => self.mine_key_edge = Some(MineKeyEdge::Up),
             // `?` stacks Help over the current screen; `Esc`/`?` clear it. The
             // keymap only emits `OpenHelp` when nothing is stacked, so this never
             // buries one modal under another.
@@ -397,8 +535,8 @@ impl App {
     ///
     /// **The ceiling is re-read from the inventory on every step** rather than stored
     /// beside the count when the dialog opened. It costs a division, and it means the
-    /// bound cannot go stale — phase 7's tick credits loot while a modal is up, so a
-    /// ceiling captured at opening time would be wrong by the second keypress.
+    /// bound cannot go stale — the tick credits loot while a modal is up, so a ceiling
+    /// captured at opening time is wrong by the second keypress.
     ///
     /// `max(1)` on the ceiling because [`u32::clamp`] panics when its floor exceeds
     /// its ceiling. A dialog is only ever *opened* on a pile of at least one unit, so
@@ -942,9 +1080,69 @@ impl App {
         }
     }
 
-    /// The heartbeat. Expires toasts today; drives the game tick from phase 7.
-    fn on_tick(&mut self) {
-        self.toasts.prune(Instant::now());
+    /// Runs whatever the clock says is due: the simulation steps, then their fallout.
+    ///
+    /// **`now` is a parameter, and that is the same rule the core keeps one level
+    /// down.** A function that reads `Instant::now()` itself cannot be told what time
+    /// it is, so every property worth asserting here — a step ran, three steps ran,
+    /// an hour of arrears was dropped rather than replayed, the hold window expired —
+    /// would be a test of the machine's speed. The loop reads the clock; this reads
+    /// the argument.
+    ///
+    /// The order is not interchangeable:
+    ///
+    /// 1. **Fold the keyboard edge**, so a `Space` pressed microseconds ago is held
+    ///    for the step it belongs to rather than the next one.
+    /// 2. **Answer `space_held` once**, not once per step. The window is measured
+    ///    against `now`, and the steps below may be arrears — asking again inside the
+    ///    loop would be asking about an instant that has not happened.
+    /// 3. **Run the steps due**, capped.
+    /// 4. **Say what they did**, then expire what has been said long enough.
+    fn advance(&mut self, now: Instant) {
+        match self.mine_key_edge.take() {
+            Some(MineKeyEdge::Down) => self.last_mine_key = Some(now),
+            // Not "stop the current step": the field *is* the answer, so clearing it
+            // is the whole of stopping. Under a terminal that cannot report this, the
+            // window below reaches the same state a little later.
+            Some(MineKeyEdge::Up) => self.last_mine_key = None,
+            None => {}
+        }
+
+        let input = Input {
+            space_held: self
+                .last_mine_key
+                .is_some_and(|last| now.duration_since(last) < HOLD_WINDOW),
+        };
+
+        let mut events = Vec::new();
+        let mut steps = 0;
+        while now >= self.next_tick && steps < MAX_CATCHUP_TICKS {
+            events.extend(self.state.tick(input));
+            self.next_tick += SIM_PERIOD;
+            steps += 1;
+        }
+        // Arrears past the cap are dropped rather than owed: a session that was
+        // suspended comes back to a deadline in the future instead of an hour of
+        // ticks to replay. What the player is owed for that hour is the offline
+        // accrual's answer, and it is a multiplication rather than a replay.
+        if steps == MAX_CATCHUP_TICKS {
+            self.next_tick = now + SIM_PERIOD;
+        }
+
+        for event in &events {
+            let (text, tone) = announce::of(event);
+            // `push_at` and not `push`: a toast raised by a step must expire three
+            // seconds after the instant that step ran, and the prune two lines below
+            // is measured against that same `now`. Reading the clock twice inside one
+            // `advance` is how a toast gets pruned in the same breath it is raised.
+            self.toasts.push_at(text, tone, TOAST_TTL, now);
+        }
+
+        self.toasts.prune(now);
+        // A step that ran changed something by construction — the auto-miner credits
+        // on every one — so this is `steps > 0` rather than a test of the events,
+        // which most steps produce none of.
+        self.dirty |= steps > 0;
     }
 
     /// Paints one frame: tab bar, active screen, then the overlays on top.
@@ -1055,7 +1253,6 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
     use ratatui::{
         backend::TestBackend,
@@ -1228,11 +1425,21 @@ mod tests {
     }
 
     #[test]
-    fn showing_a_toast_queues_it() {
+    fn the_mine_key_records_an_edge_and_nothing_else() {
+        // **`update` has no clock, and this is what that costs and buys.** The reducer
+        // cannot answer "is the player mining" — that is a question about time — so it
+        // records only which way the key went and leaves the stamping to `advance`.
+        // The payoff is that every other test of `update` stays a pure transition.
         let mut app = session();
-        assert!(app.toasts.is_empty());
-        app.update(Action::ShowToast("Mine refilled".to_owned()));
-        assert_eq!(app.toasts.len(), 1);
+        assert_eq!(app.mine_key_edge, None);
+        assert_eq!(app.last_mine_key, None);
+
+        app.update(Action::MinePressed);
+        assert_eq!(app.mine_key_edge, Some(MineKeyEdge::Down));
+        assert_eq!(app.last_mine_key, None, "the reducer read a clock");
+
+        app.update(Action::MineReleased);
+        assert_eq!(app.mine_key_edge, Some(MineKeyEdge::Up));
     }
 
     #[test]
@@ -1343,33 +1550,223 @@ mod tests {
     #[test]
     fn a_toast_is_drawn_over_the_screen_underneath() {
         let mut app = session();
-        app.update(Action::ShowToast("Mine refilled".to_owned()));
+        app.toasts
+            .push("Mine refilled".to_owned(), Tone::Neutral, TOAST_TTL);
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Mine refilled"), "{frame}");
     }
 
     #[test]
-    fn the_heartbeat_expires_a_toast_once_its_moment_has_passed() {
-        // **`on_tick` is called, not stepped around.** The test this replaces was
-        // named for the heartbeat and reached straight for `toasts.prune`, so the one
-        // line it was about — `on_tick`'s body, the thing `Event::Tick` actually runs
-        // — was never executed by anything. A test can assert the right outcome and
-        // still miss the code that is supposed to produce it.
-        //
-        // `on_tick` reads `Instant::now()` itself, so the clock is not the test's to
-        // choose: it ticks once against the live clock to prove the heartbeat spares
-        // a live toast, then prunes past the deadline by hand for the other half.
+    fn a_step_expires_a_toast_once_its_moment_has_passed() {
+        // **`advance` is called, not stepped around**, and now it can be: the instant
+        // is an argument, so both halves — the toast that survives and the toast that
+        // does not — are the test's to choose rather than the machine's.
+        let start = Instant::now();
         let mut app = session();
-        app.update(Action::ShowToast("Excavator!".to_owned()));
-        assert_eq!(app.toasts.len(), 1);
-
-        // A tick right now expires nothing: the toast has three seconds to live.
-        app.on_tick();
-        assert_eq!(app.toasts.len(), 1, "the heartbeat ate a live toast");
-
         app.toasts
-            .prune(Instant::now() + TOAST_TTL + Duration::from_millis(1));
+            .push_at("Excavator!".to_owned(), Tone::Success, TOAST_TTL, start);
+
+        app.advance(start + SIM_PERIOD);
+        assert_eq!(app.toasts.len(), 1, "a step ate a live toast");
+
+        app.advance(start + TOAST_TTL + Duration::from_millis(1));
         assert_eq!(app.toasts.len(), 0, "the toast outlived its TTL");
+    }
+
+    /// When the app's **next** simulation step falls due.
+    ///
+    /// **Read off the app rather than off a clock the test started**, and the
+    /// difference is a real one: `App::new` anchors its first deadline on the instant
+    /// it was built, which is a few microseconds *after* an `Instant::now()` the test
+    /// took first — so a hand-built `start + SIM_PERIOD` lands just short of the
+    /// deadline and no step runs. Asking the app when it is next due removes the race
+    /// instead of padding around it.
+    ///
+    /// Read it **once, before advancing**: the deadline moves as steps run, so a
+    /// second reading answers a different question. Later instants are built as
+    /// `due + SIM_PERIOD * n` from the first.
+    fn step_due(app: &App) -> Instant {
+        app.next_tick
+    }
+
+    #[test]
+    fn a_step_falls_due_once_every_twentieth_of_a_second() {
+        // Nothing before the deadline, exactly one on it. The mine key is down, so a
+        // step that ran is visible as break progress on the cell being dug — the
+        // cheapest observable the run has, and one that needs no veteran save.
+        let mut app = session();
+        app.update(Action::MinePressed);
+        let first = step_due(&app);
+
+        app.advance(first - Duration::from_millis(1));
+        assert_eq!(
+            app.state.current_mine().break_ratio(),
+            0.0,
+            "a step ran before it was due"
+        );
+
+        app.advance(first);
+        assert!(
+            app.state.current_mine().break_ratio() > 0.0,
+            "the step that fell due did not swing"
+        );
+    }
+
+    #[test]
+    fn a_late_wake_up_runs_every_step_it_owes() {
+        // **What the accumulator is for.** A pass that arrives three periods late owes
+        // three steps, and they are run rather than collapsed into one — otherwise a
+        // busy machine would mine more slowly than an idle one, and the 20 tps rate
+        // would be a description of the hardware.
+        let mut punctual = session();
+        let mut late = session();
+        punctual.update(Action::MinePressed);
+        late.update(Action::MinePressed);
+
+        let first = step_due(&punctual);
+        for step in 0..3 {
+            punctual.advance(first + SIM_PERIOD * step);
+        }
+        late.advance(step_due(&late) + SIM_PERIOD * 2);
+
+        assert_eq!(
+            late.state.current_mine().break_ratio(),
+            punctual.state.current_mine().break_ratio(),
+            "the late pass did not catch up"
+        );
+    }
+
+    #[test]
+    fn a_suspended_session_resynchronises_instead_of_replaying_the_arrears() {
+        // A closed laptop hands the loop an hour of deadlines. Replaying them would
+        // freeze the interface computing what the offline accrual computes with one
+        // multiplication, so the surplus is dropped and the clock re-anchored on
+        // `now` — the next pass must be due one period later, not one hour ago.
+        let start = Instant::now();
+        let mut app = session();
+        let wake = start + Duration::from_secs(3_600);
+
+        app.advance(wake);
+
+        assert_eq!(app.next_tick, wake + SIM_PERIOD);
+    }
+
+    #[test]
+    fn the_mine_key_stays_held_until_its_window_closes() {
+        // Layer 2, the one that runs on every terminal that cannot report a release:
+        // the key is "still down" for as long as an auto-repeat could plausibly be on
+        // its way, and up the moment that stops being true.
+        //
+        // The window is anchored on the *first `advance`*, not on the `update` — the
+        // reducer has no clock — so both instants below are measured from there.
+        let mut app = session();
+        app.update(Action::MinePressed);
+        let pressed = step_due(&app);
+
+        app.advance(pressed);
+        app.advance(pressed + HOLD_WINDOW - Duration::from_millis(1));
+        let inside = app.state.current_mine().break_ratio();
+        assert!(inside > 0.0, "the key was dropped inside its own window");
+
+        app.advance(pressed + HOLD_WINDOW + SIM_PERIOD);
+        assert_eq!(
+            app.state.current_mine().break_ratio(),
+            inside,
+            "the swing outlived the hold window"
+        );
+    }
+
+    #[test]
+    fn a_release_cuts_the_window_early_rather_than_taking_a_second_path() {
+        // Layer 1. A terminal speaking the kitty protocol reports the release, and all
+        // it does is reach the same state the window would have reached on its own —
+        // sooner. Nothing downstream branches on which terminal this is.
+        let mut app = session();
+        app.update(Action::MinePressed);
+        app.advance(step_due(&app));
+        let mined = app.state.current_mine().break_ratio();
+        assert!(mined > 0.0);
+
+        app.update(Action::MineReleased);
+        app.advance(step_due(&app));
+
+        assert_eq!(app.last_mine_key, None);
+        assert_eq!(
+            app.state.current_mine().break_ratio(),
+            mined,
+            "the pickaxe swung after the key came up"
+        );
+    }
+
+    #[test]
+    fn a_step_with_the_key_up_still_pays_the_auto_miner() {
+        // The idle half of the tick, and the reason `dirty` is raised by *any* step
+        // rather than by the events one produced: nothing is dug, and the inventory
+        // still moves, so a loop that only redrew on events would show a stale haul.
+        let mut app = session();
+
+        // Enough steps for the auto-miner's carry to cross a whole block.
+        let start = step_due(&app);
+        for step in 0..200 {
+            app.advance(start + SIM_PERIOD * step);
+        }
+
+        assert_eq!(
+            app.state.current_mine().break_ratio(),
+            0.0,
+            "the pickaxe swung with the key up"
+        );
+        assert!(
+            app.state
+                .player()
+                .get_inventory()
+                .raw_value(Material::Stone)
+                > 0,
+            "ten seconds of auto-mining credited nothing"
+        );
+    }
+
+    #[test]
+    fn a_pass_with_nothing_due_asks_the_terminal_for_no_frame() {
+        // The whole of "redraw on change" that the front-end can answer cheaply. A
+        // step always changes something, so this only ever fires between two steps —
+        // which is precisely where the ~30 fps ceiling will matter once the proc flash
+        // animates there.
+        let mut app = session();
+        app.dirty = false;
+        let first = step_due(&app);
+
+        app.advance(first - Duration::from_millis(1));
+        assert!(!app.dirty, "a pass with no step due asked for a frame");
+
+        app.advance(first);
+        assert!(app.dirty, "a step ran without asking for a frame");
+    }
+
+    #[test]
+    fn a_tick_that_makes_news_raises_a_toast_saying_so() {
+        // The wire from `Vec<GameEvent>` to the overlay, end to end. An instamining
+        // pickaxe empties the starter grid in a couple of hundred swings, and the
+        // refill is the announcement that costs the least to provoke.
+        let mut app = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Netherite""#),
+            (r#""enchants":{}"#, r#""enchants":{"Efficiency":15}"#),
+        ]);
+        app.update(Action::MinePressed);
+        let start = step_due(&app);
+
+        for step in 0..1_000 {
+            app.advance(start + SIM_PERIOD * step);
+            // The key is re-pressed as auto-repeat would, or the window would close
+            // 22 steps in and the grid would never empty.
+            app.update(Action::MinePressed);
+            if !app.toasts.is_empty() {
+                break;
+            }
+        }
+
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Mine refilled"), "{frame}");
     }
 
     /// An event source that reads from a script instead of from a terminal.
@@ -1516,7 +1913,8 @@ mod tests {
         let plain = whole_frame(&render_to_buffer(&session()));
 
         let mut app = session();
-        app.update(Action::ShowToast("Mine refilled".to_owned()));
+        app.toasts
+            .push("Mine refilled".to_owned(), Tone::Neutral, TOAST_TTL);
         let toasted = whole_frame(&render_to_buffer(&app));
 
         // The toast borrows cells for a frame; without one the frame is untouched.
@@ -1844,8 +2242,8 @@ mod tests {
     ///
     /// Only reachable by setting the modal directly, which is the point: the spinner
     /// clamps against the *current* pile on every step, so a player cannot walk into
-    /// this. What can is phase 7's tick, which will credit and spend while a modal is
-    /// up. The dialog closes either way — leaving it would invite the player to press
+    /// this. What can is the tick, which credits and spends while a modal is up.
+    /// The dialog closes either way — leaving it would invite the player to press
     /// `Enter` again on the same impossible number.
     #[test]
     fn confirming_a_conversion_the_pile_can_no_longer_cover_refuses_and_closes() {

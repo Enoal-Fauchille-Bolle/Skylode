@@ -16,7 +16,7 @@ use std::{
 };
 
 use color_eyre::Result;
-use ratatui::crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, Event as CrosstermEvent, KeyEvent};
 
 /// A terminal event, the *raw* input vocabulary.
 ///
@@ -28,10 +28,28 @@ use ratatui::crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyEven
 /// so mouse capture is never enabled and the variant would never fire.
 #[derive(Clone, Copy, Debug)]
 pub enum Event {
-    /// The fixed-rate heartbeat, used to expire toasts (and, later, to drive the
-    /// game tick). It arrives even when the player touches nothing.
+    /// The heartbeat: *wake up and look at the clock*.
+    ///
+    /// **It is a sampling rate, not a cadence**, and that distinction is what the
+    /// tick loop is built on. The two rates that matter — the 20 tps simulation and
+    /// the ~30 fps redraw — live in [`crate::app::App`] as deadlines compared against
+    /// `Instant::now()`, so neither counts heartbeats and neither drifts when one
+    /// arrives late. What this event guarantees is only that the loop is *given* the
+    /// chance to look, often enough that both deadlines are met to within its own
+    /// period. It arrives even when the player touches nothing.
     Tick,
-    /// A key was pressed. Releases and repeats are filtered out at the source.
+    /// A key event, **of any kind** — press, auto-repeat, or release.
+    ///
+    /// Nothing is filtered here any more, and that is a requirement rather than a
+    /// simplification: `Space` held down is the game's central interaction, and a
+    /// terminal speaking the kitty keyboard protocol reports its release as a
+    /// [`Release`] this variant would otherwise drop. The filter moved
+    /// to [`crate::keymap::resolve`], which is where a key already becomes a meaning
+    /// — and it has to be there rather than here, because *which* kinds are
+    /// meaningful is a per-binding answer: only the mine key cares about a release,
+    /// and every other binding must keep firing exactly once per press.
+    ///
+    /// [`Release`]: ratatui::crossterm::event::KeyEventKind::Release
     Key(KeyEvent),
     /// The terminal was resized.
     ///
@@ -105,11 +123,12 @@ impl EventHandler {
 
                     if event::poll(timeout).expect("unable to poll for event") {
                         match event::read().expect("unable to read event") {
-                            CrosstermEvent::Key(e) if e.kind == KeyEventKind::Press => {
-                                sender.send(Event::Key(e))
-                            }
+                            // Every kind, releases included: see `Event::Key`. The
+                            // one filter that would be safe here — dropping releases
+                            // — is the one that would cost the mine key its stop.
+                            CrosstermEvent::Key(e) => sender.send(Event::Key(e)),
                             CrosstermEvent::Resize(_, _) => sender.send(Event::Resize),
-                            // Everything else — key releases, mouse, focus, paste — is ignored.
+                            // Everything else — mouse, focus, paste — is ignored.
                             _ => Ok(()),
                         }
                         .expect("failed to send terminal event");

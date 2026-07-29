@@ -14,6 +14,7 @@
 // as well would merge the two, and rustdoc would then resolve the module's links
 // from *this* scope — where none of its items exist.
 mod action;
+mod announce;
 mod app;
 mod config;
 mod cursor;
@@ -28,20 +29,34 @@ mod toast;
 mod view;
 mod widget;
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    io::stdout,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use color_eyre::Result;
+use ratatui::crossterm::{
+    event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
+    execute,
+    terminal::supports_keyboard_enhancement,
+};
 use skylode_core::game::GameState;
 
 use crate::{app::App, event::EventHandler};
 
-/// How often the event thread emits a heartbeat, in milliseconds.
+/// How often the event thread wakes the render loop, in milliseconds.
 ///
-/// This is the *UI* heartbeat — it expires toasts and will later drive redraws.
-/// It is not the game's 20 tps simulation tick, which arrives with `tick()` in
-/// phase 7 and is a separate clock on purpose: rendering cadence must not be able
-/// to change game balance.
-const TICK_RATE_MS: u64 = 250;
+/// **A sampling period, not a cadence**, and the difference is the whole reason it
+/// dropped from 250 to 10. The two rates that matter — the game's 20 tps simulation
+/// and the ~30 fps redraw ceiling — are deadlines held in `app::App` and compared
+/// against the wall clock, so neither counts heartbeats. What this number decides is
+/// only the *resolution* at which the loop notices a deadline has passed: at 10 ms,
+/// a 50 ms step never slips by more than a fifth of itself.
+///
+/// It costs a hundred channel receives a second and no game state at all. Making it
+/// the simulation rate instead would tie the two together again, and a rendering
+/// cadence must never be able to change game balance.
+const TICK_RATE_MS: u64 = 10;
 
 /// The seed a fresh run starts from, taken from the clock.
 ///
@@ -78,12 +93,56 @@ fn main() -> Result<()> {
     // panic hook that restores both before any message is printed — the reason
     // this crate no longer hand-rolls terminal setup.
     let mut terminal = ratatui::init();
+    let enhanced = enable_key_releases();
     let events = EventHandler::new(TICK_RATE_MS);
 
     // The result is held, not propagated with `?`: the terminal must be restored
     // first, or an error would print into the alternate screen and vanish with it.
     let result = App::new(state).run(&mut terminal, events);
 
+    if enhanced {
+        // Before `restore`, and unconditional on how the loop ended: these flags are
+        // *terminal* state, not process state, so leaking them leaves the shell — and
+        // every program the player runs next — in a mode it did not ask for.
+        let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
+    }
     ratatui::restore();
     result
+}
+
+/// Asks the terminal to report key releases, and says whether it agreed.
+///
+/// **The exact half of `docs/SYSTEMS.md`'s two-layer input scheme.** A terminal
+/// speaking the legacy encoding never reports a release — a key *was* a character
+/// there, and a character has no duration — so `app` infers the hold from a window
+/// instead. Where this succeeds, a real release arrives and cuts that window early;
+/// where it does not, nothing downstream changes and the window answers alone. That
+/// is why the return value goes no further than [`main`]: it decides what to pop on
+/// the way out, and nothing about how the game reads input.
+///
+/// **Both flags, and the second is the load-bearing one.** `REPORT_EVENT_TYPES` alone
+/// is silently useless for this: the protocol still sends text-producing keys as raw
+/// UTF-8, and `Space` produces text, so it would arrive as a bare `0x20` with no
+/// event type attached. `REPORT_ALL_KEYS_AS_ESCAPE_CODES` is what forces it down the
+/// path where a release can exist at all.
+///
+/// The query round-trips to the terminal, so it runs **before** the event thread
+/// starts: the reply arrives on the same input stream the poller is about to drain,
+/// and a thread already reading would swallow it.
+///
+/// Failure of any kind means "no releases here", which is exactly the fallback the
+/// window already implements — hence `unwrap_or(false)` and a discarded `execute!`
+/// result rather than a `?` that would end a session over a decoration.
+fn enable_key_releases() -> bool {
+    if !supports_keyboard_enhancement().unwrap_or(false) {
+        return false;
+    }
+    execute!(
+        stdout(),
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        )
+    )
+    .is_ok()
 }

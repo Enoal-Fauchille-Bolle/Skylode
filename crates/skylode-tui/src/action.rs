@@ -32,9 +32,31 @@ pub enum Action {
     PrevScreen,
     /// Jump straight to the tab at this zero-based index (the `1`..`6` keys).
     SelectScreen(usize),
-    /// Raise an ephemeral toast. A stand-in until the tick returns real events
-    /// (UI-EN.md §6.2); wired to a demo key so the overlay path can be exercised.
-    ShowToast(String),
+    /// The mine key says it is down (`Space` on the Mine screen).
+    ///
+    /// **It announces a key, not a swing**, and the difference is the whole of
+    /// `docs/SYSTEMS.md`'s keyboard section. A terminal never reports a *release*, so
+    /// "is the player mining" cannot be read off one event: it is
+    /// [`App::advance`](crate::app::App::advance)'s answer, from the instant this
+    /// gesture last arrived. Which is also why this carries no time — an [`Action`] is
+    /// decoded by [`crate::keymap`], which has no clock and must not grow one.
+    ///
+    /// Auto-repeat produces a stream of these while the key is held, on every
+    /// terminal: as a fresh press under the legacy encoding, as
+    /// [`KeyEventKind::Repeat`] under the kitty protocol. Both refresh the same
+    /// window, which is why one variant covers both.
+    ///
+    /// [`KeyEventKind::Repeat`]: ratatui::crossterm::event::KeyEventKind::Repeat
+    MinePressed,
+    /// The mine key says it is up — **only ever emitted by a terminal that reports
+    /// releases at all** (the kitty keyboard protocol).
+    ///
+    /// Not the counterpart of [`MinePressed`](Action::MinePressed) so much as an
+    /// *early cut* of the window it opens: where the release is unreportable, the
+    /// window expires on its own and mining stops up to `HOLD_WINDOW` later. Nothing
+    /// downstream branches on which of the two happened, which is what keeps the
+    /// exact and the inferred path one mechanism instead of two.
+    MineReleased,
     /// Open the Help overlay (`?` from any screen). It stacks over the current
     /// screen, which is what Help then reports the bindings of.
     OpenHelp,

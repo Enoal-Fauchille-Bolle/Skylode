@@ -18,7 +18,7 @@
 
 use ratatui::{
     Frame,
-    crossterm::event::KeyEvent,
+    crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::Line,
@@ -393,9 +393,20 @@ fn ratio(value: f64) -> f64 {
     }
 }
 
-/// No contextual bindings yet; `Space` (mine) arrives with the tick in phase 7.
-pub fn map_key(_key: KeyEvent) -> Option<Action> {
-    None
+/// `Space` swings the pickaxe (UI.md §9); nothing else is bound here.
+///
+/// **Only the press half lives here.** The release is answered in
+/// [`keymap::resolve`](crate::keymap::resolve), which is the only place that still
+/// knows a key's *kind* — this function is handed a bare key, so a release arriving
+/// here would be indistinguishable from a press and would read as a second swing.
+///
+/// It emits [`Action::MinePressed`] and not "mine one block": whether the player is
+/// mining is a question about *time*, answered by
+/// [`App::advance`](crate::app::App::advance) from the instant this last arrived.
+/// Auto-repeat is what keeps that instant fresh while the key is down, and it is why
+/// a held `Space` needs no timer of its own here.
+pub fn map_key(key: KeyEvent) -> Option<Action> {
+    (key.code == KeyCode::Char(' ')).then_some(Action::MinePressed)
 }
 
 #[cfg(test)]

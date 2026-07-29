@@ -6,6 +6,8 @@
 //! land: one function to change, not a `match` scattered across six screens.
 //!
 //! **Resolution order**, and it matters:
+//! 0. A key *release* — it can only ever mean "stop mining", and nothing else here
+//!    may see it.
 //! 1. `Ctrl-C` — always quits, even if a modal would otherwise capture the key.
 //! 2. An open modal captures everything else (it is modal; that is the point).
 //! 3. The global ring bindings.
@@ -14,7 +16,7 @@
 //! Globals are consulted *before* the screen so that `Tab` cannot be shadowed by
 //! a screen that forgot the ring exists.
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::{action::Action, app::App, config::SubTabKeys, overlay::Modal, screen::Screen};
 
@@ -27,6 +29,27 @@ const FIRST_TAB_DIGIT: char = '1';
 /// Takes `&App` rather than just the screen because resolution is *contextual*:
 /// the same key means different things depending on whether a modal is open.
 pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
+    // 0. A release, before anything else can mistake it for a press.
+    //
+    //    `event` stopped filtering key kinds so that the mine key's release could
+    //    reach us at all, and this branch is the whole price of that: without it,
+    //    every binding below would fire twice on a terminal that reports releases —
+    //    once on the way down and once on the way up — and `Tab` would advance two
+    //    tabs per keystroke on kitty and one everywhere else.
+    //
+    //    So exactly one release is meaningful, and it is answered here rather than
+    //    in `Screen::map_key`: that function is handed a key and nothing else, so a
+    //    release reaching it would arrive indistinguishable from a press.
+    //
+    //    It is answered *above* the modal branch too, which is the one place a
+    //    release outranks "a modal captures every key". A modal cannot use a release,
+    //    and swallowing this one would leave the pickaxe swinging behind the box for
+    //    as long as the hold window lasts.
+    if key.kind == KeyEventKind::Release {
+        return (key.code == KeyCode::Char(' ') && app.screen == Screen::Mine)
+            .then_some(Action::MineReleased);
+    }
+
     // 1. Ctrl-C outranks everything, including a modal.
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
     {
@@ -81,13 +104,6 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
         KeyCode::Char('?') => return Some(Action::OpenHelp),
         KeyCode::Tab => return Some(Action::NextScreen),
         KeyCode::BackTab => return Some(Action::PrevScreen),
-        // A temporary demo binding so the overlay path can be exercised before
-        // the tick produces real events (UI-EN.md §6.2).
-        KeyCode::Char('t') => {
-            return Some(Action::ShowToast(
-                "Excavator!  +1 Compressed Iron".to_owned(),
-            ));
-        }
         KeyCode::Char(digit @ '1'..='6') => {
             let index = digit as usize - FIRST_TAB_DIGIT as usize;
             return Some(Action::SelectScreen(index));
@@ -384,32 +400,90 @@ mod tests {
     }
 
     #[test]
-    fn the_demo_toast_key_is_still_bound_and_still_global() {
-        // `t` is scaffolding: it exists so the overlay path can be exercised before
-        // the tick produces real events, and it is meant to go once phase 7 does.
-        // Pinned rather than left untested for exactly that reason — a temporary
-        // binding nothing asserts is one that quietly becomes permanent, and this
-        // test is where its removal gets noticed.
+    fn the_demo_toast_key_is_gone_now_that_the_tick_speaks() {
+        // `t` was scaffolding: it existed so the overlay path could be exercised
+        // before the tick produced real events. It is bound to nothing now, and this
+        // asserts the removal rather than merely deleting the old test — a stand-in
+        // that comes back is exactly what a removed test stops catching.
         let app = session();
+        assert_eq!(resolve(&app, press(KeyCode::Char('t'))), None);
+    }
+
+    /// A key event of a given kind — the third argument the release path turns on.
+    fn of_kind(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind)
+    }
+
+    #[test]
+    fn space_swings_the_pickaxe_only_on_the_mine_screen() {
+        let mut app = session();
         assert_eq!(
-            resolve(&app, press(KeyCode::Char('t'))),
-            Some(Action::ShowToast(
-                "Excavator!  +1 Compressed Iron".to_owned()
-            ))
+            resolve(&app, press(KeyCode::Char(' '))),
+            Some(Action::MinePressed)
         );
 
-        // Global, so every tab answers the same — it is decided before the screens
-        // are consulted, and the fall-through below it must not change that.
-        for screen in Screen::ALL {
-            let mut app = session();
-            app.screen = screen;
-            assert!(
-                matches!(
-                    resolve(&app, press(KeyCode::Char('t'))),
-                    Some(Action::ShowToast(_))
-                ),
-                "{screen:?} did not answer the global demo key"
+        // Everywhere else it is unbound: `Space` is the Mine screen's own key
+        // (UI.md §9), and a global one would swallow it on five screens that have
+        // nothing to do with it.
+        app.screen = Screen::Upgrades;
+        assert_eq!(resolve(&app, press(KeyCode::Char(' '))), None);
+    }
+
+    #[test]
+    fn an_auto_repeat_of_space_reads_exactly_like_a_fresh_press() {
+        // The kitty protocol reports a held key as `Repeat`; the legacy encoding
+        // reports it as another `Press`. Both must reach the same action, or the hold
+        // window would be refreshed on one terminal and not the other.
+        let app = session();
+        assert_eq!(
+            resolve(&app, of_kind(KeyCode::Char(' '), KeyEventKind::Repeat)),
+            Some(Action::MinePressed)
+        );
+    }
+
+    #[test]
+    fn releasing_space_stops_the_swing() {
+        let app = session();
+        assert_eq!(
+            resolve(&app, of_kind(KeyCode::Char(' '), KeyEventKind::Release)),
+            Some(Action::MineReleased)
+        );
+    }
+
+    #[test]
+    fn a_release_of_any_other_key_means_nothing_at_all() {
+        // **The price of `event` no longer filtering key kinds.** Without the branch
+        // at the top of `resolve`, every binding here would fire twice on a terminal
+        // that reports releases: once down, once up. `Tab` is the loudest — two tabs
+        // per keystroke — so it is the one pinned.
+        let app = session();
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Char('q'),
+            KeyCode::Char('?'),
+            KeyCode::Char('1'),
+        ] {
+            assert_eq!(
+                resolve(&app, of_kind(code, KeyEventKind::Release)),
+                None,
+                "{code:?} acted on the way up as well as on the way down"
             );
         }
+    }
+
+    #[test]
+    fn a_release_outranks_an_open_modal() {
+        // The one place a release beats "a modal captures every key". A modal cannot
+        // use a release, and swallowing this one would leave the pickaxe swinging
+        // behind the box until the hold window ran out on its own.
+        let mut app = session();
+        app.modal = Some(Modal::Help);
+        assert_eq!(
+            resolve(&app, of_kind(KeyCode::Char(' '), KeyEventKind::Release)),
+            Some(Action::MineReleased)
+        );
+        // And a *press* is still swallowed by it, which is what makes the line above
+        // an exception rather than a hole.
+        assert_eq!(resolve(&app, press(KeyCode::Char(' '))), None);
     }
 }

@@ -9,9 +9,12 @@
 //! with [`Clear`], not laid out beside anything, so adding it never moved the
 //! mine grid. That is why the Mine screen's budget still closes at 24 rows.
 //!
-//! Today toasts are pushed by a demo key. Once `tick()` returns `Vec<Event>`
-//! (phase 7), this queue becomes the tail of that stream and stops being driven
-//! by input at all.
+//! **Toasts are the tick's, not the keyboard's.** Every `GameEvent` a simulation step
+//! returns is worded by [`crate::announce`] and queued here; the only announcements
+//! left that a keypress raises are the refusals, which no step can produce because
+//! nothing was asked of the rules. The History panel is still owed the other half of
+//! *one buffer, two renderings* — this queue drops a toast when it expires, where the
+//! panel wants to keep it — and that is the change this module has coming.
 
 use std::time::{Duration, Instant};
 
@@ -114,12 +117,24 @@ impl Toasts {
         self.items.is_empty()
     }
 
-    /// Queues an announcement of `tone` for `ttl`.
+    /// Queues an announcement of `tone` for `ttl`, starting now.
+    ///
+    /// **The one method here that reads a clock**, and it exists for the callers that
+    /// have none: [`App::update`](crate::app::App::update) is a pure reducer over
+    /// `(state, Action)` and must stay one, so a refusal it raises cannot be handed an
+    /// instant. Everything on the tick's side goes through
+    /// [`push_at`](Toasts::push_at) instead, where the instant is already in hand and
+    /// a second reading of the clock could disagree with the one the step ran against.
     pub fn push(&mut self, text: String, tone: Tone, ttl: Duration) {
+        self.push_at(text, tone, ttl, Instant::now());
+    }
+
+    /// The same, told what time it is.
+    pub fn push_at(&mut self, text: String, tone: Tone, ttl: Duration, now: Instant) {
         self.items.push(Toast {
             text,
             tone,
-            expires_at: Instant::now() + ttl,
+            expires_at: now + ttl,
         });
     }
 
