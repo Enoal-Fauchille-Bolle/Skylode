@@ -31,6 +31,38 @@ use serde::{Deserialize, Serialize};
 /// price — different ratio, different concept, different audience.
 const RAW_PER_DENSE_BLOCK: u32 = 9;
 
+/// How much [`mining_power`](crate::pickaxe::Pickaxe::mining_power) a block costs
+/// per point of [`hardness`](Block::hardness): a cell yields at
+/// `hardness * 30`, so it takes `ceil(30 * hardness / mining_power)` ticks.
+///
+/// This is Minecraft's, and it is the **unit conversion** between two scales that
+/// are not the same one — dig speed and hardness. `getDestroyProgress` reads
+/// `dig_speed / hardness / 30` per tick, breaking at `1.0`; rearranged so the
+/// progress counter carries the power rather than a fraction, the 30 lands here.
+/// Without it the two scales are read as one, and a *fresh Wooden pickaxe
+/// instamines Stone* — there is no progressive breaking left to speak of.
+///
+/// **Not a tunable, for the reason the batch-reset threshold is not one.** It is
+/// what makes `DECISIONS.md`'s "1:1 fidelity to Minecraft is kept for hardness"
+/// true in practice: the hardness table is only worth porting one-to-one if the
+/// break *times* come out one-to-one too, and this is the factor that decides
+/// that. Moving it does not tune the game, it revokes the decision. A balance pass
+/// that wants faster mining reaches for [`base_power`](crate::pickaxe::PickaxeTier::base_power),
+/// which is already Skylode's own curve.
+///
+/// Minecraft's other divisor — `100`, for mining without the right tool — has no
+/// counterpart here and never will: phase 3's mining gate *refuses* a block below
+/// the required tier rather than letting the player chip at it. One regime, one
+/// constant.
+///
+/// **It lives beside the hardness it converts, not beside the loop that spends
+/// it.** [`Mine::dig`](crate::mine::Mine) was its only reader for four phases, so
+/// `mine` was a reasonable home; [`Block::ticks_to_break`] is a second, and it is
+/// the one that settles the question. A factor keyed by a block property belongs
+/// where that property is defined — the alternative pointed `block` at `mine`, the
+/// wrong way down the module chain this crate is layered on.
+pub(crate) const TICKS_PER_HARDNESS: f32 = 30.0;
+
 /// A single mineable block.
 ///
 /// Variants are grouped as `<Resource>Ore` / `<Resource>Block` pairs where a
@@ -387,6 +419,48 @@ impl Block {
     pub fn drops(self) -> (Item, u32) {
         (Item::Raw(self.material()), self.drop_amount())
     }
+
+    /// How many ticks this block takes to break at `mining_power`, or [`None`] if
+    /// it never breaks at all.
+    ///
+    /// **The closed form of what [`Mine::dig`](crate::mine::Mine) does one tick at a
+    /// time.** Progress accumulates at `mining_power` per tick and the cell yields
+    /// once it has covered `hardness * TICKS_PER_HARDNESS`, so the count is
+    /// `ceil(30 * hardness / mining_power)`. Two implementations of one fact, which
+    /// is a liability unless something holds them together — here that is
+    /// `a_block_takes_the_ticks_its_hardness_and_the_pickaxe_agree_on` in
+    /// [`mine`](crate::mine), which computes the expectation *through this method*
+    /// and then digs until the block gives.
+    ///
+    /// **Public because a price has to be quoted in something the player feels.**
+    /// `docs/UI.md` §6.7 states the tier-jump dip as `27 → 100 ticks per block` and
+    /// not only as `34.0 → 9.0` of mining power, because nobody has an intuition for
+    /// a power figure. A front-end cannot derive the conversion itself:
+    /// [`TICKS_PER_HARDNESS`] is `pub(crate)` and stays that way, being a decision
+    /// about fidelity rather than a number to render.
+    ///
+    /// **[`None`] mirrors [`Mine::dig`](crate::mine::Mine)'s own refusal instead of
+    /// inventing a sentinel**, and it answers for the same three inputs: a power that
+    /// is zero, negative, or not finite. The first two buy no progress; the third is
+    /// *refused* rather than honoured, because a `NaN` added to the progress counter
+    /// would poison it for the rest of the run and an infinite one is not a swing the
+    /// rules are willing to describe. So there is no tick on which the block breaks,
+    /// which is exactly what `dig` reports by never yielding. All three are
+    /// unreachable through a real pickaxe, since every
+    /// [`base_power`](crate::pickaxe::PickaxeTier::base_power) is a positive finite
+    /// number — which is precisely why the answer must be a shape a caller cannot
+    /// mistake for a very large count of ticks.
+    pub fn ticks_to_break(self, mining_power: f32) -> Option<u32> {
+        // The same guard `dig` opens with, and for the same reason: a `NaN` compares
+        // false against everything, so it would sail past a plain `<= 0.0`.
+        if mining_power <= 0.0 || !mining_power.is_finite() {
+            return None;
+        }
+        // `as u32` saturates in Rust rather than wrapping, so a power small enough to
+        // overflow the count answers `u32::MAX` — "effectively never" — instead of a
+        // small number that would read as an instamine.
+        Some((self.hardness() * TICKS_PER_HARDNESS / mining_power).ceil() as u32)
+    }
 }
 
 /// Every [`Block`] variant, for tests that must cover the whole enum.
@@ -730,6 +804,70 @@ mod tests {
     fn the_end_gates_behind_netherite() {
         for block in [Block::Endstone, Block::Amethyst] {
             assert_eq!(block.min_pickaxe_tier(), PickaxeTier::Netherite);
+        }
+    }
+
+    /// **The same number the golden test in [`mine`](crate::mine) reaches by
+    /// digging**, and reached here in one multiplication instead of 188 ticks:
+    /// Minecraft charges 9.4 seconds for Obsidian with a Diamond pickaxe, which at
+    /// 20 tps is 188 ticks. Asserting it on both sides is the point — the count the
+    /// Upgrades screen quotes has to be the count the mine actually charges.
+    #[test]
+    fn obsidian_costs_a_diamond_pickaxe_the_ticks_minecraft_charges() {
+        // 8.0 is Diamond's `base_power`, spelled out rather than read off the tier so
+        // this test states the pairing it is about instead of tracking a curve.
+        assert_eq!(Block::Obsidian.ticks_to_break(8.0), Some(188));
+    }
+
+    /// The count **rounds up**, and the boundary is where that matters: a block needs
+    /// its full `hardness * 30` of progress, so a tick that lands one point short is
+    /// a tick that broke nothing and the player pays another.
+    #[test]
+    fn a_tick_that_lands_short_still_costs_a_whole_tick() {
+        // Stone is hardness 1.5, so 45 points of progress break it.
+        assert_eq!(Block::Stone.ticks_to_break(45.0), Some(1), "exactly enough");
+        assert_eq!(
+            Block::Stone.ticks_to_break(46.0),
+            Some(1),
+            "more than enough"
+        );
+        assert_eq!(
+            Block::Stone.ticks_to_break(44.0),
+            Some(2),
+            "one point short"
+        );
+        assert_eq!(Block::Stone.ticks_to_break(22.5), Some(2), "half, exactly");
+    }
+
+    /// A stronger pickaxe never costs more ticks than a weaker one — the property the
+    /// whole Upgrades screen is built on, since a rung that raised the count would be
+    /// a purchase that made the game slower.
+    ///
+    /// Walks `ALL_BLOCKS` rather than sampling, for the reason
+    /// `a_fresh_wooden_pickaxe_instamines_nothing_in_the_game` does: the claim is
+    /// about the game, not about the two blocks a test author thought of.
+    #[test]
+    fn doubling_the_power_never_costs_more_ticks() {
+        for &block in ALL_BLOCKS {
+            let (weak, strong) = (block.ticks_to_break(3.0), block.ticks_to_break(6.0));
+            assert!(
+                weak >= strong,
+                "{block:?} took {weak:?} ticks at power 3 and {strong:?} at power 6"
+            );
+        }
+    }
+
+    /// The three inputs that break nothing, and the reason they answer [`None`]
+    /// rather than a very large number: a caller printing the count must not be able
+    /// to mistake "never" for "eventually". `dig` refuses exactly these.
+    #[test]
+    fn a_power_that_is_not_positive_and_finite_breaks_nothing() {
+        for power in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                Block::Stone.ticks_to_break(power),
+                None,
+                "power {power} was honoured"
+            );
         }
     }
 }

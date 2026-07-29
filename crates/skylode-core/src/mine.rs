@@ -4,7 +4,7 @@
 //! scale with a size level, from a tiny 3x3 starter mine up to a 20x10 mine at
 //! the top of the `MINE_SIZES` table.
 
-use crate::block::Block;
+use crate::block::{Block, TICKS_PER_HARDNESS};
 use crate::enchant::{EnchantType, Enchants, SPATIAL_PROC_ORDER};
 use crate::error::CoreError;
 use crate::mine_kind::MineKind;
@@ -38,31 +38,6 @@ const MINE_SIZES: [(u8, u8); 10] = [
 /// same bound to know how far its cost ramp runs. It read a local copy of the number
 /// before, and a copy is exactly what this constant exists to avoid.
 pub(crate) const MAX_SIZE_LEVEL: u32 = MINE_SIZES.len() as u32 - 1;
-
-/// How much [`mining_power`](crate::pickaxe::Pickaxe::mining_power) a block costs
-/// per point of [`hardness`](Block::hardness): a cell yields at
-/// `hardness * 30`, so it takes `ceil(30 * hardness / mining_power)` ticks.
-///
-/// This is Minecraft's, and it is the **unit conversion** between two scales that
-/// are not the same one — dig speed and hardness. `getDestroyProgress` reads
-/// `dig_speed / hardness / 30` per tick, breaking at `1.0`; rearranged so the
-/// progress counter carries the power rather than a fraction, the 30 lands here.
-/// Without it the two scales are read as one, and a *fresh Wooden pickaxe
-/// instamines Stone* — there is no progressive breaking left to speak of.
-///
-/// **Not a tunable, for the reason the batch-reset threshold is not one.** It is
-/// what makes `DECISIONS.md`'s "1:1 fidelity to Minecraft is kept for hardness"
-/// true in practice: the hardness table is only worth porting one-to-one if the
-/// break *times* come out one-to-one too, and this is the factor that decides
-/// that. Moving it does not tune the game, it revokes the decision. A balance pass
-/// that wants faster mining reaches for [`base_power`](crate::pickaxe::PickaxeTier::base_power),
-/// which is already Skylode's own curve.
-///
-/// Minecraft's other divisor — `100`, for mining without the right tool — has no
-/// counterpart here and never will: phase 3's mining gate *refuses* a block below
-/// the required tier rather than letting the player chip at it. One regime, one
-/// constant.
-const TICKS_PER_HARDNESS: f32 = 30.0;
 
 /// The highest richness level a mine can reach: 10 rungs, `0..=9`.
 ///
@@ -1679,6 +1654,13 @@ mod tests {
     /// Reads its own target rather than fixing one, so it holds for whichever cell
     /// the draw lands on — which is the only honest way to test a random target
     /// without pretending to know the seed's mind.
+    ///
+    /// **The expectation comes from [`Block::ticks_to_break`], not from the formula
+    /// written out again here**, which is what makes this the test that holds the
+    /// closed form and this loop together. It used to compute
+    /// `(hardness * TICKS_PER_HARDNESS / power).ceil()` inline — a second
+    /// implementation living in a test, and therefore one that could agree with
+    /// `dig` while both drifted away from what the Upgrades screen quotes.
     #[test]
     fn a_block_takes_the_ticks_its_hardness_and_the_pickaxe_agree_on() {
         let mut rng = rng();
@@ -1696,7 +1678,9 @@ mod tests {
         let Some(block) = mine.get(x, y) else {
             unreachable!("the target is a standing cell")
         };
-        let expected = (block.hardness() * TICKS_PER_HARDNESS / power).ceil() as u32;
+        let Some(expected) = block.ticks_to_break(power) else {
+            unreachable!("a finite, positive power always breaks a block eventually")
+        };
 
         let ticks = 1 + ticks_to_break(&mut mine, power, &mut rng);
 
