@@ -216,6 +216,24 @@ for chrome: the colour of a mark is *derived from* the mark, in one place, so it
 neither contradict its glyph nor appear without one. Colour is never the only thing
 carrying an answer — remove it entirely and the screen still says everything it said.
 
+**Three roles are applied to text as well as to a glyph, and they add no colours.**
+The table above is closed; what follows re-uses it.
+
+- **A price takes the hue of its own affordability mark** (§5.4.3). The colour is read
+  from the same table by the same lookup that colours the `✓ ~ ✗` in the pane, so it is
+  still *derived from* a glyph and still cannot appear without one — a `—` row and an
+  already-owned one yield nothing and stay in the default foreground. What is relaxed is
+  the *distance*: the glyph doubling it is elsewhere in the pane rather than in the same
+  run of characters. The mark scan runs after the tint, so a tinted row's own marks keep
+  their colours and a tint can never quietly recolour an answer.
+- **A block's label is muted**, which is the role's existing job — table headers — read
+  one level down: `Cost` introduces the answer and is not it.
+- **A toast is drawn in the tone of its news**: accent for neutral, and the three
+  verdict colours for a purchase, a shortage and a compress-first. A toast has no glyph
+  to double, so here the hue doubles the *sentence*, which still carries the answer
+  alone. What it buys is the three seconds: a refusal and a purchase were the same
+  picture, and the refusal is the one that has to be read before it expires.
+
 The **blast colour** for §5.9's proc flash is not in this table and remains open: it
 has to read as "not a material" against all 24 swatches, which is a judgement best
 made against a running grid.
@@ -634,6 +652,23 @@ Recorded when the screen was wired. The frames above are left as drawn.
   `Richness` · a size) then fills the pane exactly and pushes the mark column off the
   right edge. Widths are measured over the header and every row, which also means the
   Enchants table's `Level` column is narrow on a fresh run and wide at the cap.
+- **One blank column sits between the mark and the scrollbar, on all three sub-tabs.**
+  The three frames above disagree with each other: §5.4 leaves two columns there, §5.4.2
+  leaves none, and neither is reachable. Two does not fit — the widest Mines row is 32
+  columns against the 34 the pane has once the bar column is reserved, so a two-column
+  gutter plus the mark leaves 31 and pushes the mark off the pane, which is the same
+  budget the bullet above already spent. None is what was built first, and it draws `✗█`,
+  where the mark reads as part of the thumb. One is the only value all three sub-tabs
+  survive.
+- **The scrollbar's column is reserved on every sub-tab and drawn only where the list
+  overflows.** Reserving it only when needed made the whole mark column shift one column
+  left as the player moved from Pickaxe (46 rows, scrolls) to Enchants (6 rows, fits) —
+  a column of glyphs that jumps on a sub-tab change reads as a redraw fault rather than
+  as a layout. Enchants therefore ends in two blank columns rather than one, and no
+  thumb is drawn in the second.
+- **A price is drawn in the colour of its own affordability mark**, green, yellow or
+  red, and the `Cost` / `Chain` / `Effect` labels beside it are muted. §4.5 explains why
+  this is not a new entry in the chrome table.
 
 ### 5.5 Stats
 
@@ -1327,7 +1362,7 @@ flowchart TD
     C --> D["toast: Bought Netherite Pickaxe"]
 
     B -- "CompressFirst<br/>value is there, denomination is not" --> E["toast: Compress first —<br/>need 6 Compressed Iron, you have 2"]
-    B -- "Insufficient<br/>the ore is not there" --> F["toast: Not enough Iron —<br/>650 needed, 400 held"]
+    B -- "Insufficient<br/>the ore is not there" --> F["toast: Not enough Iron —<br/>6 Compressed + 50 needed, 4 Compressed held"]
 
     E --> G["3 Inventory"]
     G --> H["c: compress 4 by hand"]
@@ -1354,6 +1389,24 @@ so the return lands on the row they left.
 **Core reads.** `affordability` must carry **the shortfall per denomination** — "6
 Compressed Iron, you have 2" — not a bare variant. The query already computed it to
 reach its verdict.
+
+**Both branches are worded in the denominations the price is quoted in**, and the
+`Insufficient` one is not what the core hands over. That pass answers in **raw**, and
+correctly: *"is the ore there at all"* is a question with no denomination, and a player
+holding the value in either form has to pass it. But the pane the player is reading
+prices the same purchase as `1 Compressed Stone`, so a toast under it reading
+`100 Stone` is two numbers for one price with nothing on screen saying they are the
+same. The front-end re-splits both figures by the rule `CostLine` already uses — a
+denomination that rounds to nothing is dropped — so `100` reads `1 Compressed`, `650`
+reads `6 Compressed + 50`, and anything under a unit stays bare.
+
+**All four purchase doors say it the same way.** The pickaxe chain, the enchant ladder
+and a mine's two tracks were split across two announcement paths, one of which printed
+`CoreError`'s own sentence and so never passed through the thousands separator. They
+share one now. What stays on the core's wording is every refusal that is *not* about the
+purse — a capped enchant, a spent pickaxe, a mine this run never opened: there is no
+shortfall to word, and re-phrasing them would invent a shortage and send the player to a
+mine face instead of to `2 Mines`.
 
 ## 9. The keymap
 
