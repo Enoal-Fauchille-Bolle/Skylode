@@ -803,6 +803,7 @@ impl GameState {
                 kind: proc.kind,
                 origin: dug.cell,
                 cells: proc.cells.clone(),
+                broken: proc.broken.len(),
             });
         }
 
@@ -1186,6 +1187,19 @@ pub enum GameEvent {
         origin: (u8, u8),
         /// Every grid cell its shape covered.
         cells: Vec<(u8, u8)>,
+        /// How many blocks were standing in that shape and so fell.
+        ///
+        /// **Not `cells.len()`**, and the gap between the two is the point:
+        /// [`cells`](GameEvent::SpatialProc::cells) is the shape *including* ground
+        /// the swing had already cleared, which on a half-dug grid is most of it. A
+        /// front-end announcing `Nuke — 200 blocks` off the shape would be quoting a
+        /// number the inventory never sees.
+        ///
+        /// A count and not the blocks themselves: what the announcement needs is *how
+        /// many*, and the drops are already banked by the time this is read. Handing
+        /// over the [`Block`]s would let a front-end re-derive a payout it must not
+        /// compute.
+        broken: usize,
     },
     /// The Excavator substituted the impact block's drop with a Compressed unit.
     ExcavatorProc {
@@ -2065,10 +2079,12 @@ mod tests {
         );
     }
 
-    /// A spatial proc announces **which cells it covered**, not how many blocks it
-    /// broke. The front-end paints the shape, so a count would leave it re-deriving
-    /// the geometry — and the shape includes ground already dug, because a blast the
-    /// player watches must look like a blast.
+    /// A spatial proc announces **which cells it covered**, and separately how many
+    /// blocks stood in them. The front-end paints the shape, so a count alone would
+    /// leave it re-deriving the geometry — and the shape includes ground already dug,
+    /// because a blast the player watches must look like a blast. The count is what
+    /// the *sentence* under it needs, and the two answers are why there are two
+    /// fields.
     #[test]
     fn a_spatial_proc_announces_the_shape_it_covered() {
         let mut state = state();
@@ -2098,6 +2114,7 @@ mod tests {
             kind,
             origin,
             cells,
+            broken,
         }) = seen
         else {
             unreachable!("a maxed Explosive never fired in 2 000 swings")
@@ -2109,6 +2126,51 @@ mod tests {
             cells.iter().all(|&(x, y)| x < width && y < height),
             "a cell of the shape is off the grid"
         );
+        // The two counts are separate for a reason, and this is the cheap half of it:
+        // a shape can only ever cover *at least* what it brought down. The interesting
+        // half — that they genuinely diverge on a dug grid — is
+        // `a_blast_over_broken_ground_reports_fewer_blocks_than_cells`.
+        assert!(
+            broken <= cells.len(),
+            "a blast broke more blocks than it covered cells"
+        );
+    }
+
+    #[test]
+    fn a_blast_over_broken_ground_reports_fewer_blocks_than_cells() {
+        // **The number the toast prints, pinned.** `cells` is the shape and `broken`
+        // is what stood in it; they part company as soon as a swing blasts ground it
+        // has already cleared, which on a half-dug grid is most swings. Announcing
+        // the shape would quote the player a haul the inventory never received.
+        let mut state = state();
+        let mut enchants = instamining();
+        for _ in 0..10 {
+            assert!(
+                enchants
+                    .upgrade(EnchantType::Explosive, PickaxeTier::Netherite, World::End)
+                    .is_ok()
+            );
+        }
+        equip(&mut state, PickaxeTier::Netherite, enchants);
+
+        let mut narrowest = None;
+        for _ in 0..2_000 {
+            for event in state.tick(MINING) {
+                if let GameEvent::SpatialProc { cells, broken, .. } = event
+                    && broken < cells.len()
+                {
+                    narrowest = Some((cells.len(), broken));
+                }
+            }
+            if narrowest.is_some() {
+                break;
+            }
+        }
+
+        let Some((covered, broken)) = narrowest else {
+            unreachable!("2 000 swings never blasted a cell that was already a hole")
+        };
+        assert!(broken < covered);
     }
 
     /// **Fortune multiplies the loot and never the experience.** The rule is already
