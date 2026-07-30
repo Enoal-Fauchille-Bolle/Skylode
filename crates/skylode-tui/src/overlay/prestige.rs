@@ -19,7 +19,7 @@ use ratatui::{Frame, layout::Rect};
 use skylode_core::economy::Affordability;
 
 use crate::{
-    format::{denominations, justified, multiplier, prestige_rank, roman},
+    format::{denominations, holding, justified, multiplier, prestige_rank, roman},
     view::PrestigeView,
 };
 
@@ -44,12 +44,17 @@ const FIELD_WIDTH: usize = 12;
 /// is `0` before the first prestige and `1 200` long after, and a price is now two
 /// denominations rather than one total, so the column is a **pad** here.
 ///
-/// **One column for both rows, where the frame drew two.** It sits seven columns right
-/// of the frame's, because the widest left-hand entry is now
+/// **One column for both rows, where the frame drew two.** It sits six columns right of
+/// the frame's, because the widest left-hand entry is now
 /// `Cost  65 Compressed + 40 Amethyst` — and having `Multiplier` and `Held` start
 /// together is worth more than either matching a count taken before the price was
 /// split. Recorded in `docs/UI.md` §6.8.1.
-const COLUMN: usize = 36;
+///
+/// One column *past* that widest entry, so the flush-right `✓`/`✗` keeps a gap from the
+/// figure beside it. A purse absurd enough to close that gap — a million raw — meets
+/// [`justified`]'s overflow rather than a panic, which is the same graceful end every
+/// counted width in this crate has.
+const COLUMN: usize = 35;
 
 /// The writable width inside the 68-column box: two borders and two padding columns.
 ///
@@ -81,11 +86,17 @@ pub fn render_preview(frame: &mut Frame, area: Rect, view: &PrestigeView) {
         multiplier(view.multiplier_permille),
         multiplier(view.next_multiplier_permille),
     );
-    // `Cost` and `Held` in the *same* denominations, because they are compared by eye:
-    // a total against a split would read as two different questions.
+    // `Cost` and `Held` in the *same* two denominations, because the whole question on
+    // this line is whether one fits the other. They come from different places on
+    // purpose: the price is a total the till splits, the purse is two counts read off
+    // the inventory — see `format::holding` for why the second must not be computed
+    // like the first.
     let costs = format!(" Cost  {} {material}", denominations(view.cost));
     let price = justified(
-        &format!("{costs:<COLUMN$}Held  {}", denominations(view.held)),
+        &format!(
+            "{costs:<COLUMN$}Held  {}",
+            holding(view.held_compressed, view.held_raw)
+        ),
         mark,
         BODY_WIDTH,
     );
@@ -249,12 +260,18 @@ mod tests {
     }
 
     /// The same trade with both gates open and the price met.
+    ///
+    /// The purse is set in the **shape** the price is quoted in, not as a total: that
+    /// is what `Affordable` means, and a fixture that held the value some other way
+    /// would be describing a run the till refuses.
     fn ready() -> PrestigeView {
         PrestigeView {
             lock: skylode_core::prestige::lock(50, PickaxeTier::Netherite),
             tier: PickaxeTier::Netherite,
             level: 50,
             held: 6_540,
+            held_compressed: 65,
+            held_raw: 40,
             verdict: Affordability::Affordable,
             ..locked()
         }
@@ -274,6 +291,29 @@ mod tests {
         // Unaffordable, so the honest last line names the progression owed.
         assert!(frame.contains("short of Netherite"), "{frame}");
         assert!(frame.contains("Lv 23 of 50"), "{frame}");
+    }
+
+    /// **The purse is read, never recomputed.** A player sitting on 20 000 raw Amethyst
+    /// holds *no* Compressed units, and the value re-split as a price would claim 200 of
+    /// them — the exact opposite of the truth, on the one line whose job is to explain
+    /// why the trade is refused.
+    #[test]
+    fn a_purse_of_raw_ore_is_not_reported_as_compressed_units() {
+        let view = PrestigeView {
+            lock: skylode_core::prestige::lock(50, PickaxeTier::Netherite),
+            tier: PickaxeTier::Netherite,
+            level: 50,
+            held: 20_000,
+            held_compressed: 0,
+            held_raw: 20_000,
+            verdict: Affordability::CompressFirst(Vec::new()),
+            ..locked()
+        };
+        let frame = crate::overlay::render_to_string(|f, a| render_preview(f, a, &view));
+        assert!(frame.contains("Held  0 Compressed + 20 000"), "{frame}");
+        assert!(!frame.contains("200 Compressed"), "{frame}");
+        // And the closing line names the loop that fixes it.
+        assert!(frame.contains("wrong denomination"), "{frame}");
     }
 
     /// The departure from the frame, asserted rather than left to a doc note: the

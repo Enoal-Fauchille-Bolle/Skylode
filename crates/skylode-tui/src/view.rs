@@ -853,9 +853,24 @@ pub struct PrestigeView {
     /// The next rank's price as a raw total, split for display by
     /// [`denominations`](crate::format::denominations).
     pub cost: u32,
-    /// How much of `material` the player holds, counted in raw whatever it is stored
-    /// as ([`Inventory::raw_value`]).
+    /// The **value** of the `material` the player holds, counted in raw whatever it is
+    /// stored as ([`Inventory::raw_value`]).
+    ///
+    /// Only ever used as arithmetic — the shortfall the closing line quotes. It must
+    /// **not** be printed through [`denominations`](crate::format::denominations): a
+    /// total re-split that way reports what a *price* of that size would be owed in,
+    /// so a purse of 20 000 raw reads as `200 Compressed`, which the player holds none
+    /// of. That is what the pair below is for.
     pub held: u32,
+    /// How many Compressed units of `material` are actually in the inventory.
+    pub held_compressed: u32,
+    /// How many raw items of it are actually in the inventory.
+    ///
+    /// Carried beside [`held`](PrestigeView::held) rather than derived from it, because
+    /// it *cannot* be derived from it: `raw_value` is a sum, and a sum does not remember
+    /// its terms. The two denominations are what the till reads and what the player is
+    /// refused on, so they are what the box prints.
+    pub held_raw: u32,
     /// What the till would say to that price right now.
     ///
     /// Carried whole rather than as a mark, because §6.8's closing line names the
@@ -2719,6 +2734,8 @@ fn sample_prestige() -> PrestigeView {
         material: Material::Amethyst,
         cost,
         held: 0,
+        held_compressed: 0,
+        held_raw: 0,
         // The frame's own `✗`: the player holds nothing, so the ore is missing
         // outright rather than being held in the wrong denomination.
         verdict: Affordability::Insufficient(vec![Shortfall {
@@ -2773,6 +2790,8 @@ fn prestige_view(player: &Player) -> PrestigeView {
         material,
         cost: total,
         held: player.get_inventory().raw_value(material),
+        held_compressed: player.get_inventory().count(Item::Compressed(material)),
+        held_raw: player.get_inventory().count(Item::Raw(material)),
         verdict: economy::affordability(player.get_inventory(), &cost),
         lock: player.prestige_lock(),
         tier: pickaxe.get_tier(),

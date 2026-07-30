@@ -844,7 +844,7 @@ fn tick(&mut self, input: Input) -> Vec<Event>   // phase 7
 `Blocks broken` and `Playtime` are lifetime totals that **survive prestige**;
 `This run` must not. Three counters, two lifetimes.
 
-#### 5.5.1 Two departures on the prestige rows
+#### 5.5.1 Three departures on the prestige rows
 
 Recorded when the prestige flow was wired; the three counters and the two right-hand
 panels are still fixture, and the frame above is left as drawn.
@@ -860,6 +860,14 @@ panels are still fixture, and the frame above is left as drawn.
   two things that could go, the denominations are the ones that decide whether the till
   accepts. The row costs one line the panel has spare and reads as the unit both
   figures below it are counted in.
+- **`Held` is the purse as it stands, not the value re-split.** `Inventory::raw_value`
+  answers *how much is this worth in raw*, which is a sum and does not remember its
+  terms — so re-splitting it the way a price is split reports 20 000 raw Amethyst as
+  `200 Compressed`, which the player owns none of, on the one line whose job is to
+  explain a refusal. The two counts are read off the inventory instead and both are
+  kept, `0 Compressed + 20 000`, because the line exists to be compared against a price
+  quoted in both. Those two rows also keep a **one-column** right margin where the
+  counters keep three: at twenty-one columns of figure they do not fit at the wider one.
 
 ### 5.6 Levels
 
@@ -1240,8 +1248,9 @@ somewhere the lock no longer reports.
 
 Recorded when the box was wired to a real run. The frame above is left as drawn.
 
-- **The price is quoted in two denominations**, here and in §5.5's panel, for the
-  reason §5.5.1 gives: the total is not what the till accepts.
+- **The price is quoted in two denominations and the purse is read rather than
+  re-split**, here and in §5.5's panel, for the reasons §5.5.1 gives: the total is not
+  what the till accepts, and a purse is not a price.
 - **Both right-hand columns are placed by a pad, not by counted spaces, and they now
   share one column.** The frame spells the gaps out, which only holds while every
   figure keeps the width it was drawn at — a rank is `0` before the first prestige and

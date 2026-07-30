@@ -23,7 +23,7 @@ use skylode_core::{tunables::LEVEL_CAP, world::World};
 
 use crate::{
     action::Action,
-    format::{denominations, grouped, justified, multiplier, prestige_rank, xp_progress},
+    format::{denominations, grouped, holding, justified, multiplier, prestige_rank, xp_progress},
     screen::{panel, window},
     theme,
     view::View,
@@ -39,6 +39,16 @@ const PROGRESSION_WEIGHT: u16 = 30;
 
 /// The right column's share — the other 50 of the counted 80.
 const RIGHT_COLUMN_WEIGHT: u16 = 50;
+
+/// The margin the two price rows keep instead of [`RIGHT_MARGIN`].
+///
+/// **Two columns tighter, and the panel's width is the whole argument.** `Held` can
+/// read `0 Compressed + 20 000` — twenty-one columns against a label and twenty-eight
+/// of panel — so at the ordinary margin the value collides with its own label. These
+/// two rows therefore sit one column off the border where the counters sit three. The
+/// alternative was quoting the purse as a single total, which is the lie
+/// [`holding`] exists to refuse.
+const PRICE_MARGIN: usize = 1;
 
 /// Draws the three panels and the footer.
 pub fn render(frame: &mut Frame, area: Rect, view: &View) {
@@ -123,8 +133,16 @@ fn progression(frame: &mut Frame, area: Rect, view: &View) {
     // row the panel has and reads as the unit both figures are counted in.
     // `docs/UI.md` §5.5.1.
     lines.push(inline("Price in", p.material.name()));
-    lines.push(stat("Cost", &denominations(p.cost), width));
-    lines.push(stat("Held", &denominations(p.held), width));
+    lines.push(price_row("Cost", &denominations(p.cost), width));
+    // **The purse, not a re-split of its value.** `denominations` answers *"what
+    // would a price of this size be owed in"*, which is a different question and the
+    // wrong one here: a player holding 20 000 raw would read `200 Compressed`, own
+    // none, and be refused with no way to see why.
+    lines.push(price_row(
+        "Held",
+        &holding(p.held_compressed, p.held_raw),
+        width,
+    ));
     lines.push(Line::from(""));
     lines.push(stat("Blocks broken", &grouped(s.blocks_broken), width));
     lines.push(stat("Playtime", &s.playtime, width));
@@ -192,6 +210,16 @@ fn stat(label: &str, value: &str, width: usize) -> Line<'static> {
         &format!(" {label}"),
         value,
         width.saturating_sub(RIGHT_MARGIN),
+    ))
+}
+
+/// A [`stat`] row that keeps [`PRICE_MARGIN`] instead of [`RIGHT_MARGIN`] — the two
+/// rows whose value is a two-denomination figure and does not fit at the wider one.
+fn price_row(label: &str, value: &str, width: usize) -> Line<'static> {
+    Line::from(justified(
+        &format!(" {label}"),
+        value,
+        width.saturating_sub(PRICE_MARGIN),
     ))
 }
 

@@ -99,6 +99,30 @@ pub fn denominations(total: u32) -> String {
     }
 }
 
+/// What the player **actually holds**, in the two denominations they hold it in.
+///
+/// **Not [`denominations`], and confusing the two is a lie about the purse.** That one
+/// takes a raw *total* and splits it the way a price is quoted, which is right for a
+/// price — a `Cost` is computed from a total and owed in the split. A holding is not
+/// computed from anything: the player has some Compressed units and some raw items, and
+/// [`Inventory::raw_value`] adds them up into a value that no longer says which. Passing
+/// that value through `denominations` reports 20 000 raw Amethyst as `200 Compressed`,
+/// which is the exact opposite of the truth and hides the very refusal — *you hold the
+/// value in the wrong denomination* — that the line is there to explain.
+///
+/// **Both parts are kept, where `denominations` drops a zero**, for the same reason: the
+/// line exists to be compared against a price quoted in both, so `0 Compressed + 20 000`
+/// is the whole answer and `20 000` is half of it. An empty purse is the one exception —
+/// `0 Compressed + 0` states nothing twice.
+///
+/// [`Inventory::raw_value`]: skylode_core::inventory::Inventory::raw_value
+pub fn holding(compressed: u32, raw: u32) -> String {
+    if compressed == 0 && raw == 0 {
+        return "0".to_owned();
+    }
+    format!("{} Compressed + {}", grouped(compressed), grouped(raw))
+}
+
 /// Roman numerals `I`..=`XV` — exactly the range an Efficiency level can take, since
 /// [`PickaxeTier::efficiency_cap`] tops out at 15 on Netherite.
 const ROMAN: [&str; 15] = [
