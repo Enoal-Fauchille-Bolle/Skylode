@@ -689,6 +689,27 @@ impl Mine {
         })
     }
 
+    /// Drops the progress owed to the targeted cell, leaving the aim where it is.
+    ///
+    /// The **release** half of active-continuous mining (`docs/MECHANICS.md`): letting
+    /// the mine key up does not merely stop the counter, it forfeits it. A mine cannot
+    /// know whether a key is down, so this only does the forgetting and
+    /// [`tick`](crate::game::GameState::tick) owns the when — the same split
+    /// [`dig`](Mine::dig) makes about *rate*.
+    ///
+    /// **The target survives, deliberately.** Dropping it too would have the next
+    /// swing draw a fresh one, and a mine's cells are not interchangeable: tapping the
+    /// key until the value cell came up would be a way to fish for it. Keeping the aim
+    /// also means this **draws nothing**, which is what lets a released tick stay
+    /// inert in the generator's sequence — the property
+    /// [`draw_target`](Mine::draw_target) protects one draw at a time.
+    ///
+    /// Idempotent, so the caller may run it on *every* released tick rather than
+    /// detecting the edge — an edge is state, and state a save would have to carry.
+    pub(crate) fn forfeit_progress(&mut self) {
+        self.break_progress = 0.0;
+    }
+
     /// Refills the grid if the last cell is gone, reporting whether it did.
     ///
     /// The **batch reset**, hoisted out of [`dig`](Mine::dig) so that a whole swing

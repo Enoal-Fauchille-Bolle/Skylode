@@ -155,6 +155,12 @@ remaining cell of the mine grid. On break, the next random cell is picked. Every
 mine holds two kinds of cell, so the targeted cell's material always decides the
 drop (see [mine richness](#mine-richness)).
 
+The aim is re-drawn only when the cell it points at is **gone** — broken, or taken by
+a blast. Notably it is *not* re-drawn when the player releases Space: since the two
+kinds of cell are not worth the same, a release that re-rolled the target would make
+tapping the key a way to fish for the valuable one. Releasing costs the progress and
+keeps the aim (see [active-continuous mining](#active-continuous-mining)).
+
 ### Instamine
 
 When `mining_power >= hardness * 30`, a block breaks in a single tick. This is not a
@@ -266,8 +272,24 @@ rather than `StdRng` because only the former guarantees the same sequence across
 
 The player holds Space to mine. This is not spam-tapping and not Melvor-style
 idle. While Space is held, `break_progress += mining_power` each tick; releasing
-stops it. Idle accrual comes only from the auto-miner (see below), which is a
-separate system.
+**forfeits** it — the counter drops to 0, and the block the player was chipping at
+stands whole again. That is what makes this active-*continuous* rather than merely
+active: if a release only paused the counter, a run of taps would mine at the same
+rate as a hold, and the interaction the whole game is built on would be optional.
+The **aim** survives the release (see [one block at a time](#one-block-at-a-time)).
+Idle accrual comes only from the auto-miner (see below), which is a separate
+system.
+
+Two consequences worth stating rather than discovering. The cost of a release
+scales with the block: at 30 ticks per point of hardness, letting go on an Obsidian
+can lose 75 seconds of work, which is deliberate — the hardest cells are where
+holding the key has to mean something. And the **release is only as prompt as the
+terminal allows**: under the kitty keyboard protocol it is exact, everywhere else a
+key is "still down" for `HOLD_WINDOW` (1100 ms) after the last event, so a player on
+a legacy terminal can tap once a second and lose nothing. That is the same two-layer
+answer already recorded for detecting a hold at all (see
+[SYSTEMS.md](SYSTEMS.md#keyboard-input)), and it is a floor on the punishment, never
+a false one: no terminal reports a release that did not happen.
 
 ### The grid is the model
 

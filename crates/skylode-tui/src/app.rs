@@ -1783,13 +1783,18 @@ mod tests {
 
         app.advance(pressed);
         app.advance(pressed + HOLD_WINDOW - Duration::from_millis(1));
-        let inside = app.state.current_mine().break_ratio();
-        assert!(inside > 0.0, "the key was dropped inside its own window");
+        assert!(
+            app.state.current_mine().break_ratio() > 0.0,
+            "the key was dropped inside its own window"
+        );
 
+        // Zero rather than "unchanged", because the core now *forfeits* the block in
+        // progress on a released tick: a swing that had outlived the window would
+        // leave this rising instead.
         app.advance(pressed + HOLD_WINDOW + SIM_PERIOD);
         assert_eq!(
             app.state.current_mine().break_ratio(),
-            inside,
+            0.0,
             "the swing outlived the hold window"
         );
     }
@@ -1802,16 +1807,18 @@ mod tests {
         let mut app = session();
         app.update(Action::MinePressed);
         app.advance(step_due(&app));
-        let mined = app.state.current_mine().break_ratio();
-        assert!(mined > 0.0);
+        assert!(app.state.current_mine().break_ratio() > 0.0);
 
         app.update(Action::MineReleased);
         app.advance(step_due(&app));
 
         assert_eq!(app.last_mine_key, None);
+        // Same probe as the window's own test, and the same reason: the step that ran
+        // after the release was an idle one, and an idle step drops the progress it is
+        // no longer earning.
         assert_eq!(
             app.state.current_mine().break_ratio(),
-            mined,
+            0.0,
             "the pickaxe swung after the key came up"
         );
     }

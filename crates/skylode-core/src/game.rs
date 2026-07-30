@@ -888,6 +888,11 @@ impl GameState {
     /// The order inside is the swing's, and every step of it is load-bearing:
     /// **boost → impact → procs → XP → loot → refill**. See
     /// [`resolve_swing`](GameState::resolve_swing).
+    ///
+    /// A tick with the key up is not a slower swing but **no** swing, and it
+    /// [forfeits](Mine::forfeit_progress) the block in progress: a release costs the
+    /// player what they had chipped, which is what makes holding the key the
+    /// interaction rather than tapping it.
     pub fn tick(&mut self, input: Input) -> Vec<GameEvent> {
         let mut events = Vec::new();
 
@@ -911,6 +916,18 @@ impl GameState {
 
         if input.space_held {
             self.resolve_swing(&mut events);
+        } else {
+            // A release forfeits the block in progress (`docs/MECHANICS.md`), and this
+            // is the whole of that rule. Unconditional rather than edge-triggered:
+            // [`Mine::forfeit_progress`] is idempotent and draws nothing, so a
+            // hundred idle ticks cost what one costs and neither moves the generator.
+            // Detecting the *edge* would mean remembering the previous input — a
+            // field, in the save, that the state it guards can be derived without.
+            //
+            // No event: the Break gauge falling to 0 % on a block that is still
+            // named is the announcement, and a toast per key release would bury the
+            // ones that carry news.
+            self.mine.forfeit_progress();
         }
 
         events
@@ -2285,6 +2302,44 @@ mod tests {
         assert_eq!(state.current_mine().break_ratio(), 0.0, "progress carried");
     }
 
+    /// **A release is not a pause: the block in progress is forfeit.** Holding the key
+    /// is the interaction (`docs/MECHANICS.md`), so letting it up has to cost
+    /// something, or a hold and a series of taps would mine at the same rate.
+    ///
+    /// Two things it must *not* do, and both are the assertion rather than the
+    /// afterthought. The **aim survives**: re-rolling it would let a player tap the
+    /// key until the value cell came up, which is a strategy nobody chose. And the
+    /// **generator does not move**, so a run's dice still cannot depend on how long
+    /// its player sat in a menu.
+    #[test]
+    fn releasing_the_mine_key_forfeits_the_block_in_progress() {
+        let mut state = state();
+        assert!(state.select_mine(MineKind::Coal).is_ok());
+
+        // A bare Wooden pickaxe against Coal: five ticks of progress and no break.
+        for _ in 0..5 {
+            assert!(state.tick(MINING).is_empty());
+        }
+        let aim = state.current_mine().get_target();
+        assert!(aim.is_some(), "nothing was being dug");
+        assert!(state.current_mine().break_ratio() > 0.0, "no progress made");
+        let before = next_draws(&state);
+
+        state.tick(IDLE);
+
+        assert_eq!(
+            state.current_mine().break_ratio(),
+            0.0,
+            "a released key kept the progress it was no longer earning"
+        );
+        assert_eq!(
+            state.current_mine().get_target(),
+            aim,
+            "the release re-rolled the aim"
+        );
+        assert_eq!(next_draws(&state), before, "the release drew from the rng");
+    }
+
     /// **The swing's order, proven at its hardest point.** A maxed Nuke can clear
     /// the whole grid on one swing; the mine must still come back full at the end of
     /// that same tick, and every cell it took must have been paid for. A refill
@@ -3114,7 +3169,10 @@ mod tests {
             let mut events = 0;
             for tick in 0..500 {
                 // A duty cycle rather than a held key: the released ticks are what
-                // prove an idle tick really is inert in the sequence.
+                // prove an idle tick really is inert *in the sequence*. Inert there
+                // and nowhere else — a release forfeits the block in progress, which
+                // is state rather than a draw, and it is precisely why this duty
+                // cycle's totals differ from a held key's.
                 events += state
                     .tick(Input {
                         space_held: tick % 4 != 3,
