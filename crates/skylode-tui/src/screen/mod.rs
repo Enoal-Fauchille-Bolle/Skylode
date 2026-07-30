@@ -222,15 +222,18 @@ impl Screen {
     ///
     /// It wraps because the design calls the tabs a *ring* — `Tab` from `Levels`
     /// must reach `Mine` without a `Shift+Tab` marathon back through five tabs.
+    ///
+    /// Through [`cursor::step_in`](crate::cursor::step_in), which is now the crate's
+    /// one step: it could not be while the lists clamped, since the helper *was* the
+    /// clamp and a ring had to spell its own `%` out. The dependency points the right
+    /// way — `cursor` knows nothing of `screen`.
     pub fn next(self) -> Self {
-        let next = (self.index() + 1) % Self::ALL.len();
-        Self::ALL[next]
+        crate::cursor::step_in(&Self::ALL, self, 1)
     }
 
     /// The previous screen, wrapping the other way.
     pub fn prev(self) -> Self {
-        let prev = (self.index() + Self::ALL.len() - 1) % Self::ALL.len();
-        Self::ALL[prev]
+        crate::cursor::step_in(&Self::ALL, self, -1)
     }
 
     /// Draws this screen into `area`.

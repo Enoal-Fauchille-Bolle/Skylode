@@ -38,20 +38,22 @@ impl UpgradeTab {
 
     /// The next sub-tab, **wrapping** past the last back to the first.
     ///
-    /// Wrapping, where every list on these screens clamps — and the distinction is
-    /// the same one [`step_in`] is built around. The three sub-tabs are equivalent
-    /// destinations, exactly like the six-screen ring: there is no progression order
-    /// between the pickaxe and the mines, so passing the end of them is not a jump
-    /// across anything.
+    /// Wrapping like everything else that is stepped — this used to be the exception
+    /// the lists were contrasted against, and [`step_in`] now carries the one rule they
+    /// share. The three sub-tabs were always the easy case for it: they are equivalent
+    /// destinations, exactly like the six-screen ring, so passing the end of them was
+    /// never a jump across anything.
+    ///
+    /// Through [`step_in`] rather than its own `%`, which it could not be while the
+    /// lists clamped: the helper *was* the clamp, so a ring had to do the arithmetic
+    /// itself. Now there is one wrap in the crate and this is a name for a direction.
     pub fn next(self) -> Self {
-        let index = Self::ALL.iter().position(|&tab| tab == self).unwrap_or(0);
-        Self::ALL[(index + 1) % Self::ALL.len()]
+        step_in(&Self::ALL, self, 1)
     }
 
     /// The previous sub-tab, wrapping the other way.
     pub fn prev(self) -> Self {
-        let index = Self::ALL.iter().position(|&tab| tab == self).unwrap_or(0);
-        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+        step_in(&Self::ALL, self, -1)
     }
 }
 
