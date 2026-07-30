@@ -844,6 +844,23 @@ fn tick(&mut self, input: Input) -> Vec<Event>   // phase 7
 `Blocks broken` and `Playtime` are lifetime totals that **survive prestige**;
 `This run` must not. Three counters, two lifetimes.
 
+#### 5.5.1 Two departures on the prestige rows
+
+Recorded when the prestige flow was wired; the three counters and the two right-hand
+panels are still fixture, and the frame above is left as drawn.
+
+- **`Cost` and `Held` are quoted in two denominations, not as a flat total.** A
+  prestige is paid through the same till as every other purchase, so its price is a
+  `Cost` split into `65 Compressed + 40` — and a player holding 6 540 *raw* Amethyst is
+  genuinely refused. The flat total would let §6.8's preview print a `✗` beside a `Held`
+  that matches the `Cost` and say nothing about why, which is the one confusion §8.4's
+  whole loop exists to prevent.
+- **The material is named once, on a `Price in` row of its own.** Forced by the
+  panel's width: 28 columns cannot hold `Cost  65 Compressed + 40 Amethyst`, and of the
+  two things that could go, the denominations are the ones that decide whether the till
+  accepts. The row costs one line the panel has spare and reads as the unit both
+  figures below it are counted in.
+
 ### 5.6 Levels
 
 ```text
@@ -1219,6 +1236,30 @@ of them answers the wrong question. **Two gates, so two clauses** — the line i
 from `PrestigeLock`'s two `Option`s, and a third sentence would have to come from
 somewhere the lock no longer reports.
 
+#### 6.8.1 Four departures from this frame
+
+Recorded when the box was wired to a real run. The frame above is left as drawn.
+
+- **The price is quoted in two denominations**, here and in §5.5's panel, for the
+  reason §5.5.1 gives: the total is not what the till accepts.
+- **Both right-hand columns are placed by a pad, not by counted spaces, and they now
+  share one column.** The frame spells the gaps out, which only holds while every
+  figure keeps the width it was drawn at — a rank is `0` before the first prestige and
+  five digits long after, and the price is now a split rather than a total. `Multiplier`
+  and `Held` therefore start together, seven columns right of where the frame put
+  `Multiplier` alone.
+- **A rank prints as `0` before the first prestige**, where the shared Roman helper
+  answers `?`. That helper is right about an *enchant* at level 0 — it is one the player
+  does not own — and wrong about a rank of 0, which is where everyone starts. Past `XV`
+  the rank is printed in digits, because it is unbounded by design and refusing to name
+  it would be reporting a cap that does not exist.
+- **A row is dropped when its level is 0, and the closing line changes source once the
+  gates are open.** `Efficiency 0 → 0` bills the player for a loss they cannot take, so
+  the row is absent; and the lock has nothing left to say once both gates are met, which
+  frees the frame's last line for what the till would refuse instead — the ore still
+  owed, or the value held in the wrong denomination. Two gates and two refusals, never
+  both at once.
+
 ### 6.9 Prestige confirm
 
 ```text
@@ -1240,6 +1281,14 @@ menu because a keystroke cannot be wrong; here a keystroke *being* possible is t
 point. The whole design — free compression, a reversible dial, `Not yet` — trains the
 player that nothing is final. This confirm must **break** that training, and a
 `No / Yes` is the widget the training was built on.
+
+**The field takes eight characters and no more**, and it echoes them exactly as typed
+— no upper-casing, no swallowing of a wrong letter. Both follow from the same argument:
+if a keystroke could not be wrong here, this would be a `No / Yes` with extra steps.
+`Backspace` is the way back, which is what lets the cap be that tight. **`Enter` on a
+wrong word is silent**: the field is on screen beside the word it was asked for, and
+that is a refusal the player can already see — the rule the richness dial's ceiling
+follows.
 
 ### 6.10 Settings
 
