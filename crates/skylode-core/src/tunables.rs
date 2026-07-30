@@ -225,10 +225,21 @@ pub const MILLIS_PER_SECOND: u64 = 1_000;
 /// milliblocks with a carried remainder make a seven-day absence and a twenty-tick
 /// stretch compose *exactly*, so `100 × credit(1)` and `credit(100)` agree.
 ///
-/// 11 is 0.55 blocks a second, the rate `organization/UI-EN.md` §5.7.4's offline
-/// summary is drawn with. Provisional: the MVP auto-miner has no tiers and no
-/// purchases, so this single number is the whole system, and phase 10 sets it
-/// against the manual rate it is meant to sit under.
+/// **11 milliblocks at [`TICKS_PER_SECOND`] is 0.22 blocks a second** — one block
+/// roughly every four and a half seconds, which is what a player watching a fresh
+/// Stone mine actually sees. This line used to claim 0.55, a figure that only holds
+/// at 50 ticks a second; the rate had been quoted against a tick length the game does
+/// not have. `docs/UI.md` §5.7.4's offline-summary wireframe quotes `0.56 blocks/s`
+/// and is stale by the same factor; the screen that replaces it must compute the
+/// figure from this constant rather than transcribe one.
+///
+/// **It runs from the first tick, unconditionally**, and that is a decision rather
+/// than an oversight: there is no unlock to buy and no level to reach, so a new player
+/// is earning ore before they have swung at anything. See `docs/DECISIONS.md`.
+///
+/// Provisional: the MVP auto-miner has no tiers and no purchases, so this single
+/// number is the whole system, and phase 10 sets it against the manual rate it is
+/// meant to sit under.
 pub const AUTO_MINER_MILLIBLOCKS_PER_TICK: u64 = 11;
 
 /// How many milliblocks make one block: the denominator of
