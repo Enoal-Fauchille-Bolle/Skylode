@@ -15,8 +15,12 @@ large change, so effort stays aligned with the roadmap.
 ```sh
 cargo build --release   # build the workspace
 cargo test              # run the test suite
-cargo run -p skylode-tui  # run the front-end (currently a stub)
+cargo run -p skylode-tui  # play it: Space mines, q quits
 ```
+
+A debug build also carries a **dev menu** — ore out of nothing, free upgrades, a time
+skip — behind two gates: `SKYLODE_DEV=1 cargo run -p skylode-tui`, then `` ` ``. It is
+compiled out of `--release` entirely. See [docs/DEV-MENU.md](docs/DEV-MENU.md).
 
 ## Code style
 
@@ -90,3 +94,6 @@ rarely, and never on `main`.
 Before proposing gameplay or systems changes, read the design documents in
 [docs/](docs/), especially [DECISIONS.md](docs/DECISIONS.md), which records what
 has already been settled or rejected and why.
+
+To reach a state past the first hour of a run without playing to it, use the dev menu
+([docs/DEV-MENU.md](docs/DEV-MENU.md)).
