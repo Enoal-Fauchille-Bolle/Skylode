@@ -475,14 +475,17 @@ pub fn pickaxe_tier_cost(from: PickaxeTier) -> Cost {
     Cost::single(pickaxe_material(from), upgrade_curve(step))
 }
 
-/// The material an enchant `kind` is bought with in `world`, or `None` for
-/// [`Efficiency`](EnchantType::Efficiency) — which is a pickaxe upgrade, priced by
+/// The material the `level`-th level of an enchant `kind` is bought with, or `None`
+/// for [`Efficiency`](EnchantType::Efficiency) — which is a pickaxe upgrade, priced by
 /// [`pickaxe_efficiency_cost`], not an enchant-shop purchase.
 ///
-/// [`Fortune`](EnchantType::Fortune) is Emerald, its own currency, in every world; the
-/// five specials are the world's [`enchant_material`](World::enchant_material),
-/// climbing Lapis → Quartz → Amethyst as the cap climbs with the world.
-fn enchant_material(kind: EnchantType, world: World) -> Option<Material> {
+/// [`Fortune`](EnchantType::Fortune) is Emerald, its own currency, at every level; the
+/// five specials are the [enchant material](World::enchant_material) of the world whose
+/// **band the level falls in** — Lapis for 1–3, Quartz for 4–6, Amethyst for 7–10 —
+/// which is [`World::for_enchant_level`]'s whole subject. Keyed by the level and not by
+/// where the player stands, exactly like [`enchant_fuel`]: the two lines of one price
+/// cannot answer to different clocks.
+fn enchant_material(kind: EnchantType, level: u8) -> Option<Material> {
     match kind {
         EnchantType::Efficiency => None,
         EnchantType::Fortune => Some(Material::Emerald),
@@ -490,7 +493,7 @@ fn enchant_material(kind: EnchantType, world: World) -> Option<Material> {
         | EnchantType::Jackhammer
         | EnchantType::Nuke
         | EnchantType::Excavator
-        | EnchantType::Haste => Some(world.enchant_material()),
+        | EnchantType::Haste => Some(World::for_enchant_level(level).enchant_material()),
     }
 }
 
@@ -555,8 +558,19 @@ pub(crate) fn enchant_fuel(level: u8) -> Option<(Material, Material)> {
 /// spanning a band that no longer exists.
 const END_ENCHANT_SPAN: u32 = 3;
 
-/// The cost of the next level of enchant `kind` in `world`, given the level held
-/// — or `None` for Efficiency, which the pickaxe path prices instead.
+/// The cost of the next level of enchant `kind`, given the level held — or `None` for
+/// Efficiency, which the pickaxe path prices instead.
+///
+/// **A pure function of the enchant and the level, and the absence of a `World`
+/// parameter is the point.** It used to take the player's highest unlocked world and
+/// price the principal in *that* world's material, which made a level 1 bought after
+/// the Nether opened cost Quartz — while its two fuel lines, keyed by the level, still
+/// asked for Stone and Coal. One price, two clocks. `docs/MECHANICS.md` keys the whole
+/// thing to the level (*"Overworld enchants use Lapis (cap 3)"* names a band of
+/// levels), so the principal now asks [`World::for_enchant_level`] and the caller's
+/// world is left with the one job it should have had all along: the
+/// [cap](World::enchant_cap), enforced in [`buy_enchant`], which decides how far the
+/// player may climb and not what the climb costs.
 ///
 /// Three shapes, and each is the shape its own materials force:
 ///
@@ -564,10 +578,10 @@ const END_ENCHANT_SPAN: u32 = 3;
 ///   the one enchant whose material is keyed to neither the world nor the tier, so
 ///   there is no "current tier's ore" for it to consume; a fuel line here was an
 ///   accident of pricing every enchant through one path.
-/// - **The five specials, levels 1–6: three lines.** The world's enchant material,
-///   plus the [pair of ores](enchant_fuel) of that level — 50 % / 35 % / 15 % of one
-///   total. The fuel ores come from the mines the player is working *now*, which is
-///   what makes a dimension's own mines matter while the player is in it.
+/// - **The five specials, levels 1–6: three lines.** The enchant material of the
+///   level's own band, plus the [pair of ores](enchant_fuel) of that level — 50 % /
+///   35 % / 15 % of one total. Both lines slide up the ladder together, so a rung is
+///   priced in what the player was mining when that rung was theirs to buy.
 /// - **The five specials, levels 7–10: two lines.** The End holds one mine, and its
 ///   rare cell *is* the enchant material, so a third line would be a second line of
 ///   Amethyst — which [`Cost`] forbids by construction. The total splits between End
@@ -578,10 +592,10 @@ const END_ENCHANT_SPAN: u32 = 3;
 /// on top would make the quoted curve a lie about what the step costs, and it would
 /// leave the four composite prices in the game disagreeing about what "a price" means.
 /// Numbers provisional; the shapes are settled.
-pub fn enchant_cost(kind: EnchantType, current_level: u8, world: World) -> Option<Cost> {
-    let material = enchant_material(kind, world)?;
+pub fn enchant_cost(kind: EnchantType, current_level: u8) -> Option<Cost> {
     let total = enchant_curve(u32::from(current_level));
     let level = current_level + 1;
+    let material = enchant_material(kind, level)?;
 
     if kind == EnchantType::Fortune {
         return Some(Cost::single(material, total));
@@ -917,7 +931,7 @@ pub fn buy_enchant(
 ) -> Result<(), CoreError> {
     let tier = pickaxe.get_tier();
     let level = pickaxe.enchants().get_level(kind);
-    let Some(cost) = enchant_cost(kind, level, world) else {
+    let Some(cost) = enchant_cost(kind, level) else {
         // `enchant_cost` is `None` only for Efficiency, which the pickaxe path
         // prices (in the tier material) and applies.
         return buy_pickaxe_efficiency(inventory, pickaxe);
@@ -1410,31 +1424,37 @@ mod tests {
     /// [`pickaxe_efficiency_cost`] instead.
     #[test]
     fn efficiency_is_not_sold_at_the_enchant_shop() {
-        assert_eq!(enchant_cost(EnchantType::Efficiency, 3, World::End), None);
+        assert_eq!(enchant_cost(EnchantType::Efficiency, 3), None);
     }
 
-    /// Fortune is bought in Emerald, its own currency, whatever world the player
-    /// has reached.
+    /// Fortune is bought in Emerald, its own currency, at every rung of the ladder —
+    /// the one enchant the band mapping does not touch.
     #[test]
     fn fortune_is_priced_in_emerald() {
-        for world in [World::Overworld, World::Nether, World::End] {
-            let cost = enchant_cost(EnchantType::Fortune, 2, world);
+        for level in 0..World::End.enchant_cap() {
+            let cost = enchant_cost(EnchantType::Fortune, level);
             assert_eq!(
                 cost.as_ref().map(|c| c.lines()[0].material),
-                Some(Material::Emerald)
+                Some(Material::Emerald),
+                "Fortune {} is not priced in Emerald",
+                level + 1
             );
         }
     }
 
-    /// A special enchant is bought in its world's material, plus a provisional
-    /// fuel line in an *earlier* ore — never more of the enchant's own material.
-    /// This is the "old mines stay useful" multi-line shape.
+    /// A special enchant is bought in the material of the world whose band its level
+    /// sits in, plus a fuel line in an *earlier* ore — never more of the enchant's own
+    /// material. This is the "old mines stay useful" multi-line shape.
+    ///
+    /// Level 6 rather than a round number on purpose: it is the **last** rung of the
+    /// Nether's band, so it pins the boundary the End's two-line shape starts one
+    /// level later.
     #[test]
-    fn a_special_enchant_is_priced_in_its_world_material_plus_earlier_fuel() {
-        let cost = enchant_cost(EnchantType::Explosive, 5, World::End);
+    fn a_special_enchant_is_priced_in_its_bands_material_plus_earlier_fuel() {
+        let cost = enchant_cost(EnchantType::Explosive, 5);
         assert_eq!(
             cost.as_ref().map(|c| c.lines()[0].material),
-            Some(World::End.enchant_material())
+            Some(World::Nether.enchant_material())
         );
 
         let lines = cost.map(|c| c.lines().to_vec()).unwrap_or_default();
@@ -1521,57 +1541,73 @@ mod tests {
     /// material is keyed to neither the world nor the tier, so it has no "current
     /// tier's ore" to consume.
     #[test]
-    fn fortune_is_one_line_of_emerald_in_every_world() {
-        for world in [World::Overworld, World::Nether, World::End] {
-            for level in 0..10 {
-                let Some(cost) = enchant_cost(EnchantType::Fortune, level, world) else {
-                    unreachable!("Fortune is a shop enchant")
-                };
-                assert_eq!(
-                    cost.lines().len(),
-                    1,
-                    "Fortune picked up a second line at level {level} in {}",
-                    world.name()
-                );
-                assert_eq!(cost.lines()[0].material, Material::Emerald);
-            }
+    fn fortune_is_one_line_of_emerald_at_every_level() {
+        for level in 0..10 {
+            let Some(cost) = enchant_cost(EnchantType::Fortune, level) else {
+                unreachable!("Fortune is a shop enchant")
+            };
+            assert_eq!(
+                cost.lines().len(),
+                1,
+                "Fortune picked up a second line at level {}",
+                level + 1
+            );
+            assert_eq!(cost.lines()[0].material, Material::Emerald);
         }
     }
 
-    /// D-7: the fuel pair is a function of the **level**, not of where the player
-    /// stands. Level 1 costs Stone and Coal bought from the End exactly as it does
-    /// from the Overworld — the level is the progression scale, so a rung is fuelled
-    /// by the ores of its own rung forever.
+    /// D-7, now over the **whole** price: every line of an enchant's cost is a
+    /// function of the level, and the signature is what enforces it — there is no
+    /// world to pass in, so there is nothing for a price to drift with.
+    ///
+    /// This test used to assert the opposite for the principal (*"only the principal
+    /// moves with the world — that is what the world keys"*), and that was the bug:
+    /// a player who had opened the Nether was quoted Quartz for a level 1 whose two
+    /// fuel lines still asked for Stone and Coal, and whose cap
+    /// ([`World::enchant_cap`]) calls it an Overworld level. The band mapping below is
+    /// `docs/MECHANICS.md`'s own — Lapis 1–3, Quartz 4–6, Amethyst 7–10 — read off the
+    /// caps rather than transcribed, so a re-balance of the caps moves it here too.
     #[test]
-    fn enchant_fuel_follows_the_level_not_the_world() {
-        let Some(from_overworld) = enchant_cost(EnchantType::Nuke, 0, World::Overworld) else {
+    fn an_enchant_price_follows_the_level_and_never_the_player() {
+        let Some(first) = enchant_cost(EnchantType::Nuke, 0) else {
             unreachable!("Nuke is a shop enchant")
         };
-        let Some(from_end) = enchant_cost(EnchantType::Nuke, 0, World::End) else {
-            unreachable!("Nuke is a shop enchant")
-        };
-
-        let fuel = |cost: &Cost| -> Vec<Material> {
-            cost.lines()[1..].iter().map(|l| l.material).collect()
-        };
-        assert_eq!(fuel(&from_overworld), vec![Material::Stone, Material::Coal]);
         assert_eq!(
-            fuel(&from_end),
-            vec![Material::Stone, Material::Coal],
-            "level 1 changed its fuel because the player had reached the End"
+            first.lines().iter().map(|l| l.material).collect::<Vec<_>>(),
+            vec![Material::Lapis, Material::Stone, Material::Coal],
+            "level 1 is an Overworld rung: Lapis, and the ores of its own rung"
         );
 
-        // Only the principal moves with the world — that is what the world keys.
-        assert_eq!(from_overworld.lines()[0].material, Material::Lapis);
-        assert_eq!(from_end.lines()[0].material, Material::Amethyst);
+        for level in 0..10u8 {
+            let Some(cost) = enchant_cost(EnchantType::Nuke, level) else {
+                unreachable!("Nuke is a shop enchant")
+            };
+            let band = World::for_enchant_level(level + 1);
+            // The End quotes its filler first and its enchant material second, so the
+            // principal is looked up by name rather than by position.
+            assert!(
+                cost.lines()
+                    .iter()
+                    .any(|line| line.material == band.enchant_material()),
+                "level {} is in {}'s band but is priced without {:?}",
+                level + 1,
+                band.name(),
+                band.enchant_material()
+            );
+        }
     }
 
     /// Every fuel ore belongs to the world whose band the level sits in — the point of
-    /// the change. An enchant bought in the Nether must never ask for Overworld iron.
+    /// the change. A Nether rung must never ask for Overworld iron.
+    ///
+    /// The levels are the Nether's band, `3..=5` being the *held* levels that buy
+    /// rungs 4, 5 and 6. Written as held levels because that is what
+    /// [`enchant_cost`] takes, and getting that wrong is precisely the off-by-one this
+    /// test is placed at a boundary to catch.
     #[test]
     fn enchant_fuel_never_reaches_back_to_an_earlier_world() {
-        for (level, world) in [(3u8, World::Nether), (4, World::Nether), (5, World::Nether)] {
-            let Some(cost) = enchant_cost(EnchantType::Haste, level, world) else {
+        for level in 3u8..=5 {
+            let Some(cost) = enchant_cost(EnchantType::Haste, level) else {
                 unreachable!("Haste is a shop enchant")
             };
             for line in &cost.lines()[1..] {
@@ -1593,7 +1629,7 @@ mod tests {
     fn an_enchant_price_shares_one_total_across_its_lines() {
         for world in [World::Overworld, World::Nether, World::End] {
             for level in 0..10 {
-                let Some(cost) = enchant_cost(EnchantType::Excavator, level, world) else {
+                let Some(cost) = enchant_cost(EnchantType::Excavator, level) else {
                     unreachable!("Excavator is a shop enchant")
                 };
                 assert_eq!(
@@ -1614,7 +1650,7 @@ mod tests {
     #[test]
     fn the_end_fuels_its_enchants_from_its_only_mine() {
         for level in 6..10u8 {
-            let Some(cost) = enchant_cost(EnchantType::Jackhammer, level, World::End) else {
+            let Some(cost) = enchant_cost(EnchantType::Jackhammer, level) else {
                 unreachable!("Jackhammer is a shop enchant")
             };
             let materials: Vec<Material> = cost.lines().iter().map(|l| l.material).collect();
@@ -1627,8 +1663,8 @@ mod tests {
         }
 
         // And the Amethyst share climbs across the band, as the ramp promises.
-        let first = enchant_cost(EnchantType::Jackhammer, 6, World::End);
-        let last = enchant_cost(EnchantType::Jackhammer, 9, World::End);
+        let first = enchant_cost(EnchantType::Jackhammer, 6);
+        let last = enchant_cost(EnchantType::Jackhammer, 9);
         let share = |c: &Option<Cost>| -> f64 {
             let Some(c) = c else { return 0.0 };
             f64::from(part(c, Material::Amethyst)) / f64::from(raw_total(c))
@@ -1824,7 +1860,7 @@ mod tests {
     #[test]
     fn buying_a_special_enchant_debits_all_its_lines() {
         let mut pickaxe = Pickaxe::default();
-        let Some(cost) = enchant_cost(EnchantType::Explosive, 0, World::Overworld) else {
+        let Some(cost) = enchant_cost(EnchantType::Explosive, 0) else {
             unreachable!("Explosive is a shop enchant, so it has a price")
         };
         assert_eq!(
@@ -1853,7 +1889,7 @@ mod tests {
     #[test]
     fn a_special_enchant_short_on_one_line_debits_neither() {
         let mut pickaxe = Pickaxe::default();
-        let Some(cost) = enchant_cost(EnchantType::Explosive, 0, World::Overworld) else {
+        let Some(cost) = enchant_cost(EnchantType::Explosive, 0) else {
             unreachable!("Explosive is a shop enchant, so it has a price")
         };
         // Everything the price asks for except its very last line.
@@ -1892,7 +1928,7 @@ mod tests {
         let mut pickaxe = Pickaxe::default();
         let mut inventory = Inventory::new();
         for level in 0..3 {
-            let Some(cost) = enchant_cost(EnchantType::Explosive, level, World::Overworld) else {
+            let Some(cost) = enchant_cost(EnchantType::Explosive, level) else {
                 unreachable!("Explosive is a shop enchant")
             };
             for (item, amount) in cost.lines().iter().flat_map(CostLine::requirements) {
@@ -2146,7 +2182,7 @@ mod tests {
     /// purse holding the raw equivalent of a Compressed line does not satisfy it.
     #[test]
     fn can_afford_reads_every_line_strictly() {
-        let Some(cost) = enchant_cost(EnchantType::Explosive, 0, World::Overworld) else {
+        let Some(cost) = enchant_cost(EnchantType::Explosive, 0) else {
             unreachable!("Explosive is a shop enchant")
         };
 

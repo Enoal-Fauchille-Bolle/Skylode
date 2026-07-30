@@ -773,7 +773,7 @@ impl App {
             let refusal = self.state.buy_enchant(kind);
             let player = self.state.player();
             let level = player.get_pickaxe().enchants().get_level(kind);
-            let cost = economy::enchant_cost(kind, level, player.highest_unlocked_world());
+            let cost = economy::enchant_cost(kind, level);
             self.announce_purchase_refusal(refusal, cost.as_ref());
             if let Some(cost) = cost {
                 self.remember_refusal(&format!("{} {}", kind.name(), roman(level + 1)), &cost);

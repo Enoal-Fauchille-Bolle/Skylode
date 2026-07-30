@@ -104,6 +104,41 @@ impl World {
         }
     }
 
+    /// The world whose band the `level`-th level of a special enchant falls in, and
+    /// therefore the one whose [material](World::enchant_material) pays for it.
+    ///
+    /// **The inverse of [`enchant_cap`](World::enchant_cap), and the reason it exists
+    /// is that a price must not depend on where the player is standing.** The fuel
+    /// pair is keyed by the level ([`enchant_fuel`](crate::economy::enchant_fuel)) and
+    /// the End's two-line shape is keyed by the level, so a principal keyed by the
+    /// player's *current* world was the one line of the three that drifted: a player
+    /// who had reached the Nether was quoted Quartz for a level 1 the Overworld's cap
+    /// says is the Overworld's. `docs/MECHANICS.md` settles it the other way round —
+    /// *"Overworld enchants use Lapis (cap 3)"* names a **band of levels**, not a
+    /// place to stand — so levels 1–3 cost Lapis whether they are bought in the first
+    /// minute or from the End.
+    ///
+    /// That leaves the player's world exactly one job on this track, which is the job
+    /// the doc gives it: the **cap**, which decides *how far* they may climb, never
+    /// *what* the climb costs.
+    ///
+    /// Derived from `enchant_cap` rather than written as a second table, so
+    /// re-balancing the caps moves the bands with them. Ordered weakest-first and
+    /// takes the first world that covers the level, which is what makes the answer the
+    /// *lowest* such world rather than merely one of them. Levels past the last cap
+    /// answer [`End`](World::End): the enchant ladder ends there, and a level that
+    /// exists nowhere is a caller's bug, not a fourth dimension.
+    pub fn for_enchant_level(level: u8) -> Self {
+        // Written out rather than read from a slice: `ALL_WORLDS` is test-only, and a
+        // fourth dimension must break this array loudly rather than be quietly skipped.
+        for world in [Self::Overworld, Self::Nether, Self::End] {
+            if level <= world.enchant_cap() {
+                return world;
+            }
+        }
+        Self::End
+    }
+
     /// The material that pays for the five special enchants in this world: Lapis
     /// in the Overworld, Quartz in the Nether, Amethyst in the End.
     ///
@@ -313,6 +348,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every enchant level lands in exactly one world's band, and the bands partition
+    /// 1..=10 with no gap and no overlap — walked upwards so that a level is checked
+    /// against the cap of the world claiming it *and* against the cap of the one
+    /// below, which is the only way an off-by-one at a boundary shows up.
+    ///
+    /// The literal expectations are `docs/MECHANICS.md`'s: 1–3 Overworld, 4–6 Nether,
+    /// 7–10 End. Asserted as materials rather than as worlds because the material is
+    /// what the player is actually asked for at the till.
+    #[test]
+    fn every_enchant_level_is_priced_by_the_world_whose_band_it_falls_in() {
+        for level in 1..=World::End.enchant_cap() {
+            let band = World::for_enchant_level(level);
+            assert!(
+                level <= band.enchant_cap(),
+                "level {level} was handed to {}, whose cap is {}",
+                band.name(),
+                band.enchant_cap()
+            );
+            let lower = ALL_WORLDS
+                .iter()
+                .filter(|world| world.enchant_cap() < level)
+                .count();
+            assert_eq!(
+                lower,
+                ALL_WORLDS.iter().position(|&w| w == band).unwrap_or(0),
+                "level {level} skipped a world whose cap does not cover it"
+            );
+        }
+
+        assert_eq!(
+            World::for_enchant_level(1).enchant_material(),
+            Material::Lapis
+        );
+        assert_eq!(
+            World::for_enchant_level(3).enchant_material(),
+            Material::Lapis
+        );
+        assert_eq!(
+            World::for_enchant_level(4).enchant_material(),
+            Material::Quartz
+        );
+        assert_eq!(
+            World::for_enchant_level(6).enchant_material(),
+            Material::Quartz
+        );
+        assert_eq!(
+            World::for_enchant_level(7).enchant_material(),
+            Material::Amethyst
+        );
+        assert_eq!(
+            World::for_enchant_level(10).enchant_material(),
+            Material::Amethyst
+        );
+
+        // Past the ladder there is no fourth world to fall through to: a level that
+        // exists nowhere answers the last band rather than panicking.
+        assert_eq!(World::for_enchant_level(u8::MAX), World::End);
     }
 
     /// The enchant currency ladder `docs/MECHANICS.md` fixes: Lapis, Quartz,

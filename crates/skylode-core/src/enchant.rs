@@ -758,7 +758,7 @@ mod tests {
     fn dropping_what_the_shop_does_not_price_leaves_the_six_rows_in_frame_order() {
         let shop: Vec<EnchantType> = EnchantType::ALL
             .into_iter()
-            .filter(|&kind| crate::economy::enchant_cost(kind, 0, ANY_WORLD).is_some())
+            .filter(|&kind| crate::economy::enchant_cost(kind, 0).is_some())
             .collect();
 
         assert_eq!(

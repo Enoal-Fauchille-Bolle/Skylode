@@ -3305,7 +3305,7 @@ mod tests {
                 if level >= kind.max_level(tier, world) {
                     return None;
                 }
-                economy::enchant_cost(kind, level, world)
+                economy::enchant_cost(kind, level)
             }
             Track::MineSize => {
                 let mine = state.current_mine();
@@ -3570,7 +3570,7 @@ mod tests {
             .filter_map(|kind| {
                 let level = enchant_level(state, kind);
                 (level < kind.max_level(tier, world))
-                    .then(|| economy::enchant_cost(kind, level, world))
+                    .then(|| economy::enchant_cost(kind, level))
                     .flatten()
                     .map(|cost| (raw_equiv(&cost), cost))
             })

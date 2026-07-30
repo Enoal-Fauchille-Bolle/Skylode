@@ -551,13 +551,21 @@ is capped by the world too** — its ceiling of 10 is unchanged, but it is reach
 3 / 6 / 10 like the specials rather than being available in full from level 1.
 Efficiency is the only enchant the world does not cap; the pickaxe tier does.
 
-A special enchant's price is the world's enchant material **plus the two ores of
-that level's rung** — an abundant one and a scarce one, drawn from the mines the
-player is working *now*: Stone and Coal at level 1, Iron and Gold at 2, Gold and
-Diamond at 3, then Netherrack and Ancient Debris, Ancient Debris and Obsidian,
-Obsidian and Crying Obsidian. The pair is keyed by the **level**, never by where
-the player stands, so level 1 costs Stone and Coal whether it is bought in the
-first minute or from the End. The three lines share one total, 50 / 35 / 15.
+A special enchant's price is the enchant material of the level's own band **plus
+the two ores of that level's rung** — an abundant one and a scarce one, drawn from
+the mines that band's player is working: Stone and Coal at level 1, Iron and Gold
+at 2, Gold and Diamond at 3, then Netherrack and Ancient Debris, Ancient Debris and
+Obsidian, Obsidian and Crying Obsidian. The three lines share one total, 50 / 35 /
+15.
+
+**All three lines are keyed by the level, never by where the player stands.** The
+bands are the caps read backwards — levels 1–3 are the Overworld's and cost Lapis,
+4–6 the Nether's and cost Quartz, 7–10 the End's and cost Amethyst — so level 1
+costs Lapis, Stone and Coal whether it is bought in the first minute or from the
+End. The player's own world keeps exactly one job on this track: the **cap**, which
+decides how far they may climb and never what the climb costs. Keying the principal
+to the player's world instead is what made a level 1 bought after the Nether opened
+ask for Quartz beside two Overworld fuel lines — one price answering to two clocks.
 
 The End is the exception its geography forces: one mine, whose rare cell *is* the
 enchant material. Levels 7 to 10 therefore quote **two** lines, End Stone and

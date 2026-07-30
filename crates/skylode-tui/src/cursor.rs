@@ -19,9 +19,7 @@
 //! leaving the type in the read model would have this module import the thing it
 //! feeds.
 
-use skylode_core::{
-    economy, enchant::EnchantType, material::Material, mine_kind::MineKind, world::World,
-};
+use skylode_core::{economy, enchant::EnchantType, material::Material, mine_kind::MineKind};
 
 /// Which sub-tab of the Upgrades screen is showing (UI.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +98,7 @@ pub fn mine_tracks() -> Vec<(MineKind, MineTrack)> {
 pub fn enchant_tracks() -> Vec<EnchantType> {
     EnchantType::ALL
         .into_iter()
-        .filter(|&kind| economy::enchant_cost(kind, 0, World::Overworld).is_some())
+        .filter(|&kind| economy::enchant_cost(kind, 0).is_some())
         .collect()
 }
 

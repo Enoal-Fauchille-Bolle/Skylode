@@ -1546,7 +1546,7 @@ fn enchants_subtab(state: &GameState, cursors: Cursors) -> UpgradeSubtab {
         .map(|kind| {
             let level = enchants.get_level(kind);
             let cap = kind.max_level(player.get_pickaxe().get_tier(), world);
-            let cost = economy::enchant_cost(kind, level, world);
+            let cost = economy::enchant_cost(kind, level);
             UpgradeRow {
                 cells: vec![
                     kind.name().to_owned(),
@@ -1583,7 +1583,7 @@ fn enchants_subtab(state: &GameState, cursors: Cursors) -> UpgradeSubtab {
     let level = enchants.get_level(kind);
     let cap = kind.max_level(player.get_pickaxe().get_tier(), world);
     let cost = (level < cap)
-        .then(|| economy::enchant_cost(kind, level, world))
+        .then(|| economy::enchant_cost(kind, level))
         .flatten();
     let detail = EnchantDetail {
         kind,
