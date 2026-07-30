@@ -72,9 +72,23 @@ core is built in, see [PHASES.md](PHASES.md).
   threshold is now a free dial: past rank 10 each further rank costs about another hour,
   predictably, where the old curve made rank 12 unreachable in any reasonable session. See
   [DECISIONS.md](DECISIONS.md) and [MECHANICS.md](MECHANICS.md#prestige).
-- **Starting state:** confirm Wooden pickaxe mining Stone as the opening.
-- **End signature ore naming:** Amethyst carries the End's rich-ore role; confirm
-  whether it needs a distinct name.
+- ~~**Starting state**~~ — **settled**: a Wooden pickaxe in the Stone mine is the
+  opening, confirmed as written. It was never in doubt so much as never signed off,
+  and it is what `Player::new` and `GameState::new` have built all along — the two
+  reference players in the phase-10 harness start there, so the measured pacing band
+  is a band about *this* opening and no other. Recording it closes the gap between a
+  default nobody chose on purpose and one that has now been chosen.
+- ~~**End signature ore naming**~~ — **settled**: Amethyst keeps its name. The
+  question was whether the End's rich ore should stop borrowing a material Minecraft
+  puts in the Overworld, and the answer follows the rule the palette already obeys —
+  a material is meant to be **recognised, not learned**, which is why hue follows
+  Minecraft rather than being invented. An invented name would add one mapping for
+  the player to memorise and close no ambiguity, since nothing else in the game is
+  called Amethyst; and the lore argument is one the game declines everywhere else,
+  Ancient Debris, Obsidian and Quartz all being taken as they are. That Amethyst also
+  serves as the prestige currency is a reason to keep it legible, not to rename it.
+  Renaming would have been cheap — `Material::name` is a display name, deliberately
+  kept apart from the save key — so this is a choice and not a constraint.
 - ~~**Upgrade naming convention**~~ — **settled**: mirror PikaNetwork, with Roman
   numerals ("Diamond Pickaxe Efficiency XV"). See [DECISIONS.md](DECISIONS.md).
 - ~~**Enchant level caps per dimension**~~ — **settled**: one ceiling per world
