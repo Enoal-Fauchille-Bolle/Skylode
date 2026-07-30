@@ -160,6 +160,8 @@ mod tests {
                 }),
             }),
             unlocks: Vec::new(),
+            // A dip is a purchase, and a purchase is what an owned rung has none of.
+            owned: None,
             ceiling: Some((5, 15)),
         }
     }

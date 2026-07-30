@@ -339,6 +339,50 @@ pub struct PickaxeDetail {
     pub unlocks: Vec<MineKind>,
     /// The Efficiency cap before and after, when the chain crosses a jump.
     pub ceiling: Option<(u8, u8)>,
+    /// What this rung *is*, when the player already owns it — [`None`] on a rung
+    /// there is still something to buy on.
+    ///
+    /// **Exactly the complement of [`chain`](PickaxeDetail::chain) being non-empty**,
+    /// and an [`Option`] rather than a flag because the two cases carry different
+    /// numbers: a rung ahead is a *transition* (`22.0 → 25.0`), a rung behind is a
+    /// *state* (`22.0`). Merging them would mean printing `22.0 → 22.0` on every owned
+    /// rung, which is not a smaller answer but a wrong one.
+    pub owned: Option<OwnedRung>,
+}
+
+/// What a rung the player already holds is worth, as opposed to what buying one
+/// would change.
+///
+/// **The pane used to answer `Owned already — nothing to buy here.` and stop**, which
+/// is true and useless: the player scrolling back up the ladder is asking what they
+/// have, and the screen knew every number and printed none of them. Every field here
+/// is the single-valued twin of a field the buyable rungs already show.
+///
+/// Every number is asked of the rung and not of the pickaxe, so a rung *below* the
+/// player answers for itself — [`Pickaxe::power_with`](skylode_core::pickaxe::Pickaxe)
+/// weighs a `(tier, efficiency)` pair without building one, which is the same door
+/// §6.7's dip modal uses to weigh a rung the player does not own yet.
+#[derive(Clone, Debug)]
+pub struct OwnedRung {
+    /// Mining power at this rung.
+    pub power: f64,
+    /// The block the tick count is quoted against — the value cell of the standing
+    /// mine, the same reference [`PowerDetail`] uses, so the two panes are comparable.
+    pub block: Block,
+    /// Ticks that block takes at this rung, or [`None`] if this rung cannot break it.
+    pub ticks: Option<u32>,
+    /// This rung's Efficiency level, and the tier's cap on it.
+    ///
+    /// Both numbers, for the reason the Enchants table carries both: `4` alone cannot
+    /// be told from a ceiling, and `4 / 5` says at a glance that the tier has one rung
+    /// left in it.
+    pub efficiency: (u8, u8),
+    /// The mines this rung opened — empty unless the rung **is** the tier jump.
+    ///
+    /// A tier's mines are opened by the purchase that reaches the tier, not by the
+    /// Efficiency rungs above it, so listing them on `Iron Eff IV` would credit that
+    /// rung with something `Iron Pickaxe` did.
+    pub unlocks: Vec<MineKind>,
 }
 
 /// What a chain does to the pickaxe's speed — the numbers UI.md §5.4's dip box and
@@ -1446,6 +1490,33 @@ fn pickaxe_detail(
         })
         .unwrap_or_default();
 
+    // A rung at or behind the player: there is no chain and so no transition to
+    // quote, and what the pane owes instead is what this rung is worth. Gated on
+    // `climbed` rather than on a comparison of indices, so the two branches of the
+    // pane cannot disagree about which rungs are owned.
+    let owned = climbed
+        .is_empty()
+        .then(|| ladder.get(target))
+        .flatten()
+        .map(|rung| {
+            let power = pickaxe.power_with(rung.tier, rung.efficiency);
+            let block = state.current_mine().kind().value_block();
+            OwnedRung {
+                power: f64::from(power),
+                block,
+                ticks: block.ticks_to_break(power),
+                efficiency: (rung.efficiency, rung.tier.efficiency_cap()),
+                unlocks: if rung.is_tier_jump() {
+                    MineKind::ALL
+                        .into_iter()
+                        .filter(|kind| kind.gating_tier() == rung.tier)
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+            }
+        });
+
     PickaxeDetail {
         title,
         crosses_tier_jump: preview.crosses_tier_jump,
@@ -1476,6 +1547,7 @@ fn pickaxe_detail(
         }),
         unlocks,
         ceiling,
+        owned,
     }
 }
 
@@ -2082,6 +2154,12 @@ fn sample_upgrades() -> UpgradesView {
             }),
             unlocks: vec![MineKind::Amethyst],
             ceiling: Some((5, 15)),
+            // The fixture's cursor sits two rungs *ahead* of the player, which is what
+            // gives it a chain, a price and a dip to draw. An owned rung is the
+            // complement of that, so it is `None` here by the same rule `from_state`
+            // applies — and `an_owned_rung_and_a_chain_are_never_both_drawn` is what
+            // stops the fixture drifting into a state a run cannot reach.
+            owned: None,
         })),
         footer: " ↑↓  select     Enter  buy to here     M  buy max     Tab  next screen".to_owned(),
     };
@@ -3306,6 +3384,134 @@ mod tests {
                 assert!(repaid.power > power.before);
                 // Five purchases later, which is the §6.7 modal's closing sentence.
                 assert_eq!(repaid.rungs_later, 5);
+            }
+            other => unreachable!("the Pickaxe sub-tab must project a pickaxe: {other:?}"),
+        }
+    }
+
+    /// A rung behind the player answers for **itself**, and that is the whole reason
+    /// [`OwnedRung`] exists rather than a flag on [`PowerDetail`].
+    ///
+    /// [`upgrade::preview`] clamps its target up to where the player stands, so a
+    /// rung below them previews `power_before == power_after` — the current pickaxe,
+    /// twice. Reading the pane off that would have printed the *Diamond* power under a
+    /// title reading `Iron Eff II`. The projection therefore asks
+    /// [`Pickaxe::power_with`](skylode_core::pickaxe::Pickaxe) for the rung's own pair,
+    /// which is a strictly smaller number here — the assertion that would fail if the
+    /// clamped preview ever crept back in.
+    #[test]
+    fn a_rung_behind_the_player_is_projected_at_its_own_power() {
+        let state = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Diamond""#),
+            (r#""enchants":{}"#, r#""enchants":{"Efficiency":5}"#),
+        ]);
+        let ladder = upgrade::ladder();
+        let here = upgrade::position(&ladder, state.player().get_pickaxe());
+        let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
+        // The Iron tier's jump: several rungs behind a maxed Diamond pickaxe, and a
+        // tier jump, so it is also the rung that has mines to name.
+        let iron_jump = match ladder
+            .iter()
+            .position(|rung| rung.tier == PickaxeTier::Iron && rung.is_tier_jump())
+        {
+            Some(index) => index,
+            None => unreachable!("the ladder climbs through Iron"),
+        };
+        assert!(
+            iron_jump < here,
+            "the Iron jump must be behind a Diamond player"
+        );
+        cursors.pickaxe_rung = iron_jump;
+
+        let view = View::from_state(&state, cursors, None);
+        match &view.upgrades.active_subtab().detail {
+            UpgradeDetail::Pickaxe(detail) => {
+                assert!(detail.chain.is_empty(), "an owned rung buys nothing");
+                let owned = match detail.owned.as_ref() {
+                    Some(owned) => owned,
+                    None => unreachable!("a rung behind the player is owned"),
+                };
+                let current = f64::from(state.player().get_pickaxe().mining_power());
+                assert!(
+                    owned.power < current,
+                    "the Iron jump reads {:.1}, which is not below the Diamond \
+                     pickaxe's {current:.1} — the clamped preview is being read again",
+                    owned.power
+                );
+                // A tier jump is Efficiency 0 by definition, against the tier's cap.
+                assert_eq!(owned.efficiency, (0, PickaxeTier::Iron.efficiency_cap()));
+                assert!(!owned.unlocks.is_empty());
+                assert!(
+                    owned
+                        .unlocks
+                        .iter()
+                        .all(|kind| kind.gating_tier() == PickaxeTier::Iron)
+                );
+                // Quoted against the same reference as every other rung's pane.
+                assert_eq!(owned.block, MineKind::Stone.value_block());
+            }
+            other => unreachable!("the Pickaxe sub-tab must project a pickaxe: {other:?}"),
+        }
+    }
+
+    /// The two halves of the pane are complements, never both and never neither: a
+    /// rung is owned exactly when there is no chain to buy it with.
+    ///
+    /// Walked over the **whole ladder** rather than at a boundary, because the rule is
+    /// what lets [`pickaxe_pane`](crate::screen::upgrades) branch on `owned` alone and
+    /// still be sure the buyable path is reached.
+    #[test]
+    fn an_owned_rung_and_a_chain_are_never_both_drawn() {
+        let state = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Iron""#),
+            (r#""enchants":{}"#, r#""enchants":{"Efficiency":2}"#),
+        ]);
+        for rung in 0..upgrade::ladder().len() {
+            let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
+            cursors.pickaxe_rung = rung;
+            let view = View::from_state(&state, cursors, None);
+            match &view.upgrades.active_subtab().detail {
+                UpgradeDetail::Pickaxe(detail) => assert_eq!(
+                    detail.owned.is_some(),
+                    detail.chain.is_empty(),
+                    "rung {rung} is both owned and buyable, or neither"
+                ),
+                other => unreachable!("the Pickaxe sub-tab must project a pickaxe: {other:?}"),
+            }
+        }
+    }
+
+    /// An Efficiency rung opened no mine, and must not claim its tier's.
+    ///
+    /// The rung that opens a tier's mines is the jump; the five Efficiency rungs above
+    /// it are bought inside a tier the player already had. Crediting them would put
+    /// `Unlocks  the Iron mine` under four rungs that unlocked nothing.
+    #[test]
+    fn an_owned_efficiency_rung_claims_no_unlock() {
+        let state = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Diamond""#),
+            (r#""enchants":{}"#, r#""enchants":{"Efficiency":5}"#),
+        ]);
+        let ladder = upgrade::ladder();
+        let rung = match ladder
+            .iter()
+            .position(|rung| rung.tier == PickaxeTier::Iron && rung.efficiency == 2)
+        {
+            Some(index) => index,
+            None => unreachable!("Iron carries an Efficiency ladder"),
+        };
+        let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
+        cursors.pickaxe_rung = rung;
+
+        let view = View::from_state(&state, cursors, None);
+        match &view.upgrades.active_subtab().detail {
+            UpgradeDetail::Pickaxe(detail) => {
+                let owned = match detail.owned.as_ref() {
+                    Some(owned) => owned,
+                    None => unreachable!("Iron Eff II is behind a Diamond player"),
+                };
+                assert!(owned.unlocks.is_empty());
+                assert_eq!(owned.efficiency, (2, PickaxeTier::Iron.efficiency_cap()));
             }
             other => unreachable!("the Pickaxe sub-tab must project a pickaxe: {other:?}"),
         }

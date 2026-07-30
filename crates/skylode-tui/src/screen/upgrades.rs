@@ -29,9 +29,9 @@ use crate::{
     screen::{panel, scrollbar, window},
     theme,
     view::{
-        DipDetail, EnchantDetail, Mark, MineTrackDetail, NOTHING, PickaxeDetail, PowerDetail,
-        PriceLine, StatStep, TrackBlock, TrackOutcome, UpgradeDetail, UpgradeSubtab, UpgradesView,
-        View, level_word,
+        DipDetail, EnchantDetail, Mark, MineTrackDetail, NOTHING, OwnedRung, PickaxeDetail,
+        PowerDetail, PriceLine, StatStep, TrackBlock, TrackOutcome, UpgradeDetail, UpgradeSubtab,
+        UpgradesView, View, level_word,
     },
 };
 
@@ -489,8 +489,10 @@ fn pickaxe_pane(detail: &PickaxeDetail, height: usize) -> Vec<PaneLine> {
         PaneLine::from(String::new()),
     ];
 
-    if detail.chain.is_empty() {
+    if let Some(owned) = &detail.owned {
         head.push(" Owned already — nothing to buy here.".to_owned().into());
+        head.push(String::new().into());
+        head.extend(owned_block(owned));
         return head;
     }
 
@@ -567,6 +569,43 @@ fn assembled(
         lines.push(format!("           …+ {dropped} more lines").into());
     }
     lines.extend(tail);
+    lines
+}
+
+/// What a rung the player already owns is worth: the same four rows the buyable
+/// rungs get, each with one value instead of two.
+///
+/// **Deliberately the same labels in the same order as [`power_block`] and the two
+/// blocks under it**, so scrolling from an owned rung to a buyable one moves the
+/// numbers and not the layout. The arrow is what is missing, and its absence is the
+/// whole message: there is nothing here to move to.
+///
+/// `Unlocks` is skipped when the rung opened nothing, which on this ladder means
+/// every rung that is not a tier jump. `Ceiling` is never skipped — `Efficiency 0 / 5`
+/// on a fresh tier is information, and it is the number that says how much of the tier
+/// is left to buy.
+///
+/// Labelled `Ceiling` and not `Efficiency` for two reasons that agree: it is the word
+/// the buyable pane already spends on this number, and [`block`] reserves nine columns
+/// for a label — `Efficiency` is ten, and would push its own value out of the column
+/// the two rows above it line up in.
+fn owned_block(owned: &OwnedRung) -> Vec<PaneLine> {
+    let mut lines = block("Power", &[format!("{:.1}", owned.power)]);
+    lines.extend(block(
+        "Ticks",
+        &[format!("{} {}", owned.block.name(), ticks(owned.ticks))],
+    ));
+    let (level, cap) = owned.efficiency;
+    lines.extend(block("Ceiling", &[format!("Efficiency {level} / {cap}")]));
+    if !owned.unlocks.is_empty() {
+        let names: Vec<String> = owned
+            .unlocks
+            .iter()
+            .map(|kind| format!("the {} mine", kind.name()))
+            .collect();
+        lines.push(String::new().into());
+        lines.extend(block("Unlocks", &names));
+    }
     lines
 }
 
@@ -1332,6 +1371,67 @@ mod tests {
         assert_eq!(fg_of(&buffer, "┬"), Some(theme::MUTED));
         assert_eq!(fg_of(&buffer, "┴"), Some(theme::MUTED));
         assert_eq!(fg_of(&buffer, "╭"), Some(theme::MUTED), "the border moved");
+    }
+
+    /// An owned rung, as `from_state` projects one: no chain, no price, no dip.
+    ///
+    /// Varied off [`a_chain`] rather than built field by field, so a field added to
+    /// [`PickaxeDetail`] reaches this shape too instead of quietly defaulting. The
+    /// `power` it inherits is the fixture's `34.0 → 9.0`, which is exactly what the
+    /// pane must **not** print here — `upgrade::preview` clamps a rung behind the
+    /// player, so those two numbers describe the pickaxe and not the rung.
+    fn an_owned_rung(owned: OwnedRung) -> PickaxeDetail {
+        PickaxeDetail {
+            title: "Iron Pickaxe".to_owned(),
+            crosses_tier_jump: false,
+            chain: Vec::new(),
+            mark: Mark::Owned,
+            costs: Vec::new(),
+            dip: None,
+            unlocks: Vec::new(),
+            ceiling: None,
+            owned: Some(owned),
+            ..a_chain()
+        }
+    }
+
+    #[test]
+    fn an_owned_rung_states_what_it_is_worth_instead_of_stopping_at_the_sentence() {
+        let frame = pickaxe_pane_frame(an_owned_rung(OwnedRung {
+            power: 4.0,
+            block: Block::IronBlock,
+            ticks: Some(30),
+            efficiency: (0, 5),
+            unlocks: vec![MineKind::Iron],
+        }));
+
+        // The sentence stays: it is the answer to "can I buy this?", which is still a
+        // question the player asked by putting the cursor here.
+        assert!(frame.contains("Owned already"), "{frame}");
+        // And under it, the numbers the pane used to withhold. Single-valued, so no
+        // arrow — the absence is the message.
+        assert!(frame.contains("Power     4.0"), "{frame}");
+        assert!(!row_with(&frame, "Power     4.0").contains('→'), "{frame}");
+        assert!(frame.contains("Ticks     Iron Block 30"), "{frame}");
+        assert!(frame.contains("Ceiling   Efficiency 0 / 5"), "{frame}");
+        assert!(frame.contains("Unlocks   the Iron mine"), "{frame}");
+        // The clamped preview's numbers must not have leaked through beside them.
+        assert!(!frame.contains("34.0"), "{frame}");
+    }
+
+    #[test]
+    fn an_owned_rung_that_opened_nothing_prints_no_unlocks_row() {
+        // An Efficiency rung is bought inside a tier the player already had, so it has
+        // no mine to its name and the block is dropped rather than left empty.
+        let frame = pickaxe_pane_frame(an_owned_rung(OwnedRung {
+            power: 9.0,
+            block: Block::IronBlock,
+            ticks: Some(14),
+            efficiency: (3, 5),
+            unlocks: Vec::new(),
+        }));
+        assert!(frame.contains("Ceiling   Efficiency 3 / 5"), "{frame}");
+        assert!(!frame.contains("Unlocks"), "{frame}");
     }
 
     /// Renders the Mines sub-tab with `detail` swapped into the fixture.
