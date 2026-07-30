@@ -18,6 +18,37 @@ A single JSON file via `serde_json`. The state is one cohesive blob, so SQLite
 would be over-engineering: there are no relational queries, no large datasets, and
 no partial updates. JSON is simple and human-debuggable.
 
+### Where the file lives
+
+One file, at the platform's own data location, resolved through
+`directories::ProjectDirs` — with the backup as `save.json.bak` beside it:
+
+| Platform | Path |
+| --- | --- |
+| Linux | `~/.local/share/skylode/save.json` |
+| macOS | `~/Library/Application Support/skylode/save.json` |
+| Windows | `%APPDATA%\skylode\save.json` |
+
+**This revises an earlier "no XDG handling"**, which was written against a
+different question. What that decision rejected — and still rejects — is
+*splitting* the game across several XDG categories: preferences under `~/.config`,
+run state under `~/.local/state`, save data under `~/.local/share`. That split is
+exactly what [config in the save](#config-in-the-save) exists to prevent, and it is
+untouched: there is still one file, and still no separate config file.
+
+What changes is where that one file goes. A dot-directory in `$HOME` is precisely
+what the convention exists to prevent, so *"do not handle XDG"* and *"do not
+pollute the player's home"* pull in opposite directions. The second wins, because
+the first was a statement about **complexity**, and a library reduces that
+complexity to a single call. Hand-rolling the lookup would be ten lines on Linux
+and wrong on the other two platforms — and a partial reimplementation of a standard
+is more fragile than none, because it looks correct.
+
+`ProjectDirs::from` answers `None` where the platform cannot say — no home
+directory at all, rare but real inside a container. That case **starts the game
+without persistence and says so**, rather than refusing to launch: a player who
+cannot save should still be able to play.
+
 ### Saved state
 
 The `data` blob (see [Integrity](#integrity-hmac) below) serializes one cohesive
@@ -81,8 +112,10 @@ the HMAC below is what covers the latter.
 
 ### Config in the save
 
-There is deliberately **no separate config file**. One file, one path, no XDG
-handling. Prestige does not touch the file — only the player deleting it does — so
+There is deliberately **no separate config file**. One file, one path — see
+[Where the file lives](#where-the-file-lives) for which path, and for what that
+sentence used to claim about XDG and no longer does.
+Prestige does not touch the file — only the player deleting it does — so
 preferences survive a run. Two costs are accepted knowingly: deleting the save
 loses the preferences, and adding a config field bumps `version` and needs a
 migration like any other schema change.
@@ -134,6 +167,31 @@ compare to the stored `mac`. A match means intact; a mismatch means modified or
 corrupted. This is tamper detection, not prevention: the embedded key is
 extractable. It catches hand-editing and corruption, not determined cheating.
 
+**The key is stored obfuscated, and that is the whole of the hardening.** It is
+held masked — each byte XOR-ed against a fixed pattern — and reassembled by a
+`const fn`, so the plain bytes never appear in the binary and `strings` finds
+nothing. This is the one step worth taking: it moves the attack from a single
+command needing no skill to a debugger, which is where the trade's own rule of
+thumb puts save editing into the *not worth the effort* basket for most players.
+
+**Build-time injection was considered and rejected.** Reading the key from an
+environment variable at compile time (`env!`) keeps it out of the repository, but
+not out of the binary — and the binary is what the player receives. Rust's own
+guidance is to use `env!` for a secret **only when the binary is not
+distributed**, which is the opposite of this game; and the repository is meant to
+go public, so the reassembly method is readable either way. It would also split
+the key between debug and release builds, so a run played during development would
+not load in the shipped game, and a forgotten variable would fail a release build.
+The cost is daily and the gain is near zero.
+
+**The second layer is [validation](#a-load-validates-before-it-returns), and it is
+the one that keeps paying.** A tamperer who extracts the key and re-signs the file
+still has to produce a state that satisfies every rule the types enforce, which is
+a far duller job than editing a number. Unlike the key, that layer also serves the
+honest player: disk corruption fails it in exactly the same way. Deepening it with
+cross-field plausibility checks is therefore worth more than any further work on
+hiding the key.
+
 ### Robustness and recovery
 
 - **Atomic writes:** write to a temp file, then `rename` (atomic on the same
@@ -160,6 +218,9 @@ extractable. It catches hand-editing and corruption, not determined cheating.
   which strips OS entropy out of the core entirely.
 - Atomic file write: `tempfile` (temp plus persist/rename).
 - Integrity: `sha2` and `hmac`.
+- Save location: `directories` (`ProjectDirs`), so the one file lands where each
+  platform keeps application data rather than in a dot-directory under `$HOME`.
+  See [Where the file lives](#where-the-file-lives).
 - Distribution: a single static binary (`cargo build --release`), cross-platform
   in the terminal.
 
