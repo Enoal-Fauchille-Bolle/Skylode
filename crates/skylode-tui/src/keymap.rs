@@ -64,7 +64,9 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
     //
     //    The `match` is exhaustive on purpose: a modal added to the enum cannot be
     //    stacked until someone decides what its keys are.
-    if let Some(modal) = app.modal {
+    //    Borrowed rather than copied since the prestige confirm carries a `String`;
+    //    nothing here reads it, so a shared borrow is all the branch ever needed.
+    if let Some(modal) = &app.modal {
         return match modal {
             // Help closes on its own key (`?`) or `Esc`.
             Modal::Help => match key.code {
@@ -94,6 +96,28 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
                 KeyCode::Right => Some(Action::AdjustRight),
                 KeyCode::Enter => Some(Action::Confirm),
                 KeyCode::Char('n') | KeyCode::Esc => Some(Action::CloseModal),
+                _ => None,
+            },
+            // The prestige preview. Two keys, because it is a *preview*: `Enter` asks
+            // to go on, `Esc` closes. It carries no value and no caret, so it borrows
+            // no list gesture either — the only modal in the game that is pure reading.
+            Modal::PrestigePreview => match key.code {
+                KeyCode::Enter => Some(Action::Confirm),
+                KeyCode::Esc => Some(Action::CloseModal),
+                _ => None,
+            },
+            // The typed confirm, and the one arm in this file that claims *letters*.
+            //
+            // That is the point rather than an accident: §6.9 asks for eight characters
+            // precisely because no other affordance in the keymap can be produced by
+            // muscle memory aimed elsewhere. So `q` typed into the field is a `Q` and
+            // not a quit, and `1` is a digit and not a tab — the modal capture is what
+            // makes that safe, and `Ctrl-C` still quits because rule 1 outranks it.
+            Modal::PrestigeConfirm { .. } => match key.code {
+                KeyCode::Char(typed) => Some(Action::TypeChar(typed)),
+                KeyCode::Backspace => Some(Action::EraseChar),
+                KeyCode::Enter => Some(Action::Confirm),
+                KeyCode::Esc => Some(Action::CloseModal),
                 _ => None,
             },
             // The dev menu: a list, so it reuses the list gestures and names no key of

@@ -155,6 +155,29 @@ pub enum Action {
     /// `match` shrink to match, so nothing downstream needs a runtime guard.
     #[cfg(debug_assertions)]
     OpenDevMenu,
+    /// Open the prestige preview (`p` on the Stats screen).
+    ///
+    /// A variant of its own rather than a [`Confirm`](Action::Confirm) the screen
+    /// interprets, for [`Compress`](Action::Compress)' reason: opening a modal is a
+    /// different kind of act from acting on a row, and the Stats screen has no list to
+    /// act on in the first place.
+    OpenPrestige,
+    /// A character typed into the prestige confirm's field (UI.md §6.9).
+    ///
+    /// **The one gesture in the game that carries text**, and the only one whose
+    /// payload [`crate::keymap`] can supply: the list gestures name a movement because
+    /// the keymap cannot see where the cursor is, but *which character was pressed* is
+    /// a property of the key and of nothing else.
+    ///
+    /// It exists at all because §6.9 refuses a `No / Yes`: the whole game trains the
+    /// player that nothing is final, so the one irreversible act asks for eight
+    /// characters that muscle memory cannot produce by accident.
+    TypeChar(char),
+    /// Delete the last character typed into that field (`Backspace`).
+    ///
+    /// Not folded into [`TypeChar`](Action::TypeChar) as a sentinel: an action names an
+    /// intent, and *erase* is not *type a character that happens to be a rubout*.
+    EraseChar,
     /// Put the active screen's cursor back where the player actually is (`Home`).
     ///
     /// The Levels roadmap is fifty rows and the cursor opens on the player's own

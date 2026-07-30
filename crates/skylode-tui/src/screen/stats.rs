@@ -13,7 +13,7 @@
 
 use ratatui::{
     Frame,
-    crossterm::event::KeyEvent,
+    crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::Line,
@@ -201,9 +201,17 @@ fn inline(label: &str, value: &str) -> Line<'static> {
     Line::from(format!(" {label:<11}{value}"))
 }
 
-/// No contextual bindings yet; `↑↓` scrolls the history, `p` opens prestige.
-pub fn map_key(_key: KeyEvent) -> Option<Action> {
-    None
+/// `p` opens the prestige preview; `↑↓` will scroll the history with the Stats wiring.
+///
+/// **Bound here and not globally**, though prestige is reachable from nowhere else:
+/// `p` is an ordinary letter, and a global claim would swallow it on the five screens
+/// that do not own it — the same argument that keeps the sub-tab binding gated on the
+/// Upgrades screen.
+pub fn map_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('p') => Some(Action::OpenPrestige),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

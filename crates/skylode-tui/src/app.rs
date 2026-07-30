@@ -19,10 +19,12 @@ use ratatui::{
 use skylode_core::{
     economy::{self, Affordability, Shortfall},
     enchant::EnchantType,
+    error::CoreError,
     game::{GameState, Input},
     material::{Item, Material},
     mine::Mine,
     mine_kind::MineKind,
+    prestige,
     tunables::{LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND},
     upgrade,
 };
@@ -33,9 +35,13 @@ use crate::{
     config::Config,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     event::{Event, Events},
-    format::{denominations, grouped, roman, rung_label, shown_rung},
+    format::{denominations, grouped, multiplier, prestige_rank, roman, rung_label, shown_rung},
     keymap,
-    overlay::{Conversion, Modal, compression, dip, help, too_small},
+    overlay::{
+        Conversion, Modal, compression, dip, help,
+        prestige::{self as prestige_overlay, CONFIRM_WORD},
+        too_small,
+    },
     screen::Screen,
     theme,
     toast::{TOAST_TTL, Toasts, Tone},
@@ -272,11 +278,7 @@ impl App {
         // actually is rather than the top of the list — and the Upgrades ladder opens
         // on the rung they are standing on, which is the same question asked of the
         // other axis of progression.
-        let cursors = Cursors::new(
-            state.current_mine().kind(),
-            upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
-            state.player().get_level(),
-        );
+        let cursors = Self::cursors_for(&state);
         let view = View::from_state(&state, cursors, None);
         // Both clocks start due, so the first pass through the loop draws and the
         // first step falls in one period rather than one period from whenever the
@@ -516,6 +518,18 @@ impl App {
             // Nothing to adjust to its maximum outside the spinner, which
             // `update_modal` has already answered for.
             Action::AdjustMax => {}
+            // Guarded on the screen even though `stats::map_key` is the only decoder
+            // that emits it, for the reason the sub-tab arms are: the reducer is where
+            // a gesture's meaning is settled, and a guard living only in the keymap
+            // moves the day the binding does.
+            Action::OpenPrestige => {
+                if self.screen == Screen::Stats {
+                    self.modal = Some(Modal::PrestigePreview);
+                }
+            }
+            // Nothing outside the confirm's field takes text, and `update_modal` has
+            // already answered for the one thing that does.
+            Action::TypeChar(_) | Action::EraseChar => {}
             Action::Compress => self.open_conversion(Conversion::Compress),
             Action::Decompress => self.open_conversion(Conversion::Decompress),
             Action::GoCompress => self.walk_to_the_refused_pile(),
@@ -563,7 +577,12 @@ impl App {
     /// either consumed the gesture or did not, and translating one gesture into
     /// another would give the reducer a second dispatch path to reason about.
     fn update_modal(&mut self, action: &Action) -> bool {
-        match self.modal {
+        // **Cloned, where this used to copy.** [`Modal`] stopped being `Copy` when the
+        // prestige confirm gained a `String`, and every arm below both reads the modal
+        // and reassigns it — so a borrow of `self.modal` would still be live where the
+        // arm writes to it, which the borrow checker refuses. The clone is one small
+        // allocation per keystroke, on the input path and never on the render one.
+        match self.modal.clone() {
             Some(Modal::Compress {
                 material,
                 direction,
@@ -596,6 +615,30 @@ impl App {
                     Action::AdjustLeft => self.modal = Some(Modal::Dip { to, buy: true }),
                     Action::AdjustRight => self.modal = Some(Modal::Dip { to, buy: false }),
                     Action::Confirm => self.confirm_dip(to, buy),
+                    _ => return false,
+                }
+                true
+            }
+            // The preview answers one gesture. `Esc` is not here: it falls through to
+            // the single `CloseModal` arm every modal shares, which is what keeps
+            // closing a box one implementation for all six of them.
+            Some(Modal::PrestigePreview) => {
+                match action {
+                    Action::Confirm => self.open_prestige_confirm(),
+                    _ => return false,
+                }
+                true
+            }
+            // The field. `TypeChar` and `EraseChar` exist for this arm and no other.
+            Some(Modal::PrestigeConfirm { typed }) => {
+                match action {
+                    Action::TypeChar(character) => self.type_into_confirm(typed, *character),
+                    Action::EraseChar => {
+                        let mut typed = typed;
+                        typed.pop();
+                        self.modal = Some(Modal::PrestigeConfirm { typed });
+                    }
+                    Action::Confirm => self.confirm_prestige(&typed),
                     _ => return false,
                 }
                 true
@@ -781,6 +824,116 @@ impl App {
         }
     }
 
+    /// Moves from the prestige preview to the typed confirm, or says why not.
+    ///
+    /// **The preview stays up on a refusal.** It is the screen that explains the
+    /// refusal — the `✗`, the shut gates, the shortfall in its closing line — so
+    /// closing it would take the answer away with the question. The toast is raised on
+    /// top of that, which is Enoal's call: the box is 68×18 and the toast sits three
+    /// rows off the bottom edge, so the sentence is legible under it.
+    ///
+    /// **Both halves are re-read here rather than trusted from the projection.** The
+    /// `View` is rebuilt before each *draw*, and a tick between the last draw and this
+    /// keypress can have credited the ore that opens the trade; the till and the lock
+    /// are cheap and cannot be stale.
+    fn open_prestige_confirm(&mut self) {
+        let player = self.state.player();
+        let lock = player.prestige_lock();
+        if !lock.is_open() {
+            // The core's own sentence, not a second one written here — the same
+            // `Display` `GameState::prestige` would have refused with.
+            self.announce_core_refusal(Err(CoreError::PrestigeLocked { lock }));
+            return;
+        }
+        let cost = prestige::cost(player.get_prestige());
+        let verdict = economy::affordability(player.get_inventory(), &cost);
+        if verdict == Affordability::Affordable {
+            self.modal = Some(Modal::PrestigeConfirm {
+                typed: String::new(),
+            });
+        } else {
+            self.announce_refusal(&verdict);
+        }
+    }
+
+    /// Appends `character` to the confirm's field, up to the length of the word.
+    ///
+    /// **Capped at [`CONFIRM_WORD`]'s length and not at the field's drawn width.** The
+    /// field is twelve columns because the frame draws it so, but nothing longer than
+    /// the word can ever be right, and a field that kept accepting letters would let a
+    /// player type past their own mistake instead of meeting it. `Backspace` is the way
+    /// back, which is why the cap can be this tight.
+    ///
+    /// The character is taken exactly as typed: no upper-casing, because §6.9's
+    /// argument is that the word must be *typed*, and quietly correcting a lower-case
+    /// `p` into a `P` is the interface doing half of it for them.
+    fn type_into_confirm(&mut self, mut typed: String, character: char) {
+        if typed.chars().count() < CONFIRM_WORD.chars().count() {
+            typed.push(character);
+        }
+        self.modal = Some(Modal::PrestigeConfirm { typed });
+    }
+
+    /// Trades the run in, if the word is right.
+    ///
+    /// **A wrong word is silent.** The field is on screen with what the player typed in
+    /// it, beside the word they were asked for, so there is nothing a toast could add —
+    /// and a toast raised here would be drawn under the box that already answers it.
+    /// That is the richness dial's rule: a refusal the player can see is not announced.
+    ///
+    /// The `Result` is routed rather than assumed. Nothing a tick does can shut a gate
+    /// or spend the player's Amethyst, so the refusal is unreachable today; routing it
+    /// costs one arm and is what keeps the till — not this method — the authority on
+    /// whether the trade happens.
+    fn confirm_prestige(&mut self, typed: &str) {
+        if typed != CONFIRM_WORD {
+            return;
+        }
+        self.modal = None;
+        let rank = self.state.player().get_prestige().saturating_add(1);
+        match self.state.prestige() {
+            Ok(()) => {
+                // The run is not the one the front-end was pointing at any more: the
+                // pickaxe is Wooden, the level is 1, the mines the player left behind
+                // are gone. Rebuilt through the *same* call `new` makes, so a cursor
+                // cannot open somewhere after a prestige that it could not open on a
+                // fresh run.
+                self.cursors = Self::cursors_for(&self.state);
+                // A remembered compress-first refusal names a price in an inventory
+                // that no longer exists.
+                self.refused = None;
+                // §8.1's own edge: the confirm leads to the Mine screen, because what
+                // the player has just bought is a run to walk again.
+                self.screen = Screen::Mine;
+                self.toasts.push(
+                    format!(
+                        "Prestige {} — {} on everything",
+                        prestige_rank(rank),
+                        multiplier(prestige::multiplier_permille(rank))
+                    ),
+                    Tone::Success,
+                    TOAST_TTL,
+                );
+            }
+            outcome => self.announce_core_refusal(outcome),
+        }
+    }
+
+    /// Where each cursor opens on `state`.
+    ///
+    /// **Extracted so there is one answer**, not because two callers happened to want
+    /// the same three lines: [`new`](App::new) sets them when a session starts and
+    /// [`confirm_prestige`](App::confirm_prestige) resets them when the run underneath
+    /// them is replaced, and those are the same question asked twice. A second copy
+    /// would let a post-prestige session open on a rung the player no longer stands on.
+    fn cursors_for(state: &GameState) -> Cursors {
+        Cursors::new(
+            state.current_mine().kind(),
+            upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
+            state.player().get_level(),
+        )
+    }
+
     /// Moves the spinner to `requested`, clamped into what the pile can actually
     /// convert.
     ///
@@ -860,7 +1013,7 @@ impl App {
     /// in the core beside the type and cannot drift between the two toasts here. The
     /// `+N` shape is the house style the event toasts already use.
     ///
-    /// A refusal is toasted verbatim: [`CoreError`](skylode_core::error::CoreError)
+    /// A refusal is toasted verbatim: [`CoreError`]
     /// says what it refused and why, and the dialog closes either way — the state it
     /// was set against has just been proved wrong, so leaving it up would invite the
     /// player to press `Enter` again on the same impossible number.
@@ -1555,7 +1708,7 @@ impl App {
     /// having to press `1` to go look at it is a chore with no decision in it.
     ///
     /// A refusal becomes a toast rather than a modal because
-    /// [`CoreError`](skylode_core::error::CoreError)'s own wording already names both
+    /// [`CoreError`]'s own wording already names both
     /// axes — *"the End mine needs level 30 and a Netherite pickaxe"* — and the player
     /// is looking at the row that says so. The screen does not change, which is the
     /// other half of the answer.
@@ -1675,7 +1828,9 @@ impl App {
         // the toasts — it captured the input that would dismiss them, so it owns the
         // surface until it closes.
         self.toasts.render(frame, area);
-        if let Some(modal) = self.modal {
+        // Borrowed rather than copied: `render` takes `&self` and the confirm carries
+        // a `String` it only ever reads.
+        if let Some(modal) = &self.modal {
             match modal {
                 // Help reports the bindings of the screen it was opened over, so it
                 // is handed the current screen and the config the sub-tab line reads.
@@ -1691,9 +1846,9 @@ impl App {
                     frame,
                     area,
                     self.state.player().get_inventory(),
-                    material,
-                    direction,
-                    units,
+                    *material,
+                    *direction,
+                    *units,
                 ),
                 // The opposite choice to the dialog above, and for the opposite reason:
                 // the dip is about a purchase whose numbers the player has *already
@@ -1701,8 +1856,17 @@ impl App {
                 // than a second reading of the run that could disagree with it.
                 Modal::Dip { buy, .. } => {
                     if let UpgradeDetail::Pickaxe(detail) = &self.view.upgrades.pickaxe.detail {
-                        dip::render(frame, area, detail, buy);
+                        dip::render(frame, area, detail, *buy);
                     }
+                }
+                // Both prestige boxes read the projection the Stats panel behind them
+                // draws from, which is the dip modal's rule and is what stops the box
+                // quoting a price the panel disagrees with.
+                Modal::PrestigePreview => {
+                    prestige_overlay::render_preview(frame, area, &self.view.prestige);
+                }
+                Modal::PrestigeConfirm { typed } => {
+                    prestige_overlay::render_confirm(frame, area, &self.view.prestige, typed);
                 }
                 // Draws from `dev` and nothing else — the menu is about its own dialled
                 // values, not about the run behind it, so there is no projection here
@@ -3920,6 +4084,319 @@ mod tests {
             before
         );
         assert_eq!(app.toasts.len(), 1);
+    }
+
+    // --- The prestige flow (UI.md §6.8, §6.9) ---
+
+    /// A run standing at both gates with the price in hand.
+    ///
+    /// Level 50 and Netherite is the whole of `prestige::lock`, and rank 0's price is
+    /// `61 Compressed` of Amethyst — so the purse is quoted in that denomination and
+    /// not in raw, which would be the *other* refusal. Reached through
+    /// [`veteran`](self) because no test can play to the level cap.
+    fn ready_to_prestige() -> App {
+        let mut app = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Netherite""#),
+            (r#""level":1,"#, r#""level":50,"#),
+            (
+                r#""inventory":{}"#,
+                r#""inventory":{"compressed_amethyst":65}"#,
+            ),
+        ]);
+        app.screen = Screen::Stats;
+        app
+    }
+
+    /// The same run with the ore in the wrong denomination — rich enough, still refused.
+    fn holding_raw_amethyst() -> App {
+        let mut app = veteran(&[
+            (r#""tier":"Wooden""#, r#""tier":"Netherite""#),
+            (r#""level":1,"#, r#""level":50,"#),
+            (r#""inventory":{}"#, r#""inventory":{"amethyst":9999}"#),
+        ]);
+        app.screen = Screen::Stats;
+        app
+    }
+
+    #[test]
+    fn p_opens_the_preview_on_stats_and_nowhere_else() {
+        let mut app = session();
+        app.screen = Screen::Stats;
+        assert_eq!(
+            keymap::resolve(&app, KeyEvent::from(KeyCode::Char('p'))),
+            Some(Action::OpenPrestige)
+        );
+        app.update(Action::OpenPrestige);
+        assert_eq!(app.modal, Some(Modal::PrestigePreview));
+
+        // The gesture is guarded in the reducer too, so a future binding elsewhere
+        // cannot open the box from a screen that does not lead there.
+        for screen in Screen::ALL {
+            if screen == Screen::Stats {
+                continue;
+            }
+            let mut app = session();
+            app.screen = screen;
+            app.update(Action::OpenPrestige);
+            assert_eq!(app.modal, None, "{screen:?} opened the prestige preview");
+        }
+    }
+
+    /// The preview is readable long before it is usable — that is what makes the End's
+    /// richness dial a decision rather than a curiosity (§6.8).
+    #[test]
+    fn a_locked_run_may_read_the_preview_and_is_refused_at_the_gate() {
+        let mut app = session();
+        app.screen = Screen::Stats;
+        app.update(Action::OpenPrestige);
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("You lose"), "{frame}");
+
+        app.update(Action::Confirm);
+
+        // The box stays up — it is what explains the refusal — and the core's own
+        // sentence is raised over it.
+        assert_eq!(app.modal, Some(Modal::PrestigePreview));
+        assert_eq!(app.toasts.len(), 1);
+        assert_eq!(app.state.player().get_prestige(), 0);
+    }
+
+    /// Rich in value, wrong in shape: the refusal that sends a player to `3 Inventory`
+    /// rather than back to a mine.
+    #[test]
+    fn the_wrong_denomination_is_refused_without_opening_the_confirm() {
+        let mut app = holding_raw_amethyst();
+        app.update(Action::OpenPrestige);
+        app.update(Action::Confirm);
+
+        assert_eq!(app.modal, Some(Modal::PrestigePreview));
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Compress first"), "{frame}");
+    }
+
+    #[test]
+    fn an_affordable_preview_opens_the_confirm_on_an_empty_field() {
+        let mut app = ready_to_prestige();
+        app.update(Action::OpenPrestige);
+        app.update(Action::Confirm);
+
+        assert_eq!(
+            app.modal,
+            Some(Modal::PrestigeConfirm {
+                typed: String::new()
+            })
+        );
+        // Nothing has been spent by opening the box.
+        assert_eq!(app.state.player().get_prestige(), 0);
+    }
+
+    /// The field echoes what was typed and stops at the word's own length — a player
+    /// meets their mistake rather than typing past it.
+    #[test]
+    fn the_field_takes_letters_erases_them_and_stops_at_the_words_length() {
+        let mut app = ready_to_prestige();
+        app.modal = Some(Modal::PrestigeConfirm {
+            typed: String::new(),
+        });
+        for character in "prez".chars() {
+            app.update(Action::TypeChar(character));
+        }
+        assert_eq!(
+            app.modal,
+            Some(Modal::PrestigeConfirm {
+                typed: "prez".to_owned()
+            })
+        );
+
+        app.update(Action::EraseChar);
+        assert_eq!(
+            app.modal,
+            Some(Modal::PrestigeConfirm {
+                typed: "pre".to_owned()
+            })
+        );
+
+        for _ in 0..40 {
+            app.update(Action::TypeChar('X'));
+        }
+        match &app.modal {
+            Some(Modal::PrestigeConfirm { typed }) => {
+                assert_eq!(typed.chars().count(), CONFIRM_WORD.chars().count());
+            }
+            other => unreachable!("the confirm closed: {other:?}"),
+        }
+
+        // Erasing an empty field is a no-op rather than an underflow.
+        app.modal = Some(Modal::PrestigeConfirm {
+            typed: String::new(),
+        });
+        app.update(Action::EraseChar);
+        assert_eq!(
+            app.modal,
+            Some(Modal::PrestigeConfirm {
+                typed: String::new()
+            })
+        );
+    }
+
+    /// The whole point of §6.9: the wrong word does not buy the right thing.
+    #[test]
+    fn a_wrong_word_neither_prestiges_nor_says_anything() {
+        let mut app = ready_to_prestige();
+        app.modal = Some(Modal::PrestigeConfirm {
+            typed: "prestige".to_owned(),
+        });
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.player().get_prestige(), 0);
+        assert_eq!(app.toasts.len(), 0);
+        // The box stays up with the word still in it, which is the answer.
+        assert_eq!(
+            app.modal,
+            Some(Modal::PrestigeConfirm {
+                typed: "prestige".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn the_typed_word_trades_the_run_in_and_resets_the_front_end_with_it() {
+        let mut app = ready_to_prestige();
+        app.cursors.pickaxe_rung = 20;
+        app.cursors.level = 50;
+        app.update(Action::OpenPrestige);
+        app.update(Action::Confirm);
+        for character in CONFIRM_WORD.chars() {
+            app.update(Action::TypeChar(character));
+        }
+        app.update(Action::Confirm);
+
+        let player = app.state.player();
+        assert_eq!(player.get_prestige(), 1);
+        assert_eq!(player.get_level(), 1);
+        assert_eq!(player.get_pickaxe().get_tier(), PickaxeTier::Wooden);
+
+        // The front-end's own state follows the run, or a cursor points at a rung the
+        // player no longer stands on.
+        assert_eq!(app.modal, None);
+        assert_eq!(app.screen, Screen::Mine);
+        assert_eq!(app.cursors.mine, MineKind::Stone);
+        assert_eq!(app.cursors.pickaxe_rung, 0);
+        assert_eq!(app.cursors.level, 1);
+        assert!(app.refused.is_none());
+
+        let frame = {
+            app.sync_view();
+            whole_frame(&render_to_buffer(&app))
+        };
+        assert!(frame.contains("Prestige I — ×1.10"), "{frame}");
+    }
+
+    /// `Esc` at either step leaves the run exactly where it was.
+    #[test]
+    fn escaping_either_box_trades_nothing() {
+        for typed in [None, Some(String::new())] {
+            let mut app = ready_to_prestige();
+            app.modal = match typed {
+                Some(typed) => Some(Modal::PrestigeConfirm { typed }),
+                None => Some(Modal::PrestigePreview),
+            };
+            app.update(Action::CloseModal);
+            assert_eq!(app.modal, None);
+            assert_eq!(app.state.player().get_prestige(), 0);
+            assert_eq!(app.state.player().get_level(), 50);
+        }
+    }
+
+    /// The confirm claims every letter, which is what makes typing eight of them an
+    /// affordance muscle memory cannot produce by accident.
+    #[test]
+    fn the_confirm_captures_the_letters_the_ring_would_otherwise_claim() {
+        let mut app = ready_to_prestige();
+        app.modal = Some(Modal::PrestigeConfirm {
+            typed: String::new(),
+        });
+        assert_eq!(
+            keymap::resolve(&app, KeyEvent::from(KeyCode::Char('q'))),
+            Some(Action::TypeChar('q'))
+        );
+        assert_eq!(
+            keymap::resolve(&app, KeyEvent::from(KeyCode::Char('1'))),
+            Some(Action::TypeChar('1'))
+        );
+        assert_eq!(keymap::resolve(&app, KeyEvent::from(KeyCode::Tab)), None);
+        // Ctrl-C outranks the capture, as it does for every modal.
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(keymap::resolve(&app, ctrl_c), Some(Action::Quit));
+    }
+
+    /// Text is the confirm's alone. A `TypeChar` reaching the reducer with no box open
+    /// is not a state the keymap can produce — it decodes letters only under that
+    /// modal — and the arm exists so it is a no-op rather than an omission.
+    #[test]
+    fn a_typed_character_outside_the_confirm_changes_nothing() {
+        for screen in Screen::ALL {
+            let mut app = session();
+            app.screen = screen;
+            app.update(Action::TypeChar('P'));
+            app.update(Action::EraseChar);
+            assert_eq!(app.modal, None);
+            assert_eq!(app.screen, screen);
+            assert_eq!(app.toasts.len(), 0);
+        }
+    }
+
+    /// **The till is the authority, not the projection.** The confirm is only reachable
+    /// through an affordable preview, so this state is unreachable in play — which is
+    /// exactly why the outcome is routed rather than assumed: the box is open against a
+    /// run the rules refuse, and the refusal is the core's own sentence.
+    #[test]
+    fn a_confirm_the_run_cannot_pay_refuses_at_the_till() {
+        let mut app = session();
+        app.screen = Screen::Stats;
+        app.modal = Some(Modal::PrestigeConfirm {
+            typed: CONFIRM_WORD.to_owned(),
+        });
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.player().get_prestige(), 0);
+        assert_eq!(app.modal, None);
+        assert_eq!(app.toasts.len(), 1);
+        // Nothing moved: a refusal that changes the screen would be a refusal that
+        // half-happened.
+        assert_eq!(app.screen, Screen::Stats);
+    }
+
+    #[test]
+    fn the_confirm_is_drawn_over_the_screen_it_was_opened_from() {
+        let mut app = ready_to_prestige();
+        app.update(Action::OpenPrestige);
+        app.update(Action::Confirm);
+        app.update(Action::TypeChar('P'));
+        app.sync_view();
+
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Type  PRESTIGE  to confirm:"), "{frame}");
+        assert!(frame.contains("> P___________"), "{frame}");
+    }
+
+    /// The property the shared projection exists for: the box cannot quote a price the
+    /// panel it was opened from disagrees with.
+    #[test]
+    fn the_box_and_the_panel_behind_it_quote_one_price() {
+        let mut app = ready_to_prestige();
+        app.sync_view();
+        let panel = whole_frame(&render_to_buffer(&app));
+        app.update(Action::OpenPrestige);
+        app.sync_view();
+        let box_frame = whole_frame(&render_to_buffer(&app));
+
+        let price = denominations(app.view.prestige.cost);
+        assert!(panel.contains(&price), "{panel}");
+        assert!(box_frame.contains(&price), "{box_frame}");
     }
 }
 

@@ -62,14 +62,20 @@ pub enum Conversion {
 
 /// A modal overlay that captures input.
 ///
-/// Three variants so far. The rest ([`prestige`], [`settings`]) are drawn but not yet
-/// stacked: they arrive as variants here when the screens that open them are wired
-/// (phase 7), and the exhaustive `match` in [`crate::keymap`] and [`crate::app`] then
-/// refuses to compile until each learns to draw and drive.
+/// One is still missing ([`settings`]): it is drawn but not yet stacked, and arrives
+/// as a variant here when the screen that opens it is wired (phase 9). The exhaustive
+/// `match` in [`crate::keymap`] and [`crate::app`] then refuses to compile until it
+/// learns to draw and drive.
 ///
-/// [`prestige`]: crate::overlay::prestige
+/// **[`Clone`] and no longer [`Copy`]**, since the prestige confirm carries the text
+/// the player has typed. A [`String`] owns a heap allocation, and copying one bit for
+/// bit would leave two owners of it — so the language refuses `Copy` and the callers
+/// ask for a clone instead. The cost is one small allocation per keystroke, on the
+/// input path and never on the render one; the alternative was a hand-rolled fixed
+/// buffer whose only merit would have been keeping a trait this enum does not need.
+///
 /// [`settings`]: crate::overlay::settings
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Modal {
     /// The full-screen key reference (UI.md §6.11), opened with `?` from any screen.
     Help,
@@ -111,6 +117,28 @@ pub enum Modal {
         to: usize,
         /// Whether `Buy it` is the focused option.
         buy: bool,
+    },
+    /// The prestige preview (UI.md §6.8), opened with `p` from the Stats screen.
+    ///
+    /// **A unit variant, and the only stateful modal that is one.** The compression
+    /// dialog and the dip carry values because a spinner's count and a caret's side
+    /// exist nowhere else; this box has nothing of its own to remember. Every figure
+    /// in it is [`PrestigeView`](crate::view::PrestigeView)'s, which is the same
+    /// projection the Stats panel behind it draws from — so re-reading it per frame is
+    /// what *guarantees* the two agree, where a captured copy could go stale against a
+    /// tick that credited ore while the box was up.
+    PrestigePreview,
+    /// The typed prestige confirm (UI.md §6.9), reached by `Enter` on an affordable
+    /// preview.
+    ///
+    /// **The field's contents live here**, for [`Compress`](Modal::Compress)' reason
+    /// exactly: two facts that only mean something together are stored together, so
+    /// *"half a typed word with no box open"* is a state that cannot be written down.
+    /// It is also what makes this the variant that costs the enum its [`Copy`].
+    PrestigeConfirm {
+        /// What the player has typed so far, verbatim — mistakes included, which is
+        /// the whole point of §6.9's argument for typing over a `No / Yes`.
+        typed: String,
     },
     /// The dev menu (`docs/DEV-MENU.md`), opened with `` ` `` when the session was
     /// started with `SKYLODE_DEV` set.
