@@ -28,7 +28,7 @@ use skylode_core::block::Block;
 
 use crate::{
     action::Action,
-    format::{grouped, justified, xp_progress, xp_ratio},
+    format::{grouped, justified, shown_rung, xp_progress, xp_ratio},
     screen::panel,
     theme,
     view::{HaulEntry, HaulView, View},
@@ -264,11 +264,13 @@ fn mine_panel(frame: &mut Frame, area: Rect, view: &View) {
         )),
         Line::from(format!(
             " Size      {columns} x {rows}   (level {})",
-            panel_view.size_level,
+            shown_rung(panel_view.size_level),
         )),
         Line::from(format!(
             " Richness  level {} / {}   value {}%",
-            panel_view.richness_level, panel_view.richness_max, panel_view.value_percent,
+            shown_rung(panel_view.richness_level),
+            shown_rung(panel_view.richness_max),
+            panel_view.value_percent,
         )),
     ];
     frame.render_widget(Paragraph::new(lines).block(panel(" Mine ")), area);
@@ -563,8 +565,8 @@ mod tests {
             frame.contains(&format!("Size      {columns} x {rows}")),
             "{frame}"
         );
-        assert!(frame.contains("(level 9)"), "{frame}");
-        assert!(frame.contains("Richness  level 0 / 9"), "{frame}");
+        assert!(frame.contains("(level 10)"), "{frame}");
+        assert!(frame.contains("Richness  level 1 / 10"), "{frame}");
         assert!(frame.contains("value 10%"), "{frame}");
         assert!(frame.contains("Overworld"), "{frame}");
     }

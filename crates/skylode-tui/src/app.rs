@@ -33,7 +33,7 @@ use crate::{
     config::Config,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     event::{Event, Events},
-    format::{denominations, grouped, roman, rung_label},
+    format::{denominations, grouped, roman, rung_label, shown_rung},
     keymap,
     overlay::{Conversion, Modal, compression, dip, help, too_small},
     screen::Screen,
@@ -864,7 +864,9 @@ impl App {
             });
             self.announce_purchase_refusal(refusal, cost.as_ref());
             if let (Some(level), Some(cost)) = (priced, cost) {
-                let label = format!("{} {what} {}", kind.name(), level + 1);
+                // The rung being bought, named as the Upgrades pane names it: the
+                // step is `level + 1`, and the display counts from 1 on top of that.
+                let label = format!("{} {what} {}", kind.name(), shown_rung(level + 1));
                 self.remember_refusal(&label, &cost);
             }
             return;
@@ -3189,8 +3191,8 @@ mod tests {
         // in the hint — a player who was refused a richness ceiling should not be sent
         // to the Inventory to buy a size.
         for (track, purchase) in [
-            (MineTrack::Size, "Stone size 1"),
-            (MineTrack::Richness, "Stone richness 1"),
+            (MineTrack::Size, "Stone size 2"),
+            (MineTrack::Richness, "Stone richness 2"),
         ] {
             let mut app = veteran(&[(r#""inventory":{}"#, r#""inventory":{"stone":150}"#)]);
             app.screen = Screen::Upgrades;

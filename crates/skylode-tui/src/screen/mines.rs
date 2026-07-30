@@ -38,7 +38,7 @@ use skylode_core::world::World;
 
 use crate::{
     action::Action,
-    format::justified,
+    format::{justified, shown_rung},
     screen::panel,
     theme,
     view::{MineDetail, MineListRow, View},
@@ -137,7 +137,12 @@ fn list(frame: &mut Frame, area: Rect, view: &View) {
 fn row_detail(row: &MineListRow) -> String {
     match row.lock.missing_tier() {
         Some(tier) => format!("locked   {}", tier.name()),
-        None => format!("{} x {}   R {}", row.size.0, row.size.1, row.richness_level),
+        None => format!(
+            "{} x {}   R {}",
+            row.size.0,
+            row.size.1,
+            shown_rung(row.richness_level)
+        ),
     }
 }
 
@@ -243,7 +248,7 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
         theme::marked(&format!(" Gate       {}", gate_line(selected, detail))),
         Line::from(format!(
             " Size       {width} x {height} = {total}    level {}",
-            detail.size_level,
+            shown_rung(detail.size_level),
         )),
         // `never entered` rather than `0 / 40`: a run creates its mines lazily, and
         // a zero here would claim the player had emptied one they have never opened.
@@ -253,7 +258,8 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
         }),
         Line::from(format!(
             " Richness   level {} / {}",
-            detail.richness_level, detail.richness_max,
+            shown_rung(detail.richness_level),
+            shown_rung(detail.richness_max),
         )),
         Line::from(""),
     ];
@@ -279,13 +285,19 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
             Style::default().fg(theme::MUTED),
         ),
         Span::raw(" ►"),
-        // The rung, after the arrow. A slider you drag *is* its own value, but this
-        // one steps between ten discrete settings and its travel is bounded by a
-        // ceiling the player buys — so "3 of the 6 I own" is the thing they need
-        // before deciding whether to buy a seventh, and the bar alone cannot say it.
+        // The rung, after the arrow, counted from 1 like every other rung the player
+        // reads. A slider you drag *is* its own value, but this one steps between ten
+        // discrete settings and its travel is bounded by a ceiling the player buys — so
+        // "rung 4 of the 7 I own" is the thing they need before deciding whether to buy
+        // an eighth. The bar pictures the first number against the ten; only this pair
+        // can state the second.
         // Five columns at the very most, against the six this row has spare.
         Span::styled(
-            format!("  {}/{}", detail.richness_setting, detail.richness_level),
+            format!(
+                "  {}/{}",
+                shown_rung(detail.richness_setting),
+                shown_rung(detail.richness_level)
+            ),
             Style::default().fg(theme::MUTED),
         ),
     ]));
@@ -389,7 +401,7 @@ mod tests {
         );
         // A mine from each: its size and richness in the right column.
         assert!(row_with(&list, "Stone").contains("20 x 10"), "{list}");
-        assert!(row_with(&list, "Stone").contains("R 9"), "{list}");
+        assert!(row_with(&list, "Stone").contains("R 10"), "{list}");
     }
 
     #[test]
@@ -422,10 +434,10 @@ mod tests {
             "{frame}"
         );
         assert!(row_with(&frame, "Size").contains("8 x 5 = 40"), "{frame}");
-        assert!(row_with(&frame, "Size").contains("level 3"), "{frame}");
+        assert!(row_with(&frame, "Size").contains("level 4"), "{frame}");
         assert!(row_with(&frame, "Blocks").contains("31 / 40"), "{frame}");
         assert!(
-            row_with(&frame, "Richness").contains("level 6 / 9"),
+            row_with(&frame, "Richness").contains("level 7 / 10"),
             "{frame}"
         );
     }
@@ -503,12 +515,12 @@ mod tests {
         assert!(frame.contains("← →  move the dial"), "{frame}");
     }
 
-    /// The rung is printed after the arrow, because the bar cannot say it.
+    /// The rung is printed after the arrow, because the bar cannot say both numbers.
     ///
     /// The dial steps between ten discrete settings and its travel is bounded by a
-    /// ceiling the player *buys*, so "3 of the 6 I own" is what they need before
-    /// deciding whether to buy a seventh — and a bar filled to 37% says neither
-    /// number.
+    /// ceiling the player *buys*, so "rung 4 of the 7 I own" is what they need before
+    /// deciding whether to buy an eighth. The bar pictures the first against the ten
+    /// rungs and has no way to picture the ceiling.
     #[test]
     fn the_dial_prints_its_rung_against_the_ceiling_it_can_reach() {
         let mut view = View::sample();
@@ -516,7 +528,7 @@ mod tests {
         view.mines.detail.richness_level = 6;
         let frame = whole_frame(&render_view(&view));
 
-        assert!(row_with(&frame, "Dial").contains("3/6"), "{frame}");
+        assert!(row_with(&frame, "Dial").contains("4/7"), "{frame}");
     }
 
     /// The pane's two gate rows are the two-axis lock drawn whole.

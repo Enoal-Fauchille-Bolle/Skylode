@@ -25,7 +25,7 @@ use skylode_core::world::World;
 use crate::{
     action::Action,
     cursor::{MineTrack, UpgradeTab},
-    format::{MAXED, grouped, justified, roman},
+    format::{MAXED, grouped, justified, roman, shown_rung},
     screen::{panel, scrollbar, window},
     theme,
     view::{
@@ -820,7 +820,10 @@ fn mine_pane(detail: &MineTrackDetail, height: usize) -> Vec<PaneLine> {
         return head;
     }
 
-    let (level, next) = detail.level;
+    // Both sides of the step in the player's own numbering. `detail.level` is the
+    // core's `(now, next)` pair, so the shift applies to each half rather than to the
+    // pair: the Mines screen calls the same rung `level` and the two panes must agree.
+    let (level, next) = (shown_rung(detail.level.0), shown_rung(detail.level.1));
     head.extend(block(
         match detail.track {
             MineTrack::Size => "Size",
@@ -1241,7 +1244,7 @@ mod tests {
             row_with(&frame, "Obsidian       Richness").contains('▸'),
             "{frame}"
         );
-        assert!(frame.contains("Ceiling   level 6 → 7"), "{frame}");
+        assert!(frame.contains("Ceiling   level 7 → 8"), "{frame}");
         // Twenty-four tracks overflow, so the thumb is drawn.
         assert!(
             frame.contains('█'),
@@ -1492,10 +1495,10 @@ mod tests {
             ..a_mine_track()
         });
         assert!(frame.contains("Obsidian Mine — size"), "{frame}");
-        assert!(frame.contains("Size      level 6 → 7"), "{frame}");
+        assert!(frame.contains("Size      level 7 → 8"), "{frame}");
         // Both sides of the step, and the cell counts under them: a grid quoted only
         // after leaves the player to remember what they are moving from.
-        assert!(frame.contains("At 7      grid   10x6 → 12x7"), "{frame}");
+        assert!(frame.contains("At 8      grid   10x6 → 12x7"), "{frame}");
         assert!(frame.contains("cells  60 → 84"), "{frame}");
         // The four lines about the dial belong to the richness track alone.
         assert!(!frame.contains("This buys the ceiling only"), "{frame}");
@@ -1511,11 +1514,11 @@ mod tests {
             ..a_mine_track()
         });
         assert!(
-            frame.contains(&format!("Ceiling   level 6 — {MAXED}")),
+            frame.contains(&format!("Ceiling   level 7 — {MAXED}")),
             "{frame}"
         );
         assert!(frame.contains("nothing left to buy"), "{frame}");
-        assert!(!frame.contains("At 7"), "{frame}");
+        assert!(!frame.contains("At 8"), "{frame}");
     }
 
     #[test]

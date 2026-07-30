@@ -34,7 +34,7 @@ use skylode_core::{
 use crate::{
     announce,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
-    format::{MAXED, roman, rung_label},
+    format::{MAXED, roman, rung_label, shown_rung},
     palette::ColourMode,
 };
 
@@ -1886,7 +1886,9 @@ fn track_row(state: &GameState, kind: MineKind, track: MineTrack) -> (String, Ma
     let next = match track_outcome(track, level) {
         TrackOutcome::Maxed => MAXED.to_owned(),
         TrackOutcome::Size { after: (w, h), .. } => format!("{w}x{h}"),
-        TrackOutcome::Richness { .. } => (level + 1).to_string(),
+        // The rung this buy *arrives at*, in the numbering the detail pane's
+        // `level 4 → 5` prints — so `level + 1` for the step, then the display shift.
+        TrackOutcome::Richness { .. } => shown_rung(level + 1).to_string(),
     };
     let mark = match track_cost(kind, track, level, mine.is_some()) {
         Some(cost) => Mark::of(&economy::affordability(player.get_inventory(), &cost)),
@@ -3941,7 +3943,7 @@ mod tests {
 
         let coal = cell(MineKind::Coal, MineTrack::Richness);
         assert_eq!(coal.as_ref().map(|row| row.mark), Some(Mark::NoPrice));
-        assert!(coal.is_some_and(|row| row.cells.get(2).is_some_and(|next| next == "1")));
+        assert!(coal.is_some_and(|row| row.cells.get(2).is_some_and(|next| next == "2")));
 
         // Two rows per mine, and every one of the twelve gets both.
         assert_eq!(rows.len(), MineKind::ALL.len() * MineTrack::ALL.len());

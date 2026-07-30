@@ -413,10 +413,22 @@ above is left as drawn.
   nine others the materials are equal, so the frame's rule would print
   `Stone  +  Stone`. The blocks never coincide, and they are the more useful pair:
   `Iron Ore  +  Iron Block`, the second worth nine of the first.
-- **The dial prints its rung after the right arrow** (`3/6`). The bar is filled by
-  the value-weight *curve*, not by the setting, and the dial steps between ten
-  discrete rungs bounded by a ceiling the player buys — so "3 of the 6 I own" is what
-  they consult before buying a seventh, and no bar can say it.
+- **The dial prints its rung after the right arrow** (`4/7`). The dial steps between
+  ten discrete rungs bounded by a ceiling the player buys, so "rung 4 of the 7 I own"
+  is what they consult before buying an eighth, and a bar can picture only the first
+  of those two numbers.
+- **Every mine rung is displayed counting from 1, not from 0** (`level 7 / 10`,
+  `R 10`, `4/7`, `level 7 → 8`, `At 8`), and the frames above are drawn the old way.
+  The core numbers these levels from 0 because they are *indexes into a table of ten
+  rungs*; the player is not reading an index. `Size level 0` describes a mine standing
+  on the bottom rung of a ladder and reads as a mine that has not started — the two
+  senses of zero, and only one of them is true here. **Enchants keep their zero**: an
+  enchant at level 0 really is *not owned*, so the shift would claim a purchase that
+  never happened. So does the prestige rank, for the same reason and one more — the
+  multiplier is computed from the rank, and a displayed rank that differed from the
+  computed one would be a discrepancy on the Stats screen. The shift lives in one
+  place, `format::shown_rung`, because the print sites are nine across four screens
+  and a forgotten one would not fail a build.
 
 ### 5.3 Inventory
 
@@ -653,6 +665,14 @@ Recorded when the screen was wired. The frames above are left as drawn.
   `M` can aim at nine. The pane prints `2 rungs` and the cost lines below it already
   name every material. The §6.7 modal keeps the frame's sentence at length two, since
   there it is the whole content of the decision, and falls back to a count past that.
+- **A mine track's levels are displayed counting from 1**, so §5.4.2's
+  `Ceiling   level 6 → 7` and its `At 7` block read `level 7 → 8` and `At 8`, and the
+  `Next` column of a richness row prints the rung the buy *arrives* at in the same
+  numbering. The reason is §5.2.1's, recorded there once: these levels are indexes into
+  a table of ten rungs, and an index is not what a player is reading. Both halves of the
+  step shift, because this pane and the Mines pane name the same rung `level` and may
+  not disagree about which one it is. The pickaxe and enchant sub-tabs are untouched —
+  their level 0 means *not owned*.
 - **Three sentences the frames print unconditionally are conditional.** §5.4.1's
   *"Every level also procs more often"* is false for Fortune and Haste —
   `EnchantType::proc_permille` is `0` for both, they are permanent multipliers — so

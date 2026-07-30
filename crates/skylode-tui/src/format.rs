@@ -113,6 +113,29 @@ pub fn roman(level: u8) -> &'static str {
     ROMAN.get(usize::from(level) - 1).copied().unwrap_or("?")
 }
 
+/// The number a mine-track level is **shown** as: the core counts from 0, the player
+/// counts from 1.
+///
+/// A mine's size and richness levels are *indexes into a table of ten rungs*
+/// (`MINE_SIZES`, and richness `0..=9`), which is why the core numbers them from zero
+/// — and why the player must not see them that way. A level of `0` there does not mean
+/// "absent": the mine exists, it is 3×3, and the player owns the first rung of ten. So
+/// `Size level 0` reads as a mine that has not started, when what it describes is a
+/// mine at the bottom of a ladder it is standing on. Enchants are the opposite case and
+/// deliberately untouched: their level `0` really is *not owned*, so `roman(0)`
+/// answering `?` and the roadmap printing `none` are both right as they stand.
+///
+/// **One function rather than a `+ 1` at each print site**, because the sites are
+/// nine and spread over four screens, an announcement and a refusal label: a screen
+/// that forgot the shift would not fail a build, it would quietly claim a rung the
+/// player does not own is the one they are standing on.
+///
+/// The return is never 0, which is what lets the dial's bar divide by
+/// `shown_rung(richness_max)` — the top rung's number *is* the number of rungs.
+pub fn shown_rung(level: u32) -> u32 {
+    level.saturating_add(1)
+}
+
 /// A rung of the pickaxe ladder, named the way `docs/UI.md` §5.4 lists it:
 /// `Netherite Pickaxe` for a tier jump, `Diamond Eff IV` for an Efficiency level.
 ///
@@ -170,6 +193,22 @@ pub fn xp_ratio(xp: u32, to_next: Option<u32>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The player counts the rungs they own; the core indexes the table they sit in.
+    ///
+    /// Both ends of both mine tracks are checked because both are load-bearing: the
+    /// bottom rung must read `1` (a mine at size level 0 is a real 3×3 mine, not a
+    /// missing one) and the top must read `10` (ten rungs, so the last one is the
+    /// tenth and the dial's `10/10` is the count of them).
+    #[test]
+    fn a_rung_is_shown_counting_from_one() {
+        assert_eq!(shown_rung(0), 1);
+        assert_eq!(shown_rung(9), 10);
+        // The saturating add is unreachable through the game — no track has `u32::MAX`
+        // rungs — and is there so a corrupt or future level cannot panic mid-frame,
+        // which is [`roman`]'s reason for answering `?` rather than indexing.
+        assert_eq!(shown_rung(u32::MAX), u32::MAX);
+    }
 
     #[test]
     fn a_number_below_a_thousand_is_left_untouched() {
