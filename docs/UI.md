@@ -1688,6 +1688,20 @@ never switches a sub-tab, and the sub-tab key is the configurable binding
 there (§8 — Upgrades buys the _ceiling_ on `Enter`, the Mines screen slides the
 _dial_), so the lateral axis is free for the sub-tab binding to own.
 
+**Every `↑↓` in both tables wraps.** Past the last row is the first, past the first is
+the last — the mines, the materials, the three Upgrades sub-tabs' rows, the Levels
+roadmap and the Settings fields alike, on the same rule the tab ring follows. A cursor
+only _highlights_: every purchase, claim and entry still costs its own `Enter`, so a lap
+of a list spends nothing. Reaching an end and stopping dead, by contrast, is a keypress
+that reports nothing.
+
+**Three controls stop at their ends, and none of them is a list.** The richness dial is
+a cursor on a bought ceiling, and rolling from the ceiling to 0 would jump the bar the
+player is reading; the compression spinner is a quantity in `1..=pile`, where rolling
+from one to _all of it_ is a trap sitting under a held key; and the dip modal's caret is
+two options, for the reason §6.7 already gives. The distinction is _list or quantity_,
+not _screen or overlay_.
+
 **Overlay — while a modal is up, it owns the keyboard**
 
 | Overlay | Keys |

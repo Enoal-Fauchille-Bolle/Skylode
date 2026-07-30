@@ -18,9 +18,12 @@ cargo run --release -p skylode-tui     # the menu is not in the binary at all
 ```
 
 Then `` ` `` (backquote) from any screen. `↑↓` picks a row, `←→` turns the value on
-it, `Enter` applies it, `Esc` or `` ` `` closes. A `DEV` marker sits at the right end
-of the tab row for as long as the session has the menu, and turns red while free
-upgrades are on.
+it, `Enter` applies it, `Esc` or `` ` `` closes. **Both wrap** — the row list and every
+value ladder on it, so `←` on `Mining level 1` goes to the cap and `→` past `1 000 000`
+comes back to `1`. That is the game's own rule (`UI.md` §11) and not a dev-only
+convenience; nothing in this menu is a quantity being spent, so nothing in it stops at
+an end. A `DEV` marker sits at the right end of the tab row for as long as the session
+has the menu, and turns red while free upgrades are on.
 
 ## The two-layer gate
 
