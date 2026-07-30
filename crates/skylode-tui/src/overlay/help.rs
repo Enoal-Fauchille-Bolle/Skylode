@@ -23,7 +23,14 @@ use super::square;
 use crate::{config::Config, screen::Screen, theme};
 
 /// The globals — the "Anywhere" block, shown whatever screen Help was opened from.
-const GLOBALS: [&str; 10] = [
+///
+/// **`q` reads `back to title screen` and not `back to the title screen`**, which is
+/// a row bought with an article. The pane is twenty-one rows and Upgrades filled all
+/// of them; the fifth binding that screen now has had to come from somewhere, and the
+/// choice was between dropping a `the` and dropping a key from the list. Twenty-three
+/// columns is what the label column leaves a value here, and the longer form is
+/// twenty-four — so it wrapped, at the cost of a whole row, to say nothing more.
+const GLOBALS: [&str; 9] = [
     "",
     "Anywhere",
     " Tab  ⇧Tab     next / previous screen",
@@ -32,8 +39,7 @@ const GLOBALS: [&str; 10] = [
     "               the cursor",
     " s             Settings",
     " ?             this help",
-    " q             back to the title",
-    "               screen",
+    " q             back to title screen",
 ];
 
 /// The Mining block — shown always, since mining is the game's core act and must be
@@ -147,6 +153,9 @@ fn contextual(screen: Screen, config: &Config) -> Vec<String> {
             " ↑ ↓           select a row".to_owned(),
             " Enter         buy up to the cursor".to_owned(),
             " M             buy as many as you can".to_owned(),
+            // The §8.4 return leg. Listed under Upgrades and not under Inventory
+            // because it is pressed *here* — the same letter, one screen earlier.
+            " c             go compress what is short".to_owned(),
         ],
         Screen::Stats => owned(&[
             " ↑ ↓           scroll the history",
@@ -193,7 +202,7 @@ mod tests {
         }
 
         // The Keys pane has the same 21 rows and the same silent clip, and Upgrades
-        // is its worst case: ten globals, a blank, a heading, its four contextual
+        // is its worst case: nine globals, a blank, a heading, its five contextual
         // bindings, a blank and the four Mining lines come to exactly 21. Checked on
         // the last Mining line for the same reason as above.
         let upgrades = help(Screen::Upgrades, &Config::default());

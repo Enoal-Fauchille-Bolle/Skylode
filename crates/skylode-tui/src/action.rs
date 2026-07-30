@@ -107,4 +107,23 @@ pub enum Action {
     Compress,
     /// Open the same dialog with the arithmetic reversed (`C`).
     Decompress,
+    /// Walk from the Upgrades screen to the Inventory, onto the pile a
+    /// `compress first` refusal named (`c`).
+    ///
+    /// **The second half of UI.md §8.4's loop, and it carries no material** — for the
+    /// same reason no list gesture carries a row: [`keymap`](crate::keymap) decodes a
+    /// key with no access to the run, so it cannot know what was refused. What it names
+    /// is the *journey*; [`App`](crate::app::App) supplies the destination from the
+    /// refusal it already remembers.
+    ///
+    /// It travels even when nothing is remembered, landing on the Inventory with the
+    /// cursor where the player left it. A key that silently did nothing would be worse
+    /// than one that does the obvious half of its job — and the refusal that
+    /// advertises it is the only place it is advertised, so an unprompted press is
+    /// already the rarer case.
+    ///
+    /// Bound to `c` on the Upgrades screen, which is free there and is the same
+    /// mnemonic [`Compress`](Action::Compress) spends on the Inventory: one letter,
+    /// one idea, on the two screens the loop runs between.
+    GoCompress,
 }

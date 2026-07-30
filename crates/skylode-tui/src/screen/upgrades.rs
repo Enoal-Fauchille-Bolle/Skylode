@@ -910,12 +910,18 @@ const DETAIL_WIDTH: usize = DETAIL_WEIGHT as usize;
 ///
 /// `M` and not `m`: it spends an inventory, and the shifted key is one the hand does
 /// not reach for by accident.
+///
+/// `c` walks to the Inventory, onto the pile a `compress first` refusal named — the
+/// return leg of UI.md §8.4's loop, which until now the player had to walk by hand.
+/// Free on this screen, and the same letter the Inventory spends on compressing, so
+/// the loop is one key in both directions.
 pub fn map_key(key: KeyEvent) -> Option<Action> {
     match key.code {
         KeyCode::Up => Some(Action::CursorUp),
         KeyCode::Down => Some(Action::CursorDown),
         KeyCode::Enter => Some(Action::Confirm),
         KeyCode::Char('M') => Some(Action::BuyMax),
+        KeyCode::Char('c') => Some(Action::GoCompress),
         _ => None,
     }
 }

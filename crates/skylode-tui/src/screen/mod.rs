@@ -479,7 +479,7 @@ mod tests {
                     None,
                     None,
                     Some(Action::Confirm),
-                    None,
+                    Some(Action::GoCompress),
                     None,
                     Some(Action::BuyMax),
                 ],

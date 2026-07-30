@@ -454,7 +454,32 @@ impl App {
             Action::AdjustMax => {}
             Action::Compress => self.open_conversion(Conversion::Compress),
             Action::Decompress => self.open_conversion(Conversion::Decompress),
+            Action::GoCompress => self.walk_to_the_refused_pile(),
         }
+    }
+
+    /// Walks to the Inventory, onto the pile the remembered refusal named.
+    ///
+    /// **The return leg of UI.md §8.4's loop**, whose two other legs were already
+    /// built: the refusal is remembered in [`refused`](App::refused), and
+    /// [`inventory_view`](crate::view) prints it on the row it names. What was missing
+    /// was the walk itself, which the player made by hand — `3`, then `↑↓` down a
+    /// fifteen-row table to find the material a toast had named three seconds ago and
+    /// which was by then gone.
+    ///
+    /// **The refusal is not consumed.** It is what the Inventory screen prints the
+    /// hint from, so clearing it here would empty the panel this walk exists to reach.
+    /// It is cleared where it always was: by the next purchase outcome.
+    ///
+    /// The cursor only moves when there is somewhere to move it — a `c` pressed with
+    /// nothing refused still travels, and lands where the player last left the table.
+    /// The alternative was a key that does nothing at all, which is a worse answer to
+    /// the same rare press.
+    fn walk_to_the_refused_pile(&mut self) {
+        if let Some(hint) = &self.refused {
+            self.cursors.material = hint.needed.material;
+        }
+        self.screen = Screen::Inventory;
     }
 
     /// Offers `action` to the stacked modal, answering whether it took it.
@@ -859,14 +884,20 @@ impl App {
             // means there was nothing to buy: the cursor is at or behind the rung the
             // player stands on. Neutral rather than green — nothing was bought.
             Affordability::Affordable => ("Nothing to buy here".to_owned(), Tone::Neutral),
+            // **The one refusal that ends in a keystroke**, and the toast is where that
+            // keystroke is advertised. `c` walks to the pile named right here, so the
+            // sentence that identifies the problem is also the one that hands over the
+            // fix — and it is the only place it can be: a footer would have to carry a
+            // fourth binding on a row that is already 75 columns of an 80-column frame,
+            // for a key that is dead until something is refused.
             Affordability::CompressFirst(shortfalls) => (
                 match shortfalls.first() {
                     Some(Shortfall { item, needed, held }) => format!(
-                        "Compress first — need {} {item}, you have {}",
+                        "Compress first — need {} {item}, you have {} · c to go",
                         grouped(*needed),
                         grouped(*held)
                     ),
-                    None => "Compress first".to_owned(),
+                    None => "Compress first · c to go".to_owned(),
                 },
                 Tone::CompressFirst,
             ),
@@ -2777,6 +2808,56 @@ mod tests {
             app.refused.is_none(),
             "a cleared refusal was still remembered"
         );
+    }
+
+    /// The walk lands on the pile the refusal names, not on the one the cursor
+    /// happened to be resting on — which is the only reason the key beats pressing `3`.
+    #[test]
+    fn the_walk_lands_on_the_pile_the_refusal_named() {
+        // Fortune is priced in Emerald, and the Inventory cursor opens on Stone: two
+        // different rows, so a cursor that failed to move would still look right on a
+        // Stone-priced refusal and be caught only here.
+        let mut app = veteran(&[(r#""inventory":{}"#, r#""inventory":{"emerald":1500}"#)]);
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = UpgradeTab::Enchants;
+        app.cursors.enchant = EnchantType::Fortune;
+        assert_eq!(app.cursors.material, Material::Stone);
+
+        app.update(Action::Confirm);
+        app.update(Action::GoCompress);
+
+        assert_eq!(app.screen, Screen::Inventory);
+        assert_eq!(app.cursors.material, Material::Emerald);
+        // The refusal survives the walk: it is what the screen just reached prints the
+        // hint from, so consuming it here would empty the panel this key exists to
+        // reach.
+        assert!(
+            app.refused.is_some(),
+            "the walk ate the note it was carrying"
+        );
+        // `render` draws the cached projection, and the walk moved a cursor rather
+        // than the run — so the reprojection `run` does before each draw has to be
+        // asked for by hand here.
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Fortune I wants"), "{frame}");
+    }
+
+    /// A `c` with nothing refused still travels, and moves no cursor.
+    ///
+    /// The alternative was a key that does nothing at all. It is only ever advertised
+    /// by a refusal, so this is the rare press — and landing on the Inventory is the
+    /// obvious half of what the key means even with no pile to point at.
+    #[test]
+    fn the_walk_with_nothing_refused_travels_and_moves_no_cursor() {
+        let mut app = upgrading(UpgradeTab::Pickaxe);
+        app.cursors.material = Material::Diamond;
+        assert!(app.refused.is_none());
+
+        app.update(Action::GoCompress);
+
+        assert_eq!(app.screen, Screen::Inventory);
+        assert_eq!(app.cursors.material, Material::Diamond);
     }
 
     #[test]
