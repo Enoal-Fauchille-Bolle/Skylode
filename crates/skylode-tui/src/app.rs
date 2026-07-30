@@ -625,6 +625,13 @@ impl App {
             Some(Modal::PrestigePreview) => {
                 match action {
                     Action::Confirm => self.open_prestige_confirm(),
+                    // The §8.4 walk, and the modal closes on the way out: the player is
+                    // leaving for another screen, and a box left stacked over it would
+                    // capture the very keys they went there to press.
+                    Action::GoCompress => {
+                        self.modal = None;
+                        self.walk_to_the_refused_pile();
+                    }
                     _ => return false,
                 }
                 true
@@ -845,14 +852,25 @@ impl App {
             self.announce_core_refusal(Err(CoreError::PrestigeLocked { lock }));
             return;
         }
-        let cost = prestige::cost(player.get_prestige());
+        let rank = player.get_prestige();
+        let cost = prestige::cost(rank);
         let verdict = economy::affordability(player.get_inventory(), &cost);
         if verdict == Affordability::Affordable {
             self.modal = Some(Modal::PrestigeConfirm {
                 typed: String::new(),
             });
+            // A trade about to happen is not a refusal to walk away from.
+            self.refused = None;
         } else {
             self.announce_refusal(&verdict);
+            // **The §8.4 loop, joined by its fourth door.** A prestige is refused for the
+            // denomination exactly as the four purchase tracks are, so it must leave the
+            // same memory behind: without it, `c` walks to an Inventory screen that says
+            // nothing about what the player came for, and the loop is a walk with no
+            // errand at the end. `remember_refusal` clears it on every other outcome, so
+            // this is also what stops a stale note surviving the trade.
+            let purchase = format!("Prestige {}", prestige_rank(rank.saturating_add(1)));
+            self.remember_refusal(&purchase, &cost);
         }
     }
 
@@ -4174,6 +4192,57 @@ mod tests {
         app.sync_view();
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Compress first"), "{frame}");
+    }
+
+    /// **The prestige is the §8.4 loop's fourth door**, and it has to be: its price is
+    /// quoted in two denominations like every other, so a player holding the value in
+    /// raw is refused here exactly as they are on the Upgrades screen. The walk is
+    /// claimed inside the modal, because the modal is what would otherwise swallow `c`.
+    #[test]
+    fn c_walks_from_the_refused_preview_to_the_pile_it_named() {
+        let mut app = holding_raw_amethyst();
+        app.update(Action::OpenPrestige);
+        app.update(Action::Confirm);
+
+        // The refusal is remembered, so the Inventory screen has something to say.
+        match &app.refused {
+            Some(hint) => assert_eq!(hint.needed.material, Material::Amethyst),
+            None => unreachable!("a compress-first prestige must be remembered"),
+        }
+        // And the box advertises the key, since a modal leaves no footer to read.
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("press  c  to go"), "{frame}");
+
+        assert_eq!(
+            keymap::resolve(&app, KeyEvent::from(KeyCode::Char('c'))),
+            Some(Action::GoCompress)
+        );
+        app.update(Action::GoCompress);
+
+        // The box closes on the way out, or it would capture the keys the player went
+        // to the Inventory to press.
+        assert_eq!(app.modal, None);
+        assert_eq!(app.screen, Screen::Inventory);
+        assert_eq!(app.cursors.material, Material::Amethyst);
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Prestige I"), "{frame}");
+    }
+
+    /// The memory is cleared the moment it stops being true, like every other refusal.
+    #[test]
+    fn opening_the_confirm_forgets_a_refusal_the_run_has_outgrown() {
+        let mut app = ready_to_prestige();
+        app.refused = Some(CompressHint {
+            purchase: "Wooden Eff I".to_owned(),
+            needed: economy::CostLine::from_raw_total(Material::Stone, 100),
+        });
+
+        app.update(Action::OpenPrestige);
+        app.update(Action::Confirm);
+
+        assert!(app.refused.is_none());
     }
 
     #[test]

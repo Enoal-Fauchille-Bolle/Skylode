@@ -199,9 +199,15 @@ fn closing_lines(view: &PrestigeView) -> Vec<String> {
         ],
         // The value is there in the wrong shape: one trip to `3 Inventory` fixes it,
         // and saying "go mining" here would send the player somewhere that cannot help.
+        //
+        // **The key is named in the line, which is §8.4's own rule.** The purchase
+        // toasts end in `· c to go` for the same reason: `c` is dead until something is
+        // refused, so the sentence that identifies the problem is the only place its fix
+        // can be advertised. Here it has to be — a modal captures the keyboard, so a
+        // player who has read this box has no footer left to read.
         Affordability::CompressFirst(_) => vec![
             format!(" You hold the {material} in the wrong denomination —"),
-            " compress or decompress on 3 Inventory first.".to_owned(),
+            " press  c  to go and convert it.".to_owned(),
         ],
         Affordability::Insufficient(_) => vec![
             format!(

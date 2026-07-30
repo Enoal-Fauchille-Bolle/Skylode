@@ -103,6 +103,13 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
             // no list gesture either — the only modal in the game that is pure reading.
             Modal::PrestigePreview => match key.code {
                 KeyCode::Enter => Some(Action::Confirm),
+                // §8.4's walk, claimed inside the modal because the modal is what would
+                // otherwise swallow it. The refusal it answers is raised *by* this box —
+                // the price is quoted in two denominations, so a player holding the value
+                // in raw is refused here as surely as on the Upgrades screen — and a `c`
+                // that reached the screen behind would be a key the player pressed on the
+                // sentence advertising it and that did nothing.
+                KeyCode::Char('c') => Some(Action::GoCompress),
                 KeyCode::Esc => Some(Action::CloseModal),
                 _ => None,
             },

@@ -1244,13 +1244,19 @@ of them answers the wrong question. **Two gates, so two clauses** — the line i
 from `PrestigeLock`'s two `Option`s, and a third sentence would have to come from
 somewhere the lock no longer reports.
 
-#### 6.8.1 Four departures from this frame
+#### 6.8.1 Five departures from this frame
 
 Recorded when the box was wired to a real run. The frame above is left as drawn.
 
 - **The price is quoted in two denominations and the purse is read rather than
   re-split**, here and in §5.5's panel, for the reasons §5.5.1 gives: the total is not
   what the till accepts, and a purse is not a price.
+- **`c` is claimed by this modal, and the closing line advertises it.** A prestige is
+  refused for the denomination exactly as the four purchase tracks are, so it is §8.4's
+  fourth door: the refusal is remembered, `c` closes the box and walks to the pile it
+  named, and the Inventory panel greets the player with it. The key is named *in the
+  box* because a modal captures the keyboard — a player reading this has no footer left
+  to read, which is the same argument that puts `· c to go` inside the purchase toasts.
 - **Both right-hand columns are placed by a pad, not by counted spaces, and they now
   share one column.** The frame spells the gaps out, which only holds while every
   figure keeps the width it was drawn at — a rank is `0` before the first prestige and
