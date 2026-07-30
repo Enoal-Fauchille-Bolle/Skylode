@@ -52,7 +52,23 @@ const LIST_WEIGHT: u16 = 38;
 const DETAIL_WEIGHT: u16 = 42;
 
 /// How many cells the dial bar spans between its `◄` and `►` arrows.
+///
+/// Twenty against the richness track's ten rungs, so a rung is exactly two cells and
+/// the bar can be counted rather than estimated.
 const DIAL_WIDTH: usize = 20;
+
+/// The dial track's three regions, in the order they are drawn: where the dial sits,
+/// what the bought ceiling leaves reachable above it, and what is not bought yet.
+///
+/// **Named because a test counts them**, and a test that searched for a literal `'·'`
+/// would pass on a bar that had silently stopped drawing the other two. They are
+/// `char` rather than `&str` so counting them in a rendered row is one `filter`.
+const DIAL_FILLED: char = '█';
+/// Bought and reachable, but above where the dial currently sits.
+const DIAL_OWNED: char = '░';
+/// Past the bought ceiling: a rung the player would have to buy before the dial can
+/// reach it.
+const DIAL_LOCKED: char = '·';
 
 /// Columns kept clear on the right of the list, so a size or a `✓` does not abut
 /// the border the way the frame keeps them apart.
@@ -144,6 +160,14 @@ fn row_detail(row: &MineListRow) -> String {
             shown_rung(row.richness_level)
         ),
     }
+}
+
+/// A run of `cells` copies of one track glyph.
+///
+/// [`str::repeat`] would need the glyph as a `&str`, and the three constants are
+/// `char` so the tests can count them in a rendered row without slicing.
+fn track(glyph: char, cells: usize) -> String {
+    std::iter::repeat_n(glyph, cells).collect()
 }
 
 /// The pane's World row: `Nether        Lv 15  ✓`.
@@ -256,8 +280,14 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
             Some(standing) => format!(" Blocks     {standing} / {total}"),
             None => " Blocks     never entered".to_owned(),
         }),
+        // **`ceiling`, not `level`.** This number is the highest rung the dial may be
+        // pushed to, and the row below prints the rung the dial is *on* — two different
+        // facts that both used to be spelled `x / y` with the word `level` in front of
+        // one of them. `Ceiling` is the word the Upgrades pane already uses for this
+        // exact track and the word `docs/MECHANICS.md` argues in ("buy the ceiling, set
+        // the dial"), so the three places finally name it the same.
         Line::from(format!(
-            " Richness   level {} / {}",
+            " Richness   ceiling {}/{}",
             shown_rung(detail.richness_level),
             shown_rung(detail.richness_max),
         )),
@@ -283,32 +313,55 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
     // Rungs *reached*, so rung 1 of 10 fills one tenth rather than nothing: the first
     // rung is a position on the ladder, not the absence of one. `DIAL_WIDTH` is 20
     // against 10 rungs, so each rung is exactly two cells and the bar is countable.
+    //
+    // **One scale, three regions.** The track is the run's ten rungs from end to end,
+    // and the *bought ceiling* is where the owned part stops — so the number beside the
+    // bar and the bar itself are both out of ten and cannot disagree. Printing the
+    // ceiling as the denominator instead (`1/1` on a bar filled one tenth) put two
+    // scales in one control, and the reading it invited — "I am at the maximum" — was
+    // false about the only maximum that matters at the end of a run.
+    //
+    // A **texture** for the unbought tail rather than a marker glyph at the boundary: a
+    // vertical rule on a slider track reads as the *handle*, and the handle here is
+    // already the filled edge — at rung 3 of a bought 6 it would sit at 60 % while the
+    // dial is at 30 %, making the loudest glyph on the row point at the wrong number.
+    // Three glyphs and not three colours, for `docs/DECISIONS.md`'s reason about the
+    // mine cells: colour discrimination is the unreliable channel, so the distinction
+    // rides on the glyph and survives a remapped palette. At a maxed ceiling the tail is
+    // empty and this is exactly the two-tone bar it has always been.
     let rungs = shown_rung(detail.richness_max) as usize;
-    let filled = (shown_rung(detail.richness_setting) as usize * DIAL_WIDTH) / rungs;
-    // Spans rather than `marked` here: `█` and `░` are not marks, and this row is
-    // built by `format!` alone — no `justified` padding to preserve — so the two
-    // halves can be split safely. Same accent/muted pair as the gauges and the
-    // scrollbar, because the dial is one more "how far along" bar.
+    let cells = |rung: u32| (shown_rung(rung) as usize * DIAL_WIDTH) / rungs;
+    let filled = cells(detail.richness_setting);
+    let owned = cells(detail.richness_level);
+    // Spans rather than `marked` here: the three track glyphs are not marks, and this
+    // row is built by `format!` alone — no `justified` padding to preserve — so it can
+    // be split safely. Same accent/muted pair as the gauges and the scrollbar, because
+    // the dial is one more "how far along" bar.
     lines.push(Line::from(vec![
         Span::raw(" Dial   ◄ "),
-        Span::styled("█".repeat(filled), Style::default().fg(theme::ACCENT)),
         Span::styled(
-            "░".repeat(DIAL_WIDTH.saturating_sub(filled)),
+            track(DIAL_FILLED, filled),
+            Style::default().fg(theme::ACCENT),
+        ),
+        Span::styled(
+            track(DIAL_OWNED, owned.saturating_sub(filled)),
+            Style::default().fg(theme::MUTED),
+        ),
+        Span::styled(
+            track(DIAL_LOCKED, DIAL_WIDTH.saturating_sub(owned)),
             Style::default().fg(theme::MUTED),
         ),
         Span::raw(" ►"),
         // The rung, after the arrow, counted from 1 like every other rung the player
-        // reads. A slider you drag *is* its own value, but this one steps between ten
-        // discrete settings and its travel is bounded by a ceiling the player buys — so
-        // "rung 4 of the 7 I own" is the thing they need before deciding whether to buy
-        // an eighth. The bar pictures the first number against the ten; only this pair
-        // can state the second.
+        // reads, and against the run's ten — the same denominator the bar is drawn to.
+        // What the pair no longer states is the ceiling; the bar's own boundary shows
+        // that, and the `Ceiling` row above puts a number on it.
         // Five columns at the very most, against the six this row has spare.
         Span::styled(
             format!(
                 "  {}/{}",
                 shown_rung(detail.richness_setting),
-                shown_rung(detail.richness_level)
+                shown_rung(detail.richness_max)
             ),
             Style::default().fg(theme::MUTED),
         ),
@@ -449,7 +502,7 @@ mod tests {
         assert!(row_with(&frame, "Size").contains("level 4"), "{frame}");
         assert!(row_with(&frame, "Blocks").contains("31 / 40"), "{frame}");
         assert!(
-            row_with(&frame, "Richness").contains("level 7 / 10"),
+            row_with(&frame, "Richness").contains("ceiling 7/10"),
             "{frame}"
         );
     }
@@ -460,43 +513,47 @@ mod tests {
         // Obsidian is two-material, so the slider is drawn between its arrows.
         let dial = row_with(&frame, "Dial");
         assert!(dial.contains('◄') && dial.contains('►'), "{dial:?}");
-        assert!(dial.contains('█') && dial.contains('░'), "{dial:?}");
+        // The fixture's dial sits *on* its ceiling of 7/10, which is what a bought
+        // ceiling normally does — so the middle region is empty here and the two the
+        // bar draws are the filled part and the four unbought rungs above it.
+        assert!(
+            dial.contains(DIAL_FILLED) && dial.contains(DIAL_LOCKED),
+            "{dial:?}"
+        );
         assert!(frame.contains("optimum, not a maximum."), "{frame}");
     }
 
-    /// **The bar's ends are the dial's ends**, which is the whole reason it is filled by
-    /// the rung rather than by the grid's composition.
+    /// The three counts, at the position that used to be drawn as a lie.
     ///
-    /// It used to follow `value_percent`, a curve running 10 % to 91 %: the bottom rung
-    /// drew a sliver and the top one stopped two cells short of the arrow, so a slider
-    /// at rest looked started and a maxed one looked unfinished. The composition is
-    /// still stated, in absolute percentages, on the split line below.
+    /// Every part of this is one scale — the run's ten rungs, end to end — which is the
+    /// point: the number beside the bar is out of ten too, so the two cannot disagree.
+    /// The old bar printed the *ceiling* as the denominator, so a fresh mine read `1/1`
+    /// beside a bar filled one tenth and invited exactly the wrong conclusion.
     ///
-    /// One tenth at the bottom and not nothing: the first rung is a *position* on the
-    /// ladder, and `1/10` printed beside an empty bar would contradict itself. Ten rungs
-    /// across [`DIAL_WIDTH`] = 20 cells means every rung is exactly two, which is what
-    /// makes these two counts exact rather than approximately right.
+    /// [`DIAL_WIDTH`] = 20 over ten rungs makes a rung two cells, so these are exact
+    /// counts rather than approximately right ones.
     #[test]
-    fn the_dial_bar_ends_empty_at_the_first_rung_and_full_at_the_last() {
-        fn bar_at(setting: u32) -> (usize, usize) {
+    fn the_dial_track_separates_where_it_sits_from_what_is_bought() {
+        fn regions(setting: u32, ceiling: u32) -> (usize, usize, usize) {
             let mut view = View::sample();
             view.mines.detail.richness_setting = setting;
-            view.mines.detail.richness_level = 9;
+            view.mines.detail.richness_level = ceiling;
             let frame = whole_frame(&render_view(&view));
             let dial = row_with(&frame, "Dial");
-            (
-                dial.chars().filter(|&c| c == '█').count(),
-                dial.chars().filter(|&c| c == '░').count(),
-            )
+            let count = |glyph: char| dial.chars().filter(|&c| c == glyph).count();
+            (count(DIAL_FILLED), count(DIAL_OWNED), count(DIAL_LOCKED))
         }
 
-        assert_eq!(bar_at(0), (2, DIAL_WIDTH - 2), "the first rung");
-        assert_eq!(
-            bar_at(4),
-            (10, DIAL_WIDTH - 10),
-            "the halfway rung reads half"
-        );
-        assert_eq!(bar_at(9), (DIAL_WIDTH, 0), "the last rung leaves a gap");
+        // A fresh mine: rung 1 of 10, and nine rungs it has not bought. One tenth
+        // filled and not nothing — the first rung is a position on the ladder, and
+        // `1/10` beside an empty bar would contradict itself.
+        assert_eq!(regions(0, 0), (2, 0, 18), "a fresh mine");
+        // Rung 4 of a bought 7: the middle region is the headroom already paid for,
+        // and it is the whole reason the ceiling needs no number on this row.
+        assert_eq!(regions(3, 6), (8, 6, 6), "room bought above the dial");
+        // A maxed ceiling leaves no tail, so the bar is the two-tone one it always was.
+        assert_eq!(regions(4, 9), (10, 10, 0), "the halfway rung reads half");
+        assert_eq!(regions(9, 9), (DIAL_WIDTH, 0, 0), "the last rung");
     }
 
     /// The two shares are the dial's own number and its remainder, spelled with the
@@ -552,7 +609,10 @@ mod tests {
 
         let dial = row_with(&frame, "Dial");
         assert!(dial.contains('◄') && dial.contains('►'), "{dial:?}");
-        assert!(dial.contains('█') && dial.contains('░'), "{dial:?}");
+        assert!(
+            dial.contains(DIAL_FILLED) && dial.contains(DIAL_LOCKED),
+            "{dial:?}"
+        );
 
         // Matched on the percentage: `Iron Block` also appears three rows up, in the
         // pane's own `Iron Ore  +  Iron Block`.
@@ -562,20 +622,30 @@ mod tests {
         assert!(frame.contains("← →  move the dial"), "{frame}");
     }
 
-    /// The rung is printed after the arrow, because the bar cannot say both numbers.
+    /// The rung is printed after the arrow, **against the run's ten and not against the
+    /// ceiling** — the same denominator the bar is drawn to.
     ///
-    /// The dial steps between ten discrete settings and its travel is bounded by a
-    /// ceiling the player *buys*, so "rung 4 of the 7 I own" is what they need before
-    /// deciding whether to buy an eighth. The bar pictures the first against the ten
-    /// rungs and has no way to picture the ceiling.
+    /// Against the ceiling it read `1/1` on a fresh mine, beside a bar filled one tenth:
+    /// two scales in one control, and the reading it invited ("I am at the maximum") was
+    /// false about the only maximum that matters by the end of a run. The ceiling is not
+    /// lost — the bar stops drawing owned track where it ends, and the `Ceiling` row
+    /// above puts the number on it.
+    ///
+    /// A dial at rung 4 of a bought 7 is the case that tells the two apart: `4/7` would
+    /// pass here under the old rule and `4/10` under the new one.
     #[test]
-    fn the_dial_prints_its_rung_against_the_ceiling_it_can_reach() {
+    fn the_dial_prints_its_rung_against_the_runs_ten_rungs() {
         let mut view = View::sample();
         view.mines.detail.richness_setting = 3;
         view.mines.detail.richness_level = 6;
         let frame = whole_frame(&render_view(&view));
 
-        assert!(row_with(&frame, "Dial").contains("4/7"), "{frame}");
+        let dial = row_with(&frame, "Dial");
+        assert!(dial.contains("4/10"), "{dial:?}");
+        assert!(
+            !dial.contains("4/7"),
+            "the ceiling is still the denominator"
+        );
     }
 
     /// The pane's two gate rows are the two-axis lock drawn whole.
@@ -656,10 +726,24 @@ mod tests {
         assert_eq!(fg_of(&buffer, "▸"), Some(theme::ACCENT));
     }
 
+    /// All three track regions, and the pair every other bar on every other screen is
+    /// drawn in.
+    ///
+    /// A dial below its ceiling, because the fixture's is *on* its ceiling and would
+    /// leave the middle region — the one this test exists to colour — with no cells to
+    /// find. The two muted regions share a colour on purpose: they are told apart by
+    /// their glyph, which is the channel `docs/DECISIONS.md` argues is the reliable one,
+    /// and inventing a third tone would need a contrast gate against a background this
+    /// process cannot see (see `theme`).
     #[test]
     fn the_dial_is_drawn_in_the_same_pair_as_every_other_progress_bar() {
-        let buffer = render_screen();
+        let mut view = View::sample();
+        view.mines.detail.richness_setting = 3;
+        view.mines.detail.richness_level = 6;
+        let buffer = render_view(&view);
+
         assert_eq!(fg_of(&buffer, "█"), Some(theme::ACCENT));
         assert_eq!(fg_of(&buffer, "░"), Some(theme::MUTED));
+        assert_eq!(fg_of(&buffer, "·"), Some(theme::MUTED));
     }
 }

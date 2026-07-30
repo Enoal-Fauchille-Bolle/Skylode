@@ -413,10 +413,6 @@ above is left as drawn.
   nine others the materials are equal, so the frame's rule would print
   `Stone  +  Stone`. The blocks never coincide, and they are the more useful pair:
   `Iron Ore  +  Iron Block`, the second worth nine of the first.
-- **The dial prints its rung after the right arrow** (`4/7`). The dial steps between
-  ten discrete rungs bounded by a ceiling the player buys, so "rung 4 of the 7 I own"
-  is what they consult before buying an eighth, and a bar can picture only the first
-  of those two numbers.
 - **The bar is filled by the rung, not by the value-weight curve** — and this reverses
   the entry above it, which read "the bar is filled by the value-weight *curve*, not
   by the setting". That was the honest reading of a different question, and it made the
@@ -429,8 +425,36 @@ above is left as drawn.
   distort. Rungs *reached* rather than travelled, so the first rung fills one tenth
   rather than nothing — `1/10` beside an empty bar would contradict itself — and at
   twenty cells for ten rungs each rung is exactly two, so the bar is countable.
-- **Every mine rung is displayed counting from 1, not from 0** (`level 7 / 10`,
-  `R 10`, `4/7`, `level 7 → 8`, `At 8`), and the frames above are drawn the old way.
+- **The dial prints its rung against the run's ten, not against the ceiling** (`4/10`),
+  which reverses this list's own earlier `3/6` and the reasoning under it. Two
+  denominators in one control is the fault, not either number: the bar is graduated on
+  the ten rungs of the run and the readout was graduated on the ceiling bought so far,
+  so a fresh mine read `1/1` beside a bar filled one tenth. Both were true and the
+  control still misled — `1/1` invites "I am at the maximum", and the maximum that
+  matters by the end of a run is ten. One scale for the bar and the number means they
+  cannot disagree.
+- **The bought ceiling is drawn on the track, in three regions**: `█` where the dial
+  sits, `░` for rungs bought but above it, `·` for rungs not bought. That is where the
+  ceiling went when it stopped being the readout's denominator, and it answers the
+  question at the place it is asked — *why does the dial stop here* — instead of leaving
+  it to a number on another row. A **texture rather than a marker glyph** at the
+  boundary: a vertical rule on a slider track reads as the handle, and the handle here
+  is the filled edge already, so at rung 4 of a bought 7 the loudest glyph on the row
+  would sit at 70 % while the dial is at 40 %. Three glyphs and not three colours, for
+  §4.4's reason about mine cells — colour is the unreliable channel, and the two muted
+  regions are told apart by shape, so the bar survives a remapped palette. At a maxed
+  ceiling the tail is empty and this is the two-tone bar it has always been.
+- **The ceiling's own row is labelled `ceiling`, not `level`** (`Richness   ceiling
+  1/10`), on the Mines pane and on the Mine screen's status panel. `level` was doing
+  two jobs one row apart — the ceiling on that line, the dial's rung on the next — and
+  `Ceiling` is what the Upgrades pane already calls this exact track and what
+  [MECHANICS.md](MECHANICS.md#mine-richness) argues in. The fraction is tight (`1/10`)
+  where a *count* is spaced (`Blocks  31 / 40`): same shape as the dial's readout for
+  the same kind of fact, and the only form that fits — `ceiling` costs two columns more
+  than `level`, which pushed `value 10%` off the Mine screen's 36-column panel by
+  exactly one character.
+- **Every mine rung is displayed counting from 1, not from 0** (`ceiling 7/10`,
+  `R 10`, `4/10`, `level 7 → 8`, `At 8`), and the frames above are drawn the old way.
   The core numbers these levels from 0 because they are *indexes into a table of ten
   rungs*; the player is not reading an index. `Size level 0` describes a mine standing
   on the bottom rung of a ladder and reads as a mine that has not started — the two

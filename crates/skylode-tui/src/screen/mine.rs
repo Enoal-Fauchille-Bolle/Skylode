@@ -267,7 +267,15 @@ fn mine_panel(frame: &mut Frame, area: Rect, view: &View) {
             shown_rung(panel_view.size_level),
         )),
         Line::from(format!(
-            " Richness  level {} / {}   value {}%",
+            // `ceiling`, not `level`: this is the highest rung the dial may reach,
+            // which is the Mines pane's and the Upgrades pane's word for it too.
+            // `1/10` and not `1 / 10`: the spaced form is this pane's shape for a
+            // *count* out of a total (`Blocks 31 / 40`), and this is a rung out of a
+            // ladder — the same fact the Mines screen's dial prints as `1/10`. The tight
+            // form is also the only one that fits: `ceiling` costs two columns more than
+            // `level` did, and the spaced fraction pushed `value 10%` off a 36-column
+            // pane by exactly one character.
+            " Richness  ceiling {}/{}   value {}%",
             shown_rung(panel_view.richness_level),
             shown_rung(panel_view.richness_max),
             panel_view.value_percent,
@@ -566,7 +574,10 @@ mod tests {
             "{frame}"
         );
         assert!(frame.contains("(level 10)"), "{frame}");
-        assert!(frame.contains("Richness  level 1 / 10"), "{frame}");
+        assert!(
+            frame.contains("Richness  ceiling 1/10   value 10%"),
+            "{frame}"
+        );
         assert!(frame.contains("value 10%"), "{frame}");
         assert!(frame.contains("Overworld"), "{frame}");
     }
