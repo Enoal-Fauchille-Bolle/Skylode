@@ -42,6 +42,22 @@ use crate::{
     view::{CompressHint, UpgradeDetail, View},
 };
 
+#[cfg(debug_assertions)]
+use crate::format::grouped_u64;
+#[cfg(debug_assertions)]
+use crate::overlay::dev::{self, DevRow, DevState};
+/// The dev menu's own imports, kept in a statement of their own.
+///
+/// A `#[cfg]` cannot be attached to one name inside a braced `use` tree, so gating these
+/// means a second `use` rather than four lines in the blocks above. Gating them is not
+/// tidiness: [`Paragraph`] and [`grouped_u64`](crate::format::grouped_u64) are reached
+/// from dev code alone, so left in the main block they are two `unused_imports` warnings
+/// in a release build — which `clippy -D warnings` never sees, because it builds the dev
+/// profile. This is the one seam where that blind spot bites, and it is why
+/// `cargo check --release` is on the verification list in `docs/DEV-MENU.md`.
+#[cfg(debug_assertions)]
+use ratatui::widgets::Paragraph;
+
 /// The widest the interface is ever drawn, whatever the terminal offers.
 ///
 /// **Twice the counted frame**, and that is the whole justification: the wireframes
@@ -188,6 +204,21 @@ pub struct App {
     pub refused: Option<CompressHint>,
     /// Front-end preferences — read while drawing, edited by Settings (phase 7).
     pub config: Config,
+    /// The dev menu's state, or [`None`] when this session was not started with it.
+    ///
+    /// **One field carrying both layers of the gate**, which is what keeps the two from
+    /// being able to disagree. The *outer* layer is `#[cfg(debug_assertions)]`: in a
+    /// release build this field does not exist, so neither does the key that opens the
+    /// menu, the modal it opens, or the branch that makes a purchase free. The *inner*
+    /// layer is the [`Option`]: in a debug build the field exists and is `None` unless
+    /// `main` found `SKYLODE_DEV` in the environment, so an ordinary `cargo run` is an
+    /// ordinary game.
+    ///
+    /// A `bool` beside a `DevState` would have made "disabled, but with a row dialled
+    /// to a million" a writable state, and `Option` is the same answer this crate
+    /// already gives for the target cell and the running boost.
+    #[cfg(debug_assertions)]
+    pub dev: Option<DevState>,
     /// When the next simulation step falls due.
     ///
     /// **A deadline, not a countdown**, which is what makes the 20 tps rate survive a
@@ -261,12 +292,30 @@ impl App {
             cursors,
             refused: None,
             config: Config::default(),
+            #[cfg(debug_assertions)]
+            dev: None,
             next_tick: now + SIM_PERIOD,
             next_frame: now,
             dirty: true,
             last_mine_key: None,
             mine_key_edge: None,
         }
+    }
+
+    /// Turns the dev menu on for this session.
+    ///
+    /// **A builder step and not a parameter of [`new`](App::new)**, so that the
+    /// hundred-odd tests that build an `App` say nothing about a feature they are not
+    /// about — and so that the `#[cfg]` lives on one method instead of on every call
+    /// site of the constructor. `main` is the only non-test caller.
+    ///
+    /// It takes a `bool` rather than being called conditionally because *whether* the
+    /// environment asked for it is [`main`](crate::main)'s reading, and this is where
+    /// that reading is spent.
+    #[cfg(debug_assertions)]
+    pub fn with_dev(mut self, enabled: bool) -> Self {
+        self.dev = enabled.then(DevState::default);
+        self
     }
 
     /// Rebuilds the read model from the run.
@@ -470,6 +519,11 @@ impl App {
             Action::Compress => self.open_conversion(Conversion::Compress),
             Action::Decompress => self.open_conversion(Conversion::Decompress),
             Action::GoCompress => self.walk_to_the_refused_pile(),
+            // `keymap` only emits this when `dev` is `Some`, so there is no second
+            // guard here: stacking the modal is safe either way — `render` draws
+            // nothing without a `DevState` to draw.
+            #[cfg(debug_assertions)]
+            Action::OpenDevMenu => self.modal = Some(Modal::Dev),
         }
     }
 
@@ -546,7 +600,164 @@ impl App {
                 }
                 true
             }
+            // The dev menu reuses the four list gestures and adds none: `↑↓` walks the
+            // rows, `←→` turns the value under the cursor, `Enter` applies it. The
+            // reason it can is the reason the compression dialog could — a gesture
+            // names a movement, not a screen.
+            #[cfg(debug_assertions)]
+            Some(Modal::Dev) => {
+                // A menu with no state is a menu that is not enabled, and `keymap`
+                // cannot have produced the key that opened it. Closing is the honest
+                // answer rather than a silent swallow.
+                let Some(mut dev) = self.dev.take() else {
+                    self.modal = None;
+                    return true;
+                };
+                let handled = match action {
+                    Action::CursorUp => {
+                        dev.step_row(-1);
+                        true
+                    }
+                    Action::CursorDown => {
+                        dev.step_row(1);
+                        true
+                    }
+                    // One arm for both directions, because the announcement below is
+                    // owed by *whichever* of them flipped the toggle — and the toggle
+                    // has no direction (`DevState::adjust` flips on either).
+                    Action::AdjustLeft | Action::AdjustRight => {
+                        let delta = if matches!(action, Action::AdjustLeft) {
+                            -1
+                        } else {
+                            1
+                        };
+                        dev.adjust(delta);
+                        // **The free-upgrades mode is announced when it changes**, the
+                        // third of the three channels that carry it: the tab row's
+                        // colour is the persistent one, the row's own `◄ on ►` is the
+                        // authoritative one, and this is the one that catches the press.
+                        // Three, because the marker has three columns and no room to say
+                        // it in words — see `dev::MARKER`.
+                        if dev.row == DevRow::FreeUpgrades {
+                            let state = if dev.free_upgrades { "on" } else { "off" };
+                            self.toasts.push(
+                                format!("Free upgrades {state}"),
+                                Tone::Neutral,
+                                TOAST_TTL,
+                            );
+                        }
+                        true
+                    }
+                    Action::Confirm => {
+                        self.apply_dev_row(&dev);
+                        true
+                    }
+                    _ => false,
+                };
+                // Put it back whatever happened — `take` is how the row can be applied
+                // against `&mut self` at all, and a gesture this modal does not use
+                // (`Esc`, falling through to `CloseModal`) must not cost the dialled
+                // values.
+                self.dev = Some(dev);
+                handled
+            }
             _ => false,
+        }
+    }
+
+    /// Applies the dev row under the cursor, and announces what it did.
+    ///
+    /// **Takes the state by reference rather than reading `self.dev`**, because the
+    /// caller has just moved it out: every door below needs `&mut self.state`, and a
+    /// menu still borrowed from `self` would keep the whole `App` borrowed while the run
+    /// was mutated. It is the same manoeuvre `set_spinner` makes by taking the three
+    /// values it was destructured from.
+    ///
+    /// Every arm ends in a toast, including the ones that cannot fail. A dev tool whose
+    /// keypress produced no visible change would send its user to check whether the key
+    /// was even bound — and two of these rows (a level set to where it already is, a
+    /// grant of a pile that is off screen) genuinely change nothing on the frame behind
+    /// the box.
+    ///
+    /// **The two rows that reach a rule keep the rule's own words.** A level-up here
+    /// goes through [`announce::of`], the same wording a mined one
+    /// gets, and the offline skip prints [`OfflineReport`]'s figures rather than
+    /// re-deriving them. `docs/DEV-MENU.md` records that as the module's one rule about
+    /// itself: a dev path must not be able to say something the game would not.
+    ///
+    /// [`OfflineReport`]: skylode_core::game::OfflineReport
+    #[cfg(debug_assertions)]
+    fn apply_dev_row(&mut self, dev: &DevState) {
+        let amount = dev.amount();
+        let message = match dev.row {
+            DevRow::FreeUpgrades => {
+                // The toggle is turned by `←→`, so `Enter` on this row has nothing left
+                // to do; saying what the row now reads is better than nothing happening.
+                let state = if dev.free_upgrades { "on" } else { "off" };
+                format!("Free upgrades {state}")
+            }
+            // The value row: the two rows below it spend this, and `Enter` here is the
+            // same non-act as on the toggle.
+            DevRow::Amount => format!("Amount {}", grouped(amount)),
+            DevRow::Material => {
+                let item = Item::Raw(dev.material);
+                self.state.dev_grant(item, amount);
+                format!("+{} {item}", grouped(amount))
+            }
+            DevRow::Everything => {
+                self.state.dev_grant_all(amount);
+                format!("+{} of all {} piles", grouped(amount), Material::ALL.len())
+            }
+            DevRow::Experience => {
+                let events = self.state.dev_add_experience(amount);
+                // The level-ups are announced in the game's own words, one toast each,
+                // and this row's own sentence is the experience it granted.
+                for event in &events {
+                    let (text, tone) = announce::of(event);
+                    self.toasts.push(text, tone, TOAST_TTL);
+                }
+                format!("+{} xp", grouped(amount))
+            }
+            DevRow::Level => {
+                self.state.dev_set_level(dev.level);
+                format!("Level {}", self.state.player().get_level())
+            }
+            DevRow::Prestige => {
+                self.state.dev_set_prestige(dev.prestige);
+                format!("Prestige rank {}", dev.prestige)
+            }
+            DevRow::Charges => {
+                self.state.dev_grant_boost_charges(dev.charges);
+                format!("+{} boost charges", dev.charges)
+            }
+            DevRow::SkipTime => self.skip_ahead(dev.skip(), dev.skip_label()),
+        };
+        self.toasts.push(message, Tone::Success, TOAST_TTL);
+        self.dirty = true;
+    }
+
+    /// Rewinds the offline mark by `by` and resumes, returning what was credited.
+    ///
+    /// **Two calls, and both are the shipped ones.** `dev_rewind` moves the mark;
+    /// [`GameState::resume`] does the arithmetic, applies the cap and builds the report —
+    /// the same path a relaunch takes. Nothing here multiplies anything, which is the
+    /// whole reason the core needed no new rule for this row.
+    ///
+    /// A `None` from `resume` is reported rather than swallowed: it means the span
+    /// credited nothing, and on this row that is a fact about the skip (a zero-length
+    /// ladder entry could not exist, so it means the mark was already at the epoch).
+    ///
+    /// [`GameState::resume`]: skylode_core::game::GameState::resume
+    #[cfg(debug_assertions)]
+    fn skip_ahead(&mut self, by: Duration, label: &str) -> String {
+        let now = self.state.last_seen();
+        self.state.dev_rewind(by);
+        match self.state.resume(now) {
+            Some(report) => format!(
+                "Skipped {label} — {} blocks mined",
+                grouped_u64(report.blocks)
+            ),
+            None => "Skipped nothing — the mark is already at the epoch".to_owned(),
         }
     }
 
@@ -689,11 +900,169 @@ impl App {
     /// [`Reach`] is that difference and nothing else. Two functions would be two
     /// places for the refusal wording, the toast and the dip check to drift.
     fn buy_at_cursor(&mut self, reach: Reach) {
+        // Free upgrades are not a *discount* applied on the way to the till: they are
+        // a different set of doors, the ones `skylode_core::game::dev` opens, which
+        // never consult an inventory at all. Topping the wallet up instead would have
+        // been the other design, and it fails on its own terms — a purse holding
+        // billions makes every price on the screen unreadable, which is the screen this
+        // is meant to let you look at.
+        #[cfg(debug_assertions)]
+        if self.dev.as_ref().is_some_and(|dev| dev.free_upgrades) {
+            self.buy_free_at_cursor(reach);
+            return;
+        }
         match self.cursors.upgrade_tab {
             UpgradeTab::Pickaxe => self.buy_pickaxe_chain(reach),
             UpgradeTab::Enchants => self.buy_enchant_levels(reach),
             UpgradeTab::Mines => self.buy_mine_track(reach),
         }
+    }
+
+    /// Buys the same thing [`buy_at_cursor`](App::buy_at_cursor) would, through the
+    /// free doors.
+    ///
+    /// **The one place free mode differs from paid mode, and the differences it does
+    /// *not* make are the point.** The cursor still decides what is bought, the sub-tab
+    /// still decides which track, `M` still means "as far as this goes", and the caps
+    /// still refuse — [`GameState::dev_upgrade_pickaxe`] stops at Netherite Efficiency
+    /// 15 exactly as the paid door does, because neither of them was ever the thing
+    /// enforcing it.
+    ///
+    /// **The dip modal is deliberately skipped.** Its question is *"this purchase costs
+    /// you power — spend the ore anyway?"*, and with nothing spent the question has no
+    /// second half. A confirm that could only be answered yes is a keypress.
+    ///
+    /// Announced by the outcome and not by a count: a climb that moved is named by
+    /// where it arrived, which is the same sentence the paid path prints, and one that
+    /// did not moved because a cap said so — so the cap's own refusal is the news.
+    ///
+    /// [`GameState::dev_upgrade_pickaxe`]: skylode_core::game::GameState::dev_upgrade_pickaxe
+    #[cfg(debug_assertions)]
+    fn buy_free_at_cursor(&mut self, reach: Reach) {
+        self.refused = None;
+        let (moved, refusal) = match self.cursors.upgrade_tab {
+            UpgradeTab::Pickaxe => {
+                // **Rung by rung, and counted rather than aimed.** The paid path climbs
+                // *to* a ladder index because each rung has to be priced from where the
+                // last one left off; nothing here has a price, so the only thing the
+                // ladder is still needed for is the distance to the cursor. `M` does not
+                // consult it at all — on a free track "as far as possible" is *until it
+                // refuses*, and the only thing that can refuse a free climb is the cap
+                // at the top.
+                let wanted = match reach {
+                    Reach::AsFarAsPossible => u32::MAX,
+                    Reach::ToCursor => {
+                        let ladder = upgrade::ladder();
+                        let from = upgrade::position(&ladder, self.state.player().get_pickaxe());
+                        u32::try_from(self.cursors.pickaxe_rung.saturating_sub(from))
+                            .unwrap_or(u32::MAX)
+                    }
+                };
+                self.repeat_free(wanted, |state| state.dev_upgrade_pickaxe())
+            }
+            UpgradeTab::Enchants => {
+                let kind = self.cursors.enchant;
+                self.repeat_free(Self::steps(reach), |state| state.dev_upgrade_enchant(kind))
+            }
+            UpgradeTab::Mines => {
+                let (kind, track) = self.cursors.mine_track;
+                self.repeat_free(Self::steps(reach), |state| match track {
+                    MineTrack::Size => state.dev_upgrade_mine_size(kind),
+                    MineTrack::Richness => state.dev_upgrade_mine_richness(kind),
+                })
+            }
+        };
+
+        // **Three outcomes and not two.** A refusal after a partial climb is still a
+        // climb, and reporting the cap that stopped it would bury the four rungs that
+        // did land; a target already reached refuses nothing and buys nothing, and
+        // calling that a refusal would put a red toast on a keypress that was simply
+        // early.
+        let (message, tone) = match (moved, refusal) {
+            (0, Some(error)) => (error.to_string(), Tone::Refusal),
+            (0, None) => (
+                "Nothing left to buy on this track".to_owned(),
+                Tone::Neutral,
+            ),
+            _ => (self.free_purchase_label(), Tone::Success),
+        };
+        self.toasts.push(message, tone, TOAST_TTL);
+    }
+
+    /// How many free steps a [`Reach`] asks for on a track whose rungs are independent.
+    ///
+    /// The enchant and mine tracks price every level from the one below it, so "to the
+    /// cursor" is always exactly one step and "as far as possible" is until the cap
+    /// refuses. Only the pickaxe ladder has a *distance*, and it computes its own.
+    #[cfg(debug_assertions)]
+    fn steps(reach: Reach) -> u32 {
+        match reach {
+            Reach::ToCursor => 1,
+            Reach::AsFarAsPossible => u32::MAX,
+        }
+    }
+
+    /// Names where the active Upgrades track now stands.
+    ///
+    /// Read *after* the purchase and off the run, never composed from what was asked
+    /// for: it is [`climb_to`](App::climb_to)'s rule — "Bought Netherite Pickaxe" is
+    /// what the player was looking at, and a sentence built from the target would name
+    /// a rung a partial climb never reached.
+    #[cfg(debug_assertions)]
+    fn free_purchase_label(&self) -> String {
+        match self.cursors.upgrade_tab {
+            UpgradeTab::Pickaxe => {
+                let pickaxe = self.state.player().get_pickaxe();
+                let label = rung_label(
+                    pickaxe.get_tier(),
+                    pickaxe.enchants().get_level(EnchantType::Efficiency),
+                );
+                format!("Bought {label}")
+            }
+            UpgradeTab::Enchants => {
+                let kind = self.cursors.enchant;
+                let level = self.state.player().get_pickaxe().enchants().get_level(kind);
+                format!("Bought {} {}", kind.name(), roman(level))
+            }
+            UpgradeTab::Mines => {
+                let (kind, track) = self.cursors.mine_track;
+                let what = match track {
+                    MineTrack::Size => "size",
+                    MineTrack::Richness => "richness",
+                };
+                let level = self.state.mine(kind).map_or(0, |mine| match track {
+                    MineTrack::Size => mine.get_size_level(),
+                    MineTrack::Richness => mine.get_richness_level(),
+                });
+                format!("{} {what} → level {level}", kind.name())
+            }
+        }
+    }
+
+    /// Runs a free purchase `wanted` times, or until it refuses, and reports both
+    /// halves.
+    ///
+    /// The free counterpart of [`economy::buy_repeatedly`], which cannot be reused
+    /// here: that one discards the refusal, and a free purchase has nothing *but* the
+    /// refusal to report — there is no shortfall to word the news from.
+    ///
+    /// Takes a count rather than a [`Reach`], because one of the three tracks turns a
+    /// `Reach` into a *distance* and the other two into `1`. Passing the enum in would
+    /// mean this function knew which track it was serving.
+    #[cfg(debug_assertions)]
+    fn repeat_free(
+        &mut self,
+        wanted: u32,
+        mut buy: impl FnMut(&mut GameState) -> Result<(), skylode_core::error::CoreError>,
+    ) -> (u32, Option<skylode_core::error::CoreError>) {
+        let mut moved = 0;
+        while moved < wanted {
+            match buy(&mut self.state) {
+                Ok(()) => moved += 1,
+                Err(error) => return (moved, Some(error)),
+            }
+        }
+        (moved, None)
     }
 
     /// Climbs the pickaxe roadmap to the cursor, or as far as the ore reaches —
@@ -1335,6 +1704,15 @@ impl App {
                         dip::render(frame, area, detail, buy);
                     }
                 }
+                // Draws from `dev` and nothing else — the menu is about its own dialled
+                // values, not about the run behind it, so there is no projection here
+                // for it to disagree with.
+                #[cfg(debug_assertions)]
+                Modal::Dev => {
+                    if let Some(dev) = &self.dev {
+                        dev::render(frame, area, dev);
+                    }
+                }
             }
         }
     }
@@ -1368,6 +1746,58 @@ impl App {
                     .add_modifier(Modifier::REVERSED),
             );
         frame.render_widget(tabs, area);
+        #[cfg(debug_assertions)]
+        self.render_dev_marker(frame, area);
+    }
+
+    /// Stamps [`dev::MARKER`] at the right end of the tab row, coloured by the mode.
+    ///
+    /// **On the tab row and not in a footer**, because it has to be true on every
+    /// screen: what the marker warns about is that a price on the Upgrades screen is not
+    /// what will be charged, and a footer note there would be invisible from the Mine
+    /// screen the player switches back to.
+    ///
+    /// Drawn *after* the `Tabs` widget and over its right edge, **into a rectangle of
+    /// its own** — the last [`MARKER_COLUMNS`] of the row. That is the difference
+    /// between a bound that is documented and one that is enforced: handed the whole
+    /// row, a right-aligned marker one character too long silently eats the end of
+    /// `6 Levels`, which is precisely what the first draft's `DEV FREE` did. Clipped to
+    /// its own rect it can only ever lose its own last letter, and the test in
+    /// [`dev`] keeps it from having to.
+    ///
+    /// A narrower terminal is [`too_small`]'s business and never reaches here, so the
+    /// subtraction below cannot underflow — `saturating_sub` regardless, because a
+    /// panicking layout is never the right way to report a small window.
+    ///
+    /// [`MARKER_COLUMNS`]: crate::overlay::dev::MARKER_COLUMNS
+    #[cfg(debug_assertions)]
+    fn render_dev_marker(&self, frame: &mut Frame, area: Rect) {
+        let Some(state) = &self.dev else {
+            return;
+        };
+        // Refusal red for the mode that changes what a purchase costs, muted for the
+        // one that only says a key exists: `theme` already owns which of those two a
+        // reader should look at, and three columns is all the tab row leaves for saying
+        // it in words.
+        let colour = if state.free_upgrades {
+            theme::REFUSED
+        } else {
+            theme::MUTED
+        };
+        let width = u16::try_from(dev::MARKER_COLUMNS)
+            .unwrap_or(0)
+            .min(area.width);
+        let corner = Rect {
+            x: area.x + area.width.saturating_sub(width),
+            width,
+            ..area
+        };
+        frame.render_widget(
+            Paragraph::new(dev::MARKER)
+                .right_aligned()
+                .style(Style::default().fg(colour)),
+            corner,
+        );
     }
 }
 
@@ -1396,7 +1826,7 @@ mod tests {
     /// `UNIX_EPOCH` as `now` for the seed's reason: it is the offline accrual's
     /// reference point, and phase 7's `resume` credits the span since it. A test
     /// that read the clock would be measuring how long ago the file was written.
-    fn session() -> App {
+    pub(super) fn session() -> App {
         App::new(GameState::new(SEED, std::time::UNIX_EPOCH))
     }
 
@@ -1410,7 +1840,7 @@ mod tests {
     /// cells cannot fail — so the errors are discharged with an empty `match` on
     /// the uninhabited error rather than an `unwrap` the lints would flag. Same
     /// trick as the `Modal` slot above: no value can exist, so there is no arm.
-    fn render_to_buffer(app: &App) -> Buffer {
+    pub(super) fn render_to_buffer(app: &App) -> Buffer {
         render_to_sized_buffer(app, 80, 24)
     }
 
@@ -1435,7 +1865,7 @@ mod tests {
     }
 
     /// Every row of the frame, joined — for "is this text on screen anywhere".
-    fn whole_frame(buffer: &Buffer) -> String {
+    pub(super) fn whole_frame(buffer: &Buffer) -> String {
         (0..buffer.area.height)
             .map(|y| row(buffer, y))
             .collect::<Vec<_>>()
@@ -2533,7 +2963,7 @@ mod tests {
     // --- The Upgrades screen ---
 
     /// A session on the Upgrades tab, on the sub-tab named.
-    fn upgrading(tab: UpgradeTab) -> App {
+    pub(super) fn upgrading(tab: UpgradeTab) -> App {
         let mut app = session();
         app.screen = Screen::Upgrades;
         app.cursors.upgrade_tab = tab;
@@ -3490,5 +3920,432 @@ mod tests {
             before
         );
         assert_eq!(app.toasts.len(), 1);
+    }
+}
+
+/// The dev menu's tests, gated like the menu.
+///
+/// A module rather than an attribute per test, for the reason `keymap`'s twin is one:
+/// every name below (`Modal::Dev`, `App::with_dev`, `GameState::dev_grant`) is absent
+/// from a build with `debug_assertions` off, so these would fail to *compile* under
+/// `cargo test --release` rather than skip a feature that is not there.
+#[cfg(all(test, debug_assertions))]
+mod dev_tests {
+    use std::time::Duration;
+
+    use skylode_core::{
+        game::GameState,
+        material::{Item, Material},
+        pickaxe::PickaxeTier,
+    };
+
+    use super::tests::{render_to_buffer, session, upgrading, whole_frame};
+    use super::*;
+
+    /// A session with the menu enabled, opened a day after the epoch.
+    ///
+    /// Not at the epoch, unlike [`session`]: the skip row rewinds the offline mark, and
+    /// a run whose mark is already at the earliest representable instant has nothing to
+    /// rewind — which is a case worth testing, but not the one every other test here
+    /// wants to be standing in.
+    fn dev_session() -> App {
+        let day = std::time::UNIX_EPOCH + Duration::from_secs(86_400);
+        App::new(GameState::new(0x5B1_0DE, day)).with_dev(true)
+    }
+
+    /// The menu, open, with `row` under the cursor.
+    fn on_row(row: DevRow) -> App {
+        let mut app = dev_session();
+        app.modal = Some(Modal::Dev);
+        if let Some(dev) = app.dev.as_mut() {
+            dev.row = row;
+        }
+        app
+    }
+
+    /// What the toasts currently say, joined.
+    fn said(app: &App) -> String {
+        whole_frame(&render_to_buffer(app))
+    }
+
+    #[test]
+    fn a_plain_session_has_no_menu_and_an_asked_for_one_does() {
+        assert!(session().dev.is_none(), "an ordinary run got a dev menu");
+        assert!(session().with_dev(false).dev.is_none());
+        assert!(session().with_dev(true).dev.is_some());
+    }
+
+    #[test]
+    fn the_menu_opens_stacks_and_closes() {
+        let mut app = dev_session();
+        app.update(Action::OpenDevMenu);
+        assert_eq!(app.modal, Some(Modal::Dev));
+
+        app.update(Action::CloseModal);
+        assert_eq!(app.modal, None);
+    }
+
+    #[test]
+    fn the_gestures_walk_the_rows_and_turn_the_value_under_the_cursor() {
+        let mut app = on_row(DevRow::FreeUpgrades);
+
+        app.update(Action::CursorDown);
+        assert_eq!(app.dev.as_ref().map(|dev| dev.row), Some(DevRow::Amount));
+
+        app.update(Action::AdjustRight);
+        assert_eq!(app.dev.as_ref().map(DevState::amount), Some(10_000));
+
+        app.update(Action::CursorUp);
+        app.update(Action::AdjustRight);
+        assert_eq!(app.dev.as_ref().map(|dev| dev.free_upgrades), Some(true));
+    }
+
+    /// **The reason the values live in `App` and not in the variant.** Dialling a
+    /// million, closing the box to look at the Inventory and coming back is the
+    /// workflow; a modal that carried its own state would reset it on the way out.
+    #[test]
+    fn the_dialled_values_survive_the_box_being_closed() {
+        let mut app = on_row(DevRow::Amount);
+        app.update(Action::AdjustRight);
+        app.update(Action::AdjustRight);
+        let dialled = app.dev.as_ref().map(DevState::amount);
+
+        app.update(Action::CloseModal);
+        app.update(Action::OpenDevMenu);
+
+        assert_eq!(app.dev.as_ref().map(DevState::amount), dialled);
+        assert_eq!(dialled, Some(100_000));
+    }
+
+    #[test]
+    fn giving_a_material_credits_the_pile_the_row_names() {
+        let mut app = on_row(DevRow::Material);
+        app.update(Action::AdjustRight);
+        app.update(Action::AdjustRight);
+        let material = match app.dev.as_ref() {
+            Some(dev) => dev.material,
+            None => unreachable!("the menu was enabled"),
+        };
+
+        app.update(Action::Confirm);
+
+        assert_eq!(
+            app.state
+                .player()
+                .get_inventory()
+                .count(Item::Raw(material)),
+            1_000
+        );
+        assert!(said(&app).contains("+1 000"), "{}", said(&app));
+    }
+
+    #[test]
+    fn giving_everything_credits_all_fifteen_piles() {
+        let mut app = on_row(DevRow::Everything);
+        app.update(Action::Confirm);
+
+        for material in Material::ALL {
+            assert_eq!(
+                app.state
+                    .player()
+                    .get_inventory()
+                    .count(Item::Raw(material)),
+                1_000,
+                "{material:?} was not credited"
+            );
+        }
+    }
+
+    /// A dev level-up is announced in the game's own words, because it goes through the
+    /// same [`announce::of`] the tick's events do.
+    #[test]
+    fn giving_experience_announces_the_levels_it_crosses() {
+        let mut app = on_row(DevRow::Experience);
+        app.update(Action::Confirm);
+
+        assert!(
+            app.state.player().get_level() > 1,
+            "a thousand experience bought no level"
+        );
+        assert!(app.toasts.len() > 1, "only the row's own toast was raised");
+        assert!(said(&app).contains("+1 000 xp"), "{}", said(&app));
+    }
+
+    #[test]
+    fn setting_the_level_moves_the_run_to_it() {
+        let mut app = on_row(DevRow::Level);
+        for _ in 0..29 {
+            app.update(Action::AdjustRight);
+        }
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.player().get_level(), 30);
+        assert!(said(&app).contains("Level 30"), "{}", said(&app));
+    }
+
+    #[test]
+    fn granting_charges_fills_the_reserve() {
+        let mut app = on_row(DevRow::Charges);
+        app.update(Action::AdjustRight);
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.boost_charges(), 2);
+    }
+
+    #[test]
+    fn setting_the_rank_moves_it_without_wiping_the_run() {
+        let mut app = on_row(DevRow::Prestige);
+        app.update(Action::AdjustRight);
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.player().get_prestige(), 1);
+    }
+
+    #[test]
+    fn skipping_time_credits_the_absence_through_the_shipped_accrual() {
+        let mut app = on_row(DevRow::SkipTime);
+        let before = app
+            .state
+            .player()
+            .get_inventory()
+            .count(Item::Raw(app.state.current_mine().kind().common_material()));
+
+        app.update(Action::Confirm);
+
+        let after = app
+            .state
+            .player()
+            .get_inventory()
+            .count(Item::Raw(app.state.current_mine().kind().common_material()));
+        assert!(after > before, "an hour of auto-mining credited nothing");
+        assert!(said(&app).contains("Skipped 1 h"), "{}", said(&app));
+    }
+
+    /// A mark already at the epoch has nothing to rewind, and the row says so rather
+    /// than claiming a skip that did not happen.
+    #[test]
+    fn a_skip_with_nothing_behind_it_says_so() {
+        let mut app = session().with_dev(true);
+        app.modal = Some(Modal::Dev);
+        if let Some(dev) = app.dev.as_mut() {
+            dev.row = DevRow::SkipTime;
+        }
+
+        app.update(Action::Confirm);
+
+        assert!(said(&app).contains("Skipped nothing"), "{}", said(&app));
+    }
+
+    /// **The whole of what the toggle buys**: a penniless run climbs the ladder the
+    /// Upgrades screen draws, through that screen, with its own cursor and its own key.
+    #[test]
+    fn free_upgrades_buy_a_rung_the_purse_could_never_afford() {
+        let mut app = upgrading(UpgradeTab::Pickaxe).with_dev(true);
+        if let Some(dev) = app.dev.as_mut() {
+            dev.free_upgrades = true;
+        }
+        app.cursors.pickaxe_rung = 6;
+
+        app.update(Action::Confirm);
+
+        assert!(
+            app.state.player().get_pickaxe().get_tier() > PickaxeTier::Wooden,
+            "the free climb bought nothing"
+        );
+        assert_eq!(
+            app.state.player().get_inventory(),
+            &skylode_core::inventory::Inventory::new(),
+            "a free climb spent something"
+        );
+    }
+
+    /// It is free, not unlimited: `M` runs to the end of the ladder and stops at the
+    /// cap the rules set, which no price was ever enforcing.
+    #[test]
+    fn free_upgrades_stop_at_the_cap_and_not_at_the_purse() {
+        let mut app = upgrading(UpgradeTab::Pickaxe).with_dev(true);
+        if let Some(dev) = app.dev.as_mut() {
+            dev.free_upgrades = true;
+        }
+
+        app.update(Action::BuyMax);
+        assert_eq!(
+            app.state.player().get_pickaxe().get_tier(),
+            PickaxeTier::Netherite
+        );
+
+        // A second `M` is refused by the cap in the core's own words — free mode did not
+        // make the ladder longer, and `M` asking for one more rung than exists is a
+        // question the rules already have an answer to.
+        app.toasts = Toasts::new();
+        app.update(Action::BuyMax);
+        assert!(said(&app).contains("fully upgraded"), "{}", said(&app));
+    }
+
+    /// **`Enter` on a rung already owned buys nothing and refuses nothing**, which is the
+    /// third of the three outcomes: the two above it are a purchase and a cap, and this
+    /// one is a keypress that was simply early.
+    #[test]
+    fn aiming_a_free_purchase_at_where_you_already_stand_is_not_a_refusal() {
+        let mut app = upgrading(UpgradeTab::Pickaxe).with_dev(true);
+        if let Some(dev) = app.dev.as_mut() {
+            dev.free_upgrades = true;
+        }
+        app.cursors.pickaxe_rung = 0;
+
+        app.update(Action::Confirm);
+
+        assert_eq!(
+            app.state.player().get_pickaxe().get_tier(),
+            PickaxeTier::Wooden
+        );
+        assert!(said(&app).contains("Nothing left to buy"), "{}", said(&app));
+    }
+
+    /// The enchant track, free: one level on `Enter`, and up to the world's cap on `M`.
+    #[test]
+    fn free_upgrades_climb_an_enchant_to_the_worlds_cap() {
+        let mut app = upgrading(UpgradeTab::Enchants).with_dev(true);
+        if let Some(dev) = app.dev.as_mut() {
+            dev.free_upgrades = true;
+        }
+        let kind = app.cursors.enchant;
+
+        app.update(Action::Confirm);
+        let level = |app: &App| app.state.player().get_pickaxe().enchants().get_level(kind);
+        assert_eq!(level(&app), 1, "one press bought more than one level");
+        assert!(said(&app).contains("Bought"), "{}", said(&app));
+
+        app.update(Action::BuyMax);
+        assert_eq!(
+            level(&app),
+            skylode_core::world::World::Overworld.enchant_cap(),
+            "the climb did not stop at the Overworld's cap"
+        );
+    }
+
+    /// The two mine tracks, free, on the mine the run is standing in.
+    #[test]
+    fn free_upgrades_climb_both_tracks_of_a_visited_mine() {
+        for track in MineTrack::ALL {
+            let mut app = upgrading(UpgradeTab::Mines).with_dev(true);
+            if let Some(dev) = app.dev.as_mut() {
+                dev.free_upgrades = true;
+            }
+            let standing = app.state.current_mine().kind();
+            app.cursors.mine_track = (standing, track);
+
+            app.update(Action::Confirm);
+
+            let level = app.state.mine(standing).map_or(0, |mine| match track {
+                MineTrack::Size => mine.get_size_level(),
+                MineTrack::Richness => mine.get_richness_level(),
+            });
+            assert_eq!(level, 1, "{track:?} did not climb");
+            assert!(said(&app).contains("level 1"), "{}", said(&app));
+        }
+    }
+
+    /// `Enter` on the two rows that only hold a value says what the row now reads, rather
+    /// than doing nothing at all.
+    #[test]
+    fn the_value_only_rows_report_themselves_on_confirm() {
+        let mut app = on_row(DevRow::FreeUpgrades);
+        app.update(Action::Confirm);
+        assert!(said(&app).contains("Free upgrades off"), "{}", said(&app));
+
+        let mut app = on_row(DevRow::Amount);
+        app.update(Action::Confirm);
+        assert!(said(&app).contains("Amount 1 000"), "{}", said(&app));
+    }
+
+    /// `←` turns the value down, which is not the same code path as `→`.
+    #[test]
+    fn the_left_gesture_turns_the_value_down() {
+        let mut app = on_row(DevRow::Amount);
+        app.update(Action::AdjustLeft);
+        assert_eq!(app.dev.as_ref().map(DevState::amount), Some(100));
+    }
+
+    /// **An unreachable state, answered rather than ignored.** `keymap` cannot emit the
+    /// key that stacks this modal without a `DevState` behind it — but a `Modal::Dev`
+    /// with no menu would otherwise capture every key and never draw anything, which is
+    /// a locked terminal rather than a bug report.
+    #[test]
+    fn a_menu_stacked_without_a_state_closes_itself() {
+        let mut app = session();
+        app.modal = Some(Modal::Dev);
+
+        app.update(Action::CursorDown);
+
+        assert_eq!(app.modal, None);
+    }
+
+    /// Free mode still refuses what the *rules* refuse — an unvisited mine is not a
+    /// purchase that ore was standing in the way of.
+    #[test]
+    fn a_free_purchase_is_still_refused_on_a_mine_the_run_never_entered() {
+        let mut app = upgrading(UpgradeTab::Mines).with_dev(true);
+        if let Some(dev) = app.dev.as_mut() {
+            dev.free_upgrades = true;
+        }
+        app.cursors.mine_track = (MineKind::Coal, MineTrack::Size);
+
+        app.update(Action::Confirm);
+
+        assert!(
+            app.state.mine(MineKind::Coal).is_none(),
+            "a grid was minted"
+        );
+        assert!(said(&app).contains("enter the Coal mine"), "{}", said(&app));
+    }
+
+    /// **The marker is present exactly when the menu is**, and it lands in the gap after
+    /// the six tabs rather than over one of them: `DEV FREE` was the first draft and it
+    /// ate three letters of `6 Levels`, and `FREE` still abutted it.
+    #[test]
+    fn the_tab_row_carries_the_marker_only_when_the_menu_exists() {
+        assert!(
+            !said(&session()).contains(dev::MARKER),
+            "an ordinary run said {}",
+            dev::MARKER
+        );
+
+        let frame = said(&dev_session());
+        assert!(
+            frame.contains(&format!("6 Levels {}", dev::MARKER)),
+            "the marker did not land in the gap after the last tab\n{frame}"
+        );
+    }
+
+    /// Turning the free toggle **announces itself**, which is what makes the marker's
+    /// colour a reminder rather than the only notice the mode ever gives.
+    #[test]
+    fn flipping_the_free_toggle_announces_it() {
+        let mut app = on_row(DevRow::FreeUpgrades);
+
+        app.update(Action::AdjustRight);
+        assert!(said(&app).contains("Free upgrades on"), "{}", said(&app));
+
+        app.toasts = Toasts::new();
+        app.update(Action::AdjustLeft);
+        assert!(said(&app).contains("Free upgrades off"), "{}", said(&app));
+
+        // Another row's adjust says nothing — the announcement belongs to the mode, not
+        // to the gesture. Counted rather than read off the frame: the open menu draws the
+        // words `Free upgrades` as a row label, so the frame cannot tell a toast about
+        // the mode from the row that sets it.
+        let mut app = on_row(DevRow::Amount);
+        app.update(Action::AdjustRight);
+        assert_eq!(app.toasts.len(), 0, "turning a value announced something");
+    }
+
+    #[test]
+    fn the_open_menu_is_drawn_over_the_screen_behind_it() {
+        let mut app = dev_session();
+        app.update(Action::OpenDevMenu);
+        let frame = said(&app);
+        assert!(frame.contains("Dev menu"), "{frame}");
+        assert!(frame.contains("Free upgrades"), "{frame}");
     }
 }

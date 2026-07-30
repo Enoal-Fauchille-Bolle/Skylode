@@ -10,8 +10,10 @@
 //!    may see it.
 //! 1. `Ctrl-C` — always quits, even if a modal would otherwise capture the key.
 //! 2. An open modal captures everything else (it is modal; that is the point).
-//! 3. The global ring bindings.
-//! 4. The active screen's contextual bindings.
+//! 3. The dev menu's key, where the build and the session both allow one.
+//! 4. The global ring bindings.
+//! 5. The configurable sub-tab binding.
+//! 6. The active screen's contextual bindings.
 //!
 //! Globals are consulted *before* the screen so that `Tab` cannot be shadowed by
 //! a screen that forgot the ring exists.
@@ -94,10 +96,37 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
                 KeyCode::Char('n') | KeyCode::Esc => Some(Action::CloseModal),
                 _ => None,
             },
+            // The dev menu: a list, so it reuses the list gestures and names no key of
+            // its own. `` ` `` closes it as well as opening it, like Help's `?` — a
+            // toggle is what a key that leads *nowhere else* should be.
+            #[cfg(debug_assertions)]
+            Modal::Dev => match key.code {
+                KeyCode::Up => Some(Action::CursorUp),
+                KeyCode::Down => Some(Action::CursorDown),
+                KeyCode::Left => Some(Action::AdjustLeft),
+                KeyCode::Right => Some(Action::AdjustRight),
+                KeyCode::Enter => Some(Action::Confirm),
+                KeyCode::Char('`') | KeyCode::Esc => Some(Action::CloseModal),
+                _ => None,
+            },
         };
     }
 
-    // 3. The global ring bindings.
+    // 3. The dev menu, before the ring, and only where it exists.
+    //
+    //    Two conditions and both are gates: the `#[cfg]` means a release build does not
+    //    contain this branch, and `app.dev` means a debug build without `SKYLODE_DEV`
+    //    leaves the key unbound. Backquote is free on every screen and is nobody's
+    //    mnemonic, which is what a key that must never be pressed by accident wants.
+    //
+    //    Above the ring rather than below it for the same reason `?` is: it opens from
+    //    anywhere, and a screen that claimed `` ` `` would shadow it.
+    #[cfg(debug_assertions)]
+    if app.dev.is_some() && key.code == KeyCode::Char('`') {
+        return Some(Action::OpenDevMenu);
+    }
+
+    // 4. The global ring bindings.
     match key.code {
         KeyCode::Char('q') => return Some(Action::Quit),
         // `?` is global and printed in every footer, so it opens Help from anywhere.
@@ -111,7 +140,7 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
         _ => {}
     }
 
-    // 4. The configurable sub-tab binding, before the screen is consulted.
+    // 5. The configurable sub-tab binding, before the screen is consulted.
     //
     //    Here rather than in `screen::upgrades::map_key` because that function is
     //    handed a key and nothing else — no config — and this module's header has
@@ -126,7 +155,7 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
         return Some(action);
     }
 
-    // 5. Fall through to whatever the current screen wants.
+    // 6. Fall through to whatever the current screen wants.
     app.screen.map_key(key)
 }
 
@@ -157,7 +186,7 @@ mod tests {
     use crate::{overlay::Conversion, screen::Screen};
 
     /// A plain key press, with no modifiers.
-    fn press(code: KeyCode) -> KeyEvent {
+    pub(super) fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
@@ -166,7 +195,7 @@ mod tests {
     /// `resolve` reads only which screen is open and whether a modal is stacked, so
     /// the run behind it is immaterial — but it has to be *some* run, and a fixed
     /// seed keeps it from being a different one each time the suite is run.
-    fn session() -> App {
+    pub(super) fn session() -> App {
         App::new(GameState::new(0x5B1_0DE, std::time::UNIX_EPOCH))
     }
 
@@ -485,5 +514,69 @@ mod tests {
         // And a *press* is still swallowed by it, which is what makes the line above
         // an exception rather than a hole.
         assert_eq!(resolve(&app, press(KeyCode::Char(' '))), None);
+    }
+}
+
+/// The dev key's tests, gated like the key.
+///
+/// A module and not an attribute per test: they name `Modal::Dev` and
+/// `Action::OpenDevMenu`, neither of which exists in a build with
+/// `debug_assertions` off — so `cargo test --release` would fail to *compile* the
+/// suite rather than skip a feature that is not there.
+#[cfg(all(test, debug_assertions))]
+mod dev_tests {
+    use super::tests::{press, session};
+    use super::*;
+
+    /// The inner half of the dev gate: the branch is compiled into this build, and the
+    /// key is still dead until the session asked for it.
+    #[test]
+    fn the_dev_key_is_unbound_until_the_session_asks_for_it() {
+        let plain = session();
+        assert_eq!(resolve(&plain, press(KeyCode::Char('`'))), None);
+
+        let enabled = session().with_dev(true);
+        assert_eq!(
+            resolve(&enabled, press(KeyCode::Char('`'))),
+            Some(Action::OpenDevMenu)
+        );
+    }
+
+    /// It opens from every screen, like `?` and unlike a screen binding — and on the
+    /// Mine screen in particular, where `Space` is the only other thing bound.
+    #[test]
+    fn the_dev_key_opens_from_any_screen() {
+        for screen in Screen::ALL {
+            let mut app = session().with_dev(true);
+            app.screen = screen;
+            assert_eq!(
+                resolve(&app, press(KeyCode::Char('`'))),
+                Some(Action::OpenDevMenu),
+                "the dev key is shadowed on {screen:?}"
+            );
+        }
+    }
+
+    /// The menu captures the list gestures and closes on either of its two keys.
+    #[test]
+    fn the_dev_menu_captures_the_list_gestures_and_closes_on_its_own_key() {
+        let mut app = session().with_dev(true);
+        app.modal = Some(Modal::Dev);
+
+        for (code, expected) in [
+            (KeyCode::Up, Action::CursorUp),
+            (KeyCode::Down, Action::CursorDown),
+            (KeyCode::Left, Action::AdjustLeft),
+            (KeyCode::Right, Action::AdjustRight),
+            (KeyCode::Enter, Action::Confirm),
+            (KeyCode::Esc, Action::CloseModal),
+            (KeyCode::Char('`'), Action::CloseModal),
+        ] {
+            assert_eq!(resolve(&app, press(code)), Some(expected), "{code:?}");
+        }
+
+        // And it swallows the ring, which is what makes it modal: `Tab` behind an open
+        // box would change the screen the box is drawn over.
+        assert_eq!(resolve(&app, press(KeyCode::Tab)), None);
     }
 }

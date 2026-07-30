@@ -21,6 +21,18 @@ use skylode_core::{pickaxe::PickaxeTier, tunables::RAW_PER_COMPRESSED};
 /// separator is the ASCII space so the rendered row matches the frame byte for
 /// byte, which is what the layout tests assert against.
 pub fn grouped(n: u32) -> String {
+    grouped_u64(u64::from(n))
+}
+
+/// [`grouped`], for a count that outgrows a [`u32`].
+///
+/// The one figure in the game that does: [`OfflineReport::blocks`] is a rate times an
+/// absence, and seven days of it at a raised auto-miner rate passes four billion. The
+/// two share an implementation rather than a convention, so the separator cannot be a
+/// space in one reading of a number and a comma in the other.
+///
+/// [`OfflineReport::blocks`]: skylode_core::game::OfflineReport
+pub fn grouped_u64(n: u64) -> String {
     // Built from the least-significant digit up — grouping counts from the right,
     // so the string is assembled reversed and flipped once at the end rather than
     // repeatedly measuring how far the current digit sits from the decimal point.

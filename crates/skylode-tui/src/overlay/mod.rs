@@ -11,6 +11,11 @@
 //!   too small). There is no key that leads there, so they are not modals at all;
 //!   they belong to the session state machine, which lands in a later pass.
 //!
+//! The [`dev`] menu is a third kind, and it is in neither list: nobody it was built
+//! for is a player, and it is compiled out of a release build entirely. It is pulled
+//! in the mechanical sense — it captures input and lives in `App::modal` — so it obeys
+//! everything §6.2 says about that half. `docs/DEV-MENU.md` is its spec.
+//!
 //! Both are drawn the same way: [`Clear`] the region first, then render on top.
 //! Clearing is what makes an overlay cost **zero permanent layout rows** — it
 //! borrows the cells for a frame and the next redraw restores whatever was under it.
@@ -18,6 +23,8 @@
 //! [`Clear`]: ratatui::widgets::Clear
 
 pub mod compression;
+#[cfg(debug_assertions)]
+pub mod dev;
 pub mod dip;
 pub mod help;
 pub mod offline;
@@ -105,6 +112,16 @@ pub enum Modal {
         /// Whether `Buy it` is the focused option.
         buy: bool,
     },
+    /// The dev menu (`docs/DEV-MENU.md`), opened with `` ` `` when the session was
+    /// started with `SKYLODE_DEV` set.
+    ///
+    /// **A unit variant, unlike the two above**, and the departure is deliberate:
+    /// those two carry their state so that a value with no dialog open is unwritable,
+    /// while this menu's values are *meant* to outlive a close — see
+    /// [`DevState`](dev::DevState). They live in `App::dev`, which is also what says
+    /// whether the menu exists at all.
+    #[cfg(debug_assertions)]
+    Dev,
 }
 
 /// Draws a centred modal box of `width × height`, titled, filled with `lines`.

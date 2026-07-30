@@ -96,9 +96,18 @@ fn main() -> Result<()> {
     let enhanced = enable_key_releases();
     let events = EventHandler::new(TICK_RATE_MS);
 
+    let app = App::new(state);
+    // The dev menu's *activation*, and the only place the environment is read for it.
+    // The compilation gate is `#[cfg(debug_assertions)]`, applied at every door down to
+    // `skylode_core::game::dev`; this line is the second layer, so that an ordinary
+    // `cargo run` is an ordinary game. In a release build the whole statement is absent
+    // along with the method it calls.
+    #[cfg(debug_assertions)]
+    let app = app.with_dev(dev_requested());
+
     // The result is held, not propagated with `?`: the terminal must be restored
     // first, or an error would print into the alternate screen and vanish with it.
-    let result = App::new(state).run(&mut terminal, events);
+    let result = app.run(&mut terminal, events);
 
     if enhanced {
         // Before `restore`, and unconditional on how the loop ended: these flags are
@@ -108,6 +117,24 @@ fn main() -> Result<()> {
     }
     ratatui::restore();
     result
+}
+
+/// Whether this session was started with the dev menu asked for.
+///
+/// **Presence, not a value**, so `SKYLODE_DEV=0` enables it too. A variable whose only
+/// job is to be set has no business having a grammar of truthy strings — and the one
+/// person who types it is the one who wrote this line.
+///
+/// It reads the environment, which is legal here for [`seed_from_clock`]'s reason and no
+/// other: `main` is the outside. The reading is spent immediately on
+/// [`App::with_dev`](crate::app::App::with_dev) and never consulted again, so nothing
+/// below this function can ask the environment what mode it is in.
+///
+/// `#[cfg(debug_assertions)]` because there is nothing for it to enable in a release
+/// build: `App` has no `dev` field there, and `keymap` has no branch that would read it.
+#[cfg(debug_assertions)]
+fn dev_requested() -> bool {
+    std::env::var_os("SKYLODE_DEV").is_some()
 }
 
 /// Asks the terminal to report key releases, and says whether it agreed.

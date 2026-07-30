@@ -146,6 +146,15 @@ pub enum Action {
     /// matters — a shared variant would be a coincidence of keycaps standing in for a
     /// shared meaning.
     ClaimAll,
+    /// Open the dev menu (`` ` ``), on a debug build whose session asked for it.
+    ///
+    /// **Not [`OpenHelp`](Action::OpenHelp) with a different target**, though both open
+    /// an overlay from anywhere: this one is compiled out of a release build, and a
+    /// shared variant would leave the release binary carrying a name for something it
+    /// cannot do. The `#[cfg]` on a *variant* is what makes the reducer's exhaustive
+    /// `match` shrink to match, so nothing downstream needs a runtime guard.
+    #[cfg(debug_assertions)]
+    OpenDevMenu,
     /// Put the active screen's cursor back where the player actually is (`Home`).
     ///
     /// The Levels roadmap is fifty rows and the cursor opens on the player's own
