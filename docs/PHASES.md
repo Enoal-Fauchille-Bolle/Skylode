@@ -258,6 +258,16 @@ run` panel beside them needs no state at all: every row is a pure predicate over
 the run (a tier reached, a mine maxed, a level crossed), which is why the design
 carries **no "ever achieved" bitset** and the save schema gains no such field.
 
+**`blocks_broken` counts what the player broke, not what the auto-miner credited.**
+The impact block and the cells a blast brought down, and nothing else. The helper
+never walks the grid — it weights the expected composition and multiplies — so its
+"blocks" are a closed-form quotient rather than cells that visibly fell, and a
+counter mixing the two would answer neither question a player is asking of it.
+Excluded, the figure means *swings*, which is what someone comparing it against
+their own memory has in mind, and it stays reachable from the swing path alone. The
+consequence to keep straight is that an absence adds nothing to it — exactly as an
+absence adds nothing to `playtime`, which counts simulated tick time.
+
 **No `SAVE_VERSION` bump, and the reason is a fact about the calendar rather than
 about the schema.** A version bump exists to protect files already written, and the
 front-end does not yet write any — the whole disk half of [phase 9](#phase-9---save-serialisation-half-only)
