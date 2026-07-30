@@ -272,7 +272,19 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
     // the grid is the dense block, worth nine of the ore beside it, and the arrows
     // still move it. A slider that appears on a quarter of the screens is a control
     // the player has to learn twice.
-    let filled = (detail.value_percent as usize * DIAL_WIDTH) / 100;
+    // **The bar is a picture of the number printed beside it**, and not of the grid's
+    // composition. It used to be filled by `value_percent`, which is the honest reading
+    // of a *different* question and made the control lie about its own ends: the curve
+    // runs 10 % to 91 %, so the bottom rung showed a sliver and the top one stopped two
+    // cells short — a slider that is neither empty when empty nor full when full. The
+    // composition has not gone unsaid; it is the split line directly below, in absolute
+    // percentages the bar cannot distort.
+    //
+    // Rungs *reached*, so rung 1 of 10 fills one tenth rather than nothing: the first
+    // rung is a position on the ladder, not the absence of one. `DIAL_WIDTH` is 20
+    // against 10 rungs, so each rung is exactly two cells and the bar is countable.
+    let rungs = shown_rung(detail.richness_max) as usize;
+    let filled = (shown_rung(detail.richness_setting) as usize * DIAL_WIDTH) / rungs;
     // Spans rather than `marked` here: `█` and `░` are not marks, and this row is
     // built by `format!` alone — no `justified` padding to preserve — so the two
     // halves can be split safely. Same accent/muted pair as the gauges and the
@@ -450,6 +462,41 @@ mod tests {
         assert!(dial.contains('◄') && dial.contains('►'), "{dial:?}");
         assert!(dial.contains('█') && dial.contains('░'), "{dial:?}");
         assert!(frame.contains("optimum, not a maximum."), "{frame}");
+    }
+
+    /// **The bar's ends are the dial's ends**, which is the whole reason it is filled by
+    /// the rung rather than by the grid's composition.
+    ///
+    /// It used to follow `value_percent`, a curve running 10 % to 91 %: the bottom rung
+    /// drew a sliver and the top one stopped two cells short of the arrow, so a slider
+    /// at rest looked started and a maxed one looked unfinished. The composition is
+    /// still stated, in absolute percentages, on the split line below.
+    ///
+    /// One tenth at the bottom and not nothing: the first rung is a *position* on the
+    /// ladder, and `1/10` printed beside an empty bar would contradict itself. Ten rungs
+    /// across [`DIAL_WIDTH`] = 20 cells means every rung is exactly two, which is what
+    /// makes these two counts exact rather than approximately right.
+    #[test]
+    fn the_dial_bar_ends_empty_at_the_first_rung_and_full_at_the_last() {
+        fn bar_at(setting: u32) -> (usize, usize) {
+            let mut view = View::sample();
+            view.mines.detail.richness_setting = setting;
+            view.mines.detail.richness_level = 9;
+            let frame = whole_frame(&render_view(&view));
+            let dial = row_with(&frame, "Dial");
+            (
+                dial.chars().filter(|&c| c == '█').count(),
+                dial.chars().filter(|&c| c == '░').count(),
+            )
+        }
+
+        assert_eq!(bar_at(0), (2, DIAL_WIDTH - 2), "the first rung");
+        assert_eq!(
+            bar_at(4),
+            (10, DIAL_WIDTH - 10),
+            "the halfway rung reads half"
+        );
+        assert_eq!(bar_at(9), (DIAL_WIDTH, 0), "the last rung leaves a gap");
     }
 
     /// The two shares are the dial's own number and its remainder, spelled with the

@@ -417,6 +417,18 @@ above is left as drawn.
   ten discrete rungs bounded by a ceiling the player buys, so "rung 4 of the 7 I own"
   is what they consult before buying an eighth, and a bar can picture only the first
   of those two numbers.
+- **The bar is filled by the rung, not by the value-weight curve** — and this reverses
+  the entry above it, which read "the bar is filled by the value-weight *curve*, not
+  by the setting". That was the honest reading of a different question, and it made the
+  control lie about its own ends: the curve runs 10 % to 91 %, so the bottom rung drew
+  a sliver and the top stopped two cells short of the arrow. A slider that is neither
+  empty when empty nor full when full is a slider the player cannot trust. It now
+  fills `rung / 10`, so `5/10` is half a bar and `10/10` is all of it — the bar became
+  a *picture of the number printed beside it*. Nothing is hidden by the change: the
+  composition is the split line directly below, in absolute percentages the bar cannot
+  distort. Rungs *reached* rather than travelled, so the first rung fills one tenth
+  rather than nothing — `1/10` beside an empty bar would contradict itself — and at
+  twenty cells for ten rungs each rung is exactly two, so the bar is countable.
 - **Every mine rung is displayed counting from 1, not from 0** (`level 7 / 10`,
   `R 10`, `4/7`, `level 7 → 8`, `At 8`), and the frames above are drawn the old way.
   The core numbers these levels from 0 because they are *indexes into a table of ten
