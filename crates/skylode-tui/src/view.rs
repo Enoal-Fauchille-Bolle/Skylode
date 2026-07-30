@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use skylode_core::{
     block::Block,
-    economy::{self, Affordability, Cost, CostLine},
+    economy::{self, Affordability, Cost, CostLine, Shortfall},
     enchant::EnchantType,
     game::GameState,
     inventory::Inventory,
@@ -23,6 +23,7 @@ use skylode_core::{
     mine_kind::{MineKind, MineLock},
     pickaxe::{Pickaxe, PickaxeTier},
     player::Player,
+    prestige::{self, PrestigeLock},
     reward::{self, LevelReward},
     tunables::{
         BOOST_DURATION_TICKS, HASTE_PER_LEVEL, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND,
@@ -825,28 +826,72 @@ pub struct Milestone {
     pub detail: String,
 }
 
+/// The prestige trade, as the Stats panel and the two prestige modals both read it
+/// (UI.md §5.5, §6.8, §6.9).
+///
+/// **One projection, two renderings**, and that is not tidiness — it is the rule the
+/// dip modal already follows. §5.5's Progression panel and §6.8's preview quote the
+/// same five figures, and a box that re-derived them from `GameState` could disagree
+/// with the panel the player opened it from. So the panel and the box read this, and
+/// there is nothing for them to disagree about.
+///
+/// **Values, not sentences.** The rank is a number and not `"III"`, the verdict is an
+/// [`Affordability`] and not a `bool`: the box has to tell *"you are short of
+/// Amethyst"* from *"you hold it in the wrong denomination"*, which is the same
+/// distinction [`InventoryView`]'s hint is built on, and a `bool` would have thrown it
+/// away before either reader could ask.
+#[derive(Clone, Debug)]
+pub struct PrestigeView {
+    /// The rank the player holds; `0` before the first prestige.
+    pub rank: u32,
+    /// The multiplier that rank grants, in permille — `1000` at rank 0.
+    pub multiplier_permille: u32,
+    /// What the *next* rank would grant, in permille.
+    pub next_multiplier_permille: u32,
+    /// The material a prestige is paid in — Amethyst, and only Amethyst.
+    pub material: Material,
+    /// The next rank's price as a raw total, split for display by
+    /// [`denominations`](crate::format::denominations).
+    pub cost: u32,
+    /// How much of `material` the player holds, counted in raw whatever it is stored
+    /// as ([`Inventory::raw_value`]).
+    pub held: u32,
+    /// What the till would say to that price right now.
+    ///
+    /// Carried whole rather than as a mark, because §6.8's closing line names the
+    /// refusal: a player holding the value in the wrong denomination is one conversion
+    /// away, and telling them to go mining would send them on a trip that ends in the
+    /// same `✗`.
+    pub verdict: Affordability,
+    /// Which progression gates are still shut, or none.
+    pub lock: PrestigeLock,
+    /// The pickaxe tier the reset would take back to Wooden.
+    pub tier: PickaxeTier,
+    /// Efficiency's level, `0` if unowned — the row is dropped at zero.
+    pub efficiency: u8,
+    /// Fortune's level, same rule.
+    pub fortune: u8,
+    /// How many *other* enchants stand above level 0.
+    ///
+    /// Efficiency and Fortune have lines of their own in §6.8's left column, so
+    /// counting them again would bill the player twice for the same loss.
+    pub other_enchants: usize,
+    /// The mining level the reset would take back to 1.
+    pub level: u32,
+}
+
 /// The three panels of the Stats screen (UI.md §5.5).
 ///
-/// All **placeholder** data: the prestige figures, the lifetime counters, the run
-/// milestones and the history are what the tick and the save own (phase 7). The
-/// worlds table and the level cap are *not* here — the screen derives them from
-/// `World` and `LEVEL_CAP`, which already answer them. `blocks_broken` is a `u32`
-/// for now because `format::grouped` takes one and the fixture fits; the lifetime
-/// type is settled when `GameState` fills this in.
+/// **Placeholder data, minus the prestige figures**, which moved to
+/// [`PrestigeView`] when the preview modal needed to quote them without being able to
+/// disagree with the panel. What is left here is the lifetime counters, the run
+/// milestones and the history — the tick's and the save's to fill (the counters are
+/// core phase 11). The worlds table and the level cap are *not* here either: the
+/// screen derives them from `World` and `LEVEL_CAP`, which already answer them.
+/// `blocks_broken` is a `u32` for now because `format::grouped` takes one and the
+/// fixture fits; the lifetime type is settled when `GameState` fills this in.
 #[derive(Clone, Debug)]
 pub struct StatsView {
-    /// Prestige rank, pre-formatted: `II` (placeholder — no roman helper yet).
-    pub prestige_rank: String,
-    /// The current global multiplier: `×1.20`.
-    pub multiplier: String,
-    /// What the next rank would grant: `×1.30`.
-    pub next_multiplier: String,
-    /// What the next prestige costs, in `prestige_material`.
-    pub prestige_cost: u32,
-    /// The material a prestige is paid in: `Amethyst`.
-    pub prestige_material: String,
-    /// How much of it the player holds.
-    pub prestige_held: u32,
     /// Lifetime blocks broken — survives prestige.
     pub blocks_broken: u32,
     /// Lifetime playtime, pre-formatted: `14h 22m`.
@@ -1046,6 +1091,9 @@ pub struct View {
     pub levels: LevelsView,
     /// The three panels of the Stats screen (UI.md §5.5).
     pub stats: StatsView,
+    /// The prestige trade, read by the Stats panel and by both prestige modals
+    /// (UI.md §5.5, §6.8, §6.9).
+    pub prestige: PrestigeView,
     /// The Inventory table and its compress panel (UI.md §5.3).
     pub inventory: InventoryView,
     /// The Mines list and the selected mine's detail pane (UI.md §5.2).
@@ -1135,10 +1183,14 @@ impl View {
             inventory: inventory_view(player.get_inventory(), cursors, refused),
             upgrades: upgrades_view(state, cursors),
             levels: levels_view(state, cursors),
+            prestige: prestige_view(player),
 
             // **One field left.** `stats` is the last screen still drawn from the
             // fixture, and this `..` is the literal list of what phase 7 still owes;
-            // it disappears when that screen is wired.
+            // it disappears when that screen is wired. What remains behind it is
+            // narrower than it was — the panel's prestige half now comes from
+            // `prestige` above, and only the three counters, the run milestones and
+            // the history are still fixture.
             ..Self::sample()
         }
     }
@@ -1208,6 +1260,7 @@ impl View {
             target: Some(TargetView { cell, ratio: 0.61 }),
             levels: sample_levels(),
             stats: sample_stats(),
+            prestige: sample_prestige(),
             inventory: sample_inventory(),
             mines: sample_mines(),
             upgrades: sample_upgrades(),
@@ -2641,18 +2694,97 @@ fn sample_stats() -> StatsView {
     .collect();
 
     StatsView {
-        prestige_rank: "II".to_owned(),
-        multiplier: "×1.20".to_owned(),
-        next_multiplier: "×1.30".to_owned(),
-        prestige_cost: 6_540,
-        prestige_material: "Amethyst".to_owned(),
-        prestige_held: 0,
         blocks_broken: 418_297,
         playtime: "14h 22m".to_owned(),
         this_run: "3h 07m".to_owned(),
         milestones,
         history,
         history_offset: 0,
+    }
+}
+
+/// The prestige trade the §6.8 frame is drawn at: rank II, unaffordable, mid-climb.
+///
+/// Transcribed rather than invented, and it agrees with the §5.5 frame beside it
+/// because both are now one struct — which is the property
+/// [`prestige_view`] exists to make structural. Rank II is deliberately *not* rank 0:
+/// the fixture's job is to draw the box with something in every line, and a run that
+/// has never prestiged has no `Rank … → …` to show.
+fn sample_prestige() -> PrestigeView {
+    let cost = 6_540;
+    PrestigeView {
+        rank: 2,
+        multiplier_permille: 1_200,
+        next_multiplier_permille: 1_300,
+        material: Material::Amethyst,
+        cost,
+        held: 0,
+        // The frame's own `✗`: the player holds nothing, so the ore is missing
+        // outright rather than being held in the wrong denomination.
+        verdict: Affordability::Insufficient(vec![Shortfall {
+            item: Item::Raw(Material::Amethyst),
+            needed: cost,
+            held: 0,
+        }]),
+        lock: prestige::lock(23, PickaxeTier::Diamond),
+        tier: PickaxeTier::Diamond,
+        efficiency: 4,
+        fortune: 3,
+        // The frame's `All 5 enchants → 0`, the five that are neither of the two above.
+        other_enchants: 5,
+        level: 23,
+    }
+}
+
+/// Everything §6.8 and §5.5 say about the prestige trade, read off the run.
+///
+/// **Takes the [`Player`] and not the [`GameState`]**, because that is the whole of
+/// what the trade is about: the rank, the two gates, the pickaxe, the enchants, the
+/// level and the inventory that pays. Nothing here asks about a mine, and a projection
+/// that took the run would be able to.
+///
+/// The verdict comes from [`economy::affordability`] rather than from `held >= cost`,
+/// for the reason the Upgrades pane reads the same function: a prestige is paid as a
+/// [`Cost`] in two denominations, so a player holding 6 540 raw Amethyst is genuinely
+/// refused, and a comparison of totals would print a `✓` the till then contradicts.
+fn prestige_view(player: &Player) -> PrestigeView {
+    let rank = player.get_prestige();
+    let cost = prestige::cost(rank);
+    // A prestige is quoted in exactly one material, so the total is the one line's.
+    // `map_or` rather than an index: the lints here forbid the panic a `[0]` would be.
+    let total = cost
+        .lines()
+        .first()
+        .map_or(0, |line| line.compressed * RAW_PER_COMPRESSED + line.raw);
+    let material = cost
+        .lines()
+        .first()
+        .map_or(Material::Amethyst, |line| line.material);
+
+    let pickaxe = player.get_pickaxe();
+    let enchants = pickaxe.enchants();
+    PrestigeView {
+        rank,
+        multiplier_permille: prestige::multiplier_permille(rank),
+        // `rank + 1` cannot overflow in play and saturates if it ever could: the rank
+        // is unbounded by design, so the arithmetic has to be total rather than
+        // relying on nobody reaching the top of a `u32`.
+        next_multiplier_permille: prestige::multiplier_permille(rank.saturating_add(1)),
+        material,
+        cost: total,
+        held: player.get_inventory().raw_value(material),
+        verdict: economy::affordability(player.get_inventory(), &cost),
+        lock: player.prestige_lock(),
+        tier: pickaxe.get_tier(),
+        efficiency: enchants.get_level(EnchantType::Efficiency),
+        fortune: enchants.get_level(EnchantType::Fortune),
+        other_enchants: enchants
+            .iter()
+            .filter(|(kind, level)| {
+                *level > 0 && !matches!(kind, EnchantType::Efficiency | EnchantType::Fortune)
+            })
+            .count(),
+        level: player.get_level(),
     }
 }
 

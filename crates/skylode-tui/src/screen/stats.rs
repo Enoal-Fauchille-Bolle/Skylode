@@ -23,7 +23,7 @@ use skylode_core::{tunables::LEVEL_CAP, world::World};
 
 use crate::{
     action::Action,
-    format::{grouped, justified, xp_progress},
+    format::{denominations, grouped, justified, multiplier, prestige_rank, xp_progress},
     screen::{panel, window},
     theme,
     view::View,
@@ -100,20 +100,31 @@ fn progression(frame: &mut Frame, area: Rect, view: &View) {
         )));
     }
 
+    // The prestige half comes from `view.prestige`, which the §6.8 preview reads too:
+    // the box is opened from this panel with `p`, and two readings of the same trade
+    // could quote two prices at the player in the space of one keystroke.
+    let p = &view.prestige;
     lines.push(Line::from(""));
-    lines.push(inline("Prestige", &format!("rank {}", s.prestige_rank)));
-    lines.push(inline("Multiplier", &s.multiplier));
-    lines.push(inline("Next rank", &s.next_multiplier));
-    lines.push(stat(
-        "Cost",
-        &format!("{} {}", grouped(s.prestige_cost), s.prestige_material),
-        width,
+    lines.push(inline(
+        "Prestige",
+        &format!("rank {}", prestige_rank(p.rank)),
     ));
-    lines.push(stat(
-        "Held",
-        &format!("{} {}", grouped(s.prestige_held), s.prestige_material),
-        width,
-    ));
+    lines.push(inline("Multiplier", &multiplier(p.multiplier_permille)));
+    lines.push(inline("Next rank", &multiplier(p.next_multiplier_permille)));
+    // **Two denominations, against the frame's flat total**, and the frame is what is
+    // wrong: a prestige is paid as a `Cost`, so 6 540 raw Amethyst does not settle a
+    // price of `65 Compressed + 40`. Quoting the total alone would let the preview
+    // print a `✗` beside a `Held` that matches the `Cost` and say nothing about why.
+    //
+    // **The material moves to a line of its own**, which the frame does not draw, and
+    // the panel's width is what settles it: 28 columns cannot hold `Cost  65 Compressed
+    // + 40 Amethyst`, and of the two words that could go, the denominations are the
+    // ones that decide whether the till accepts. Naming it once above the pair costs a
+    // row the panel has and reads as the unit both figures are counted in.
+    // `docs/UI.md` §5.5.1.
+    lines.push(inline("Price in", p.material.name()));
+    lines.push(stat("Cost", &denominations(p.cost), width));
+    lines.push(stat("Held", &denominations(p.held), width));
     lines.push(Line::from(""));
     lines.push(stat("Blocks broken", &grouped(s.blocks_broken), width));
     lines.push(stat("Playtime", &s.playtime, width));
@@ -268,8 +279,12 @@ mod tests {
         assert!(row_with(&frame, "XP").contains("1 240 / 2 300"), "{frame}");
         assert!(row_with(&frame, "Prestige").contains("rank II"), "{frame}");
         assert!(row_with(&frame, "Multiplier").contains("×1.20"), "{frame}");
+        // The price in the shape it is paid in, and the material named once above the
+        // pair rather than on both lines — `docs/UI.md` §5.5.1, and the panel's own 28
+        // columns are the argument.
+        assert!(row_with(&frame, "Price in").contains("Amethyst"), "{frame}");
         assert!(
-            row_with(&frame, "Cost").contains("6 540 Amethyst"),
+            row_with(&frame, "Cost").contains("65 Compressed + 40"),
             "{frame}"
         );
         assert!(

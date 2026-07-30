@@ -125,6 +125,44 @@ pub fn roman(level: u8) -> &'static str {
     ROMAN.get(usize::from(level) - 1).copied().unwrap_or("?")
 }
 
+/// A prestige rank, as the Stats panel and the two prestige modals print it.
+///
+/// **Not [`roman`], and the difference is the range.** An enchant level is bounded by a
+/// cap the tables spell out, so `ROMAN` spans it and a value past the table is a bug.
+/// A prestige rank is deliberately *unbounded* — `prestige::multiplier_permille`
+/// documents that a player who keeps trading runs in keeps meeting runs of much the
+/// same length — so `roman`'s `"?"` would not be reporting a moved cap, it would be
+/// refusing to name a rank the player legitimately holds. Past the numerals the arabic
+/// number is the honest answer.
+///
+/// **Rank `0` is the common case**, not an edge one: it is every run before the first
+/// prestige, and `roman(0)` answers `"?"` because an enchant at level 0 is one the
+/// player does not own. A rank of 0 *is* owned — it is where everyone starts — so it
+/// prints as `0`.
+pub fn prestige_rank(rank: u32) -> String {
+    match u8::try_from(rank) {
+        Ok(0) => "0".to_owned(),
+        // Roman while the table covers it; the numeral is what §5.5 and §6.8 draw.
+        Ok(small) if usize::from(small) <= ROMAN.len() => roman(small).to_owned(),
+        _ => grouped(rank),
+    }
+}
+
+/// A permille multiplier as the frames quote it: `1200` becomes `"×1.20"`.
+///
+/// Two decimals, always, because the three figures that share a line in §6.8
+/// (`×1.20  →  ×1.30`) have to align on the point — and because the step between two
+/// ranks is `PRESTIGE_MULT_PER_RANK_PERMILLE`, which is finer than one decimal can
+/// show. The division is done in integers and printed with a literal `.`, rather than
+/// through a float, so the string cannot pick up a rounding artefact on its way to the
+/// screen.
+pub fn multiplier(permille: u32) -> String {
+    // Permille to hundredths: the tens digit is dropped rather than rounded, which is
+    // exact for every multiplier the rank curve produces (they are all multiples of 10).
+    let hundredths = permille / 10;
+    format!("×{}.{:02}", hundredths / 100, hundredths % 100)
+}
+
 /// The number a mine-track level is **shown** as: the core counts from 0, the player
 /// counts from 1.
 ///
@@ -315,5 +353,31 @@ mod tests {
         // word saying finished over an empty bar.
         assert_eq!(xp_progress(4_900, None), MAXED);
         assert_eq!(xp_ratio(4_900, None), 1.0);
+    }
+
+    /// Rank 0 is where every run starts, so it is the one this has to get right.
+    #[test]
+    fn a_prestige_rank_is_roman_but_starts_at_zero() {
+        assert_eq!(prestige_rank(0), "0");
+        assert_eq!(prestige_rank(1), "I");
+        assert_eq!(prestige_rank(3), "III");
+    }
+
+    /// The rank is unbounded by design, so past the numerals the number is the answer
+    /// — `roman`'s `?` would refuse to name a rank the player actually holds.
+    #[test]
+    fn a_rank_past_the_numerals_is_named_in_digits_rather_than_refused() {
+        assert_eq!(prestige_rank(15), "XV");
+        assert_eq!(prestige_rank(16), "16");
+        assert_eq!(prestige_rank(1_200), "1 200");
+    }
+
+    #[test]
+    fn a_multiplier_is_printed_to_two_decimals() {
+        // Rank 0's exact `×1.00` is the identity `multiplier_permille` is built to
+        // keep, and the one figure a run that has never prestiged prints.
+        assert_eq!(multiplier(1_000), "×1.00");
+        assert_eq!(multiplier(1_200), "×1.20");
+        assert_eq!(multiplier(2_500), "×2.50");
     }
 }
