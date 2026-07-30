@@ -451,6 +451,47 @@ impl Player {
             ..Self::new()
         };
     }
+
+    /// Puts the level wherever the dev menu asks, clamped to the ladder that exists.
+    ///
+    /// **The one dev door that is a setter and not a repeat of a paid step.** Every
+    /// other one composes a `pub(crate)` mutator the economy already calls
+    /// ([`Pickaxe::upgrade`](crate::pickaxe::Pickaxe), `Mine::upgrade_size_level`), so
+    /// the caps keep refusing exactly as they do in play. There is no such mutator for
+    /// *lowering* a level — nothing in the rules ever does — and a menu that could
+    /// only climb would be unable to re-test a gate it had just walked past. So this
+    /// writes the field, and pays for it by having to restate the invariants
+    /// [`validate`](Player::validate) checks: the level is clamped into
+    /// `1..=LEVEL_CAP`, and the banked experience and its carry go to zero rather than
+    /// being left describing a level the player no longer holds.
+    ///
+    /// It leaves `unclaimed` alone because that set is not this struct's;
+    /// `GameState::dev_set_level` prunes it, which it must — a reward waiting for a
+    /// level the player has just dropped below is the exact state `validate` refuses.
+    ///
+    /// `#[cfg(debug_assertions)]`, so it is **not compiled into a release build** —
+    /// the dev menu's whole gate, applied at the lowest door rather than only at the
+    /// top one.
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_set_level(&mut self, level: u32) {
+        self.level = level.clamp(1, LEVEL_CAP);
+        self.experience = 0;
+        self.xp_carry = 0;
+    }
+
+    /// Sets the prestige rank without running the reset that earns it.
+    ///
+    /// Deliberately *not* [`prestige_reset`](Player::prestige_reset): that one throws
+    /// the run away, which is the last thing wanted when the reason to dial a rank up
+    /// is to look at what its multiplier does to a run you have already built. The two
+    /// halves of a prestige — the rank and the wipe — are separable here and nowhere
+    /// else.
+    ///
+    /// Compiled out of a release build, like [`dev_set_level`](Player::dev_set_level).
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_set_prestige(&mut self, rank: u32) {
+        self.prestige = rank;
+    }
 }
 
 #[cfg(test)]

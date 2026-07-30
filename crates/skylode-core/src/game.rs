@@ -1015,7 +1015,24 @@ impl GameState {
     fn grant_experience(&mut self, broken: &[Block], events: &mut Vec<GameEvent>) {
         let before = self.player.get_level();
         let gained = self.player.grant_break_experience(broken);
+        self.file_crossed_levels(before, gained, events);
+    }
 
+    /// Files the `gained` levels climbed above `before`, and announces each.
+    ///
+    /// Split out of [`grant_experience`](GameState::grant_experience) because a second
+    /// caller grants experience by an *amount* rather than by the blocks that paid for
+    /// it — `dev_add_experience`, which is compiled out of a release build. The split
+    /// survives that absence on purpose: a copy of this loop living in the dev module
+    /// could drift from this one, and the way it would drift is by forgetting to file
+    /// the level, which shows up as a Levels screen with nothing to collect for a
+    /// threshold the player visibly crossed.
+    ///
+    /// Takes the count rather than reading the level twice, for
+    /// [`grant_experience`](GameState::grant_experience)'s reason: a lump that crosses
+    /// several levels owes a reward for each, and
+    /// [`Player::add_experience`]'s return is what makes them countable.
+    fn file_crossed_levels(&mut self, before: u32, gained: u32, events: &mut Vec<GameEvent>) {
         for level in before + 1..=before + gained {
             let reward = reward::reward_for_level(level);
             if reward.is_some() {
@@ -1402,6 +1419,495 @@ pub enum GameEvent {
     },
     /// The running boost ran out.
     BoostExpired,
+}
+
+/// The doors the rules refuse a player and allow their author.
+///
+/// **Everything in here is compiled out of a release build**, and the gate is
+/// `#[cfg(debug_assertions)]` rather than a Cargo feature for one reason worth
+/// stating where it will be read: a feature left off is code that `clippy
+/// --all-targets`, `cargo doc -D warnings` and `cargo tarpaulin` never see, and all
+/// three of those are commit gates here. The dev profile is what every one of them
+/// builds, so this module is linted, documented and covered exactly like the rules it
+/// bypasses — while `cargo build --release` contains not one line of it. `serde`'s
+/// note in `Cargo.toml` refuses a feature flag on the same argument.
+///
+/// **A child module of [`game`](crate::game), so it needs no new accessors.** Rust
+/// privacy is *visible in the defining module and its descendants*, which means this
+/// reaches [`GameState`]'s private fields directly. The alternative — a top-level
+/// `dev` module — would have had to open a `pub(crate)` door onto every field it
+/// wanted, and those doors would still be there in release.
+///
+/// **What it does not do is pay, and that is the whole of it.** Every method below
+/// composes the *same* `pub(crate)` mutator the paid path in
+/// [`economy`] calls after debiting, so a dev purchase is a real
+/// purchase with the till skipped. The consequence is the one worth having: every cap
+/// still refuses. [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe) still stops at
+/// Netherite Efficiency 15, an enchant still stops at the world's
+/// [`enchant_cap`](crate::world::World::enchant_cap), a mine still stops at the end of
+/// its ladder — because none of those ceilings was ever enforced by the price.
+///
+/// The two exceptions are named where they are: [`Player::dev_set_level`] and
+/// [`Player::dev_set_prestige`] write a field, because the rules contain no step that
+/// moves either one *downward* and a menu that could only climb could not re-test a
+/// gate it had walked past.
+///
+/// [`Player::dev_set_level`]: crate::player::Player::dev_set_level
+/// [`Player::dev_set_prestige`]: crate::player::Player::dev_set_prestige
+#[cfg(debug_assertions)]
+pub mod dev {
+    use std::time::UNIX_EPOCH;
+
+    use super::{CoreError, Duration, EnchantType, GameEvent, GameState, Item, Material, MineKind};
+
+    impl GameState {
+        /// Credits `amount` of `item` out of nothing.
+        ///
+        /// The door [`Player::inventory_mut`](crate::player::Player) is `pub(crate)` to
+        /// keep shut: [`Inventory::add`](crate::inventory::Inventory) is free and
+        /// unbounded, so this *is* every material in the game for the asking. That is
+        /// the point of a dev menu, and it is why the method carries the `dev_` prefix
+        /// and this module's gate rather than being folded into an existing door.
+        ///
+        /// Saturates at [`u32::MAX`], because `add` does — a wallet that wrapped to
+        /// nothing on the third press of a `×1 000 000` row would be a worse tool than
+        /// one that sticks.
+        pub fn dev_grant(&mut self, item: Item, amount: u32) {
+            self.player.inventory_mut().add(item, amount);
+        }
+
+        /// Credits `amount` **raw** of all fifteen materials.
+        ///
+        /// Raw and not Compressed, though it is the denomination that buys less per
+        /// entry: a cost is paid in the denomination it is quoted in, and
+        /// [`compress`](GameState::compress) is free and lossless in both directions,
+        /// so raw is the form the player can turn into either. Granting Compressed
+        /// units would also hand the run a hundred times the number on the row, which
+        /// makes the one number a dev menu shows a lie about what it did.
+        pub fn dev_grant_all(&mut self, amount: u32) {
+            for material in Material::ALL {
+                self.dev_grant(Item::Raw(material), amount);
+            }
+        }
+
+        /// Grants `amount` experience and files every level it crosses.
+        ///
+        /// Returns the [`GameEvent::LevelUp`]s, so the front-end announces a dev
+        /// level-up through the *same* wording as a mined one — the events are
+        /// [`announce`](crate::game)'s input either way, and a second phrasing for the
+        /// dev path would be a second place for the reward's name to be wrong.
+        ///
+        /// It goes through [`Player::add_experience`](crate::player::Player) rather
+        /// than writing the level, so the XP curve, the cap and the emptied bank at the
+        /// cap all behave as they do in play; and it files the crossed levels through
+        /// the same helper the tick uses, so what is waiting on the Levels screen
+        /// matches the level that is displayed.
+        pub fn dev_add_experience(&mut self, amount: u32) -> Vec<GameEvent> {
+            let before = self.player.get_level();
+            let gained = self.player.add_experience(amount);
+            let mut events = Vec::new();
+            self.file_crossed_levels(before, gained, &mut events);
+            events
+        }
+
+        /// Puts the player at `level`, and drops any reward waiting above it.
+        ///
+        /// **The prune is not tidiness, it is the invariant.**
+        /// [`validate`](GameState::validate) refuses a document where a reward waits
+        /// for a level the player has not reached, so a dev menu that lowered the level
+        /// and left `unclaimed` alone would build a run that cannot be saved — and the
+        /// refusal would surface on the next launch, a long way from the keypress that
+        /// caused it.
+        ///
+        /// Nothing is filed on the way *up*: a jump to 50 that queued thirty-odd
+        /// bundles would bury the Levels screen under a claim-all the player never
+        /// earned. [`dev_add_experience`](GameState::dev_add_experience) is the door
+        /// that pays as it climbs; this one only moves the marker.
+        pub fn dev_set_level(&mut self, level: u32) {
+            self.player.dev_set_level(level);
+            let reached = self.player.get_level();
+            self.unclaimed.retain(|&waiting| waiting <= reached);
+        }
+
+        /// Climbs one rung of the pickaxe roadmap for free — Efficiency, or the tier
+        /// jump when Efficiency is capped.
+        ///
+        /// One method for both because [`Pickaxe::upgrade`](crate::pickaxe::Pickaxe) is
+        /// one method for both: it *is* the rung, and `economy`'s two doors differ only
+        /// in which cap they check before charging. Refuses with
+        /// [`CoreError::PickaxeFullyUpgraded`] at the top, so a dev climb cannot walk
+        /// past Netherite Efficiency 15 into the tier reset that would cost the run 226
+        /// mining power.
+        pub fn dev_upgrade_pickaxe(&mut self) -> Result<(), CoreError> {
+            let (_, pickaxe) = self.player.inventory_and_pickaxe_mut();
+            pickaxe.upgrade()
+        }
+
+        /// Raises one enchant a level for free, capped by the highest world reached.
+        ///
+        /// **Efficiency is routed to [`dev_upgrade_pickaxe`](GameState::dev_upgrade_pickaxe)**,
+        /// which is the same redirection [`economy::buy_enchant`](crate::economy) makes
+        /// and for the same reason: Efficiency shares the tier ladder's path, and
+        /// letting it in through the generic door would raise it past the cap the tier
+        /// sets.
+        ///
+        /// The world is read from the player rather than taken as an argument, exactly
+        /// as [`buy_enchant`](GameState::buy_enchant) does — a caller free to pass one
+        /// could grant an End-capped Fortune to a player who has never left the
+        /// Overworld, and the cap is the one thing about an enchant a dev menu has no
+        /// business bypassing: it is what the *world* is for.
+        pub fn dev_upgrade_enchant(&mut self, kind: EnchantType) -> Result<(), CoreError> {
+            if kind == EnchantType::Efficiency {
+                return self.dev_upgrade_pickaxe();
+            }
+            let world = self.player.highest_unlocked_world();
+            let (_, pickaxe) = self.player.inventory_and_pickaxe_mut();
+            pickaxe.upgrade_enchant(kind, world)
+        }
+
+        /// Grows `kind`'s grid one size level for free.
+        ///
+        /// Refuses [`CoreError::MineNotEntered`] on a mine this run has never opened,
+        /// like [`buy_mine_size`](GameState::buy_mine_size) — and here the reason is
+        /// sharper than a shared rule. Minting the grid would spend a run of draws from
+        /// the generator, and a dev *refusal* that moved the dice would make the run
+        /// diverge from a recorded sequence over an action that did nothing.
+        ///
+        /// The grow itself **does** advance the generator, because
+        /// [`Mine::upgrade_size_level`](crate::mine::Mine) redraws. That is a real
+        /// consequence and it is acceptable for exactly one reason: this cannot happen
+        /// in a release build, so no shipped save can have been desynchronised by it.
+        pub fn dev_upgrade_mine_size(&mut self, kind: MineKind) -> Result<(), CoreError> {
+            let mine = Self::mine_mut(&mut self.mine, &mut self.visited, kind)?;
+            mine.upgrade_size_level(&mut self.rng)
+        }
+
+        /// Raises `kind`'s richness *ceiling* one rung for free, carrying a pinned dial
+        /// up with it.
+        ///
+        /// The carry is copied from [`buy_mine_richness`](GameState::buy_mine_richness)
+        /// deliberately, and it is the one duplication in this module: a ceiling the
+        /// dial never reaches is a rung that changes nothing, so a dev menu whose
+        /// richness row visibly did nothing would send its user looking for the bug in
+        /// the mine generator. The condition is the same one — a dial parked *below*
+        /// its ceiling is a deliberate setting and is not overruled.
+        pub fn dev_upgrade_mine_richness(&mut self, kind: MineKind) -> Result<(), CoreError> {
+            let mine = Self::mine_mut(&mut self.mine, &mut self.visited, kind)?;
+            let was_pinned = mine.get_richness_setting() == mine.get_richness_level();
+            mine.upgrade_richness_level()?;
+            if was_pinned {
+                let ceiling = mine.get_richness_level();
+                // Infallible: the only refusal is a setting above the ceiling, and
+                // this is the ceiling. Swallowed rather than unwrapped because the
+                // workspace lints leave no `expect` for a `Result` that cannot be
+                // `Err`.
+                let _ = mine.set_richness_setting(ceiling, &mut self.rng);
+            }
+            Ok(())
+        }
+
+        /// Sets the prestige rank, leaving the run standing.
+        ///
+        /// The rank without the wipe — see
+        /// [`Player::dev_set_prestige`](crate::player::Player) for why the two halves
+        /// are separable here and nowhere else. The multiplier is a pure function of
+        /// the rank ([`prestige`](crate::prestige)), so this is enough to watch a
+        /// rank III yield land on a run that has not earned one.
+        pub fn dev_set_prestige(&mut self, rank: u32) {
+            self.player.dev_set_prestige(rank);
+        }
+
+        /// Adds `count` boost charges to the reserve.
+        ///
+        /// Charges and not a running boost: [`Boost::new`](crate::boost::Boost) is
+        /// `pub(crate)` so that nothing outside the rules can start one, and
+        /// [`fire_boost`](GameState::fire_boost) is already public and spends exactly
+        /// this. Granting the reserve therefore reaches the running boost *through* the
+        /// rule that starts it, instead of building one beside it.
+        pub fn dev_grant_boost_charges(&mut self, count: u32) {
+            self.boost_charges = self.boost_charges.saturating_add(count);
+        }
+
+        /// Moves the offline mark `by` into the past, so the next
+        /// [`resume`](GameState::resume) credits that much absence.
+        ///
+        /// **Two calls and not one, and the split is the reason this needs no new rule
+        /// at all.** The accrual is already public and already takes its instant as an
+        /// argument, so *simulating* an absence is nothing but moving the mark it
+        /// measures from — the arithmetic, the [`OFFLINE_CAP`](crate::tunables) and the
+        /// report are the shipped ones, not a dev copy of them. The caller does
+        /// `dev_rewind(by)` then `resume(now)`, which is the same pair of steps a
+        /// relaunch performs.
+        ///
+        /// Clamps at the epoch, and **`checked_sub` is not what does it**. A
+        /// [`SystemTime`](std::time::SystemTime) before 1970 is perfectly
+        /// representable — the subtraction returns a `Some` holding a negative second
+        /// count — so that method's `None` guards the representation's own overflow
+        /// and nothing else. The epoch is a floor this module has to state, because
+        /// `epoch_seconds` writes a `u64` and a mark below it would go out as `0`
+        /// anyway: the run would silently gain every second since 1970 the next time
+        /// it resumed.
+        pub fn dev_rewind(&mut self, by: Duration) {
+            let rewound = self.last_seen.checked_sub(by).unwrap_or(UNIX_EPOCH);
+            self.last_seen = rewound.max(UNIX_EPOCH);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::inventory::Inventory;
+        use crate::player::Player;
+        use crate::upgrade;
+        use std::time::SystemTime;
+
+        /// A run at a fixed seed, started a day after the epoch.
+        ///
+        /// Not at the epoch itself, unlike the module's other suite: half of what is
+        /// tested here moves the offline mark *backwards*, and a run that starts at
+        /// the earliest instant a [`SystemTime`] has cannot be rewound at all.
+        fn state() -> GameState {
+            GameState::new(42, SystemTime::UNIX_EPOCH + Duration::from_secs(86_400))
+        }
+
+        #[test]
+        fn a_granted_pile_lands_in_the_inventory() {
+            let mut state = state();
+            state.dev_grant(Item::Raw(Material::Iron), 250);
+            assert_eq!(
+                state
+                    .player()
+                    .get_inventory()
+                    .count(Item::Raw(Material::Iron)),
+                250
+            );
+        }
+
+        #[test]
+        fn granting_everything_credits_all_fifteen_materials_in_raw() {
+            let mut state = state();
+            state.dev_grant_all(1_000);
+            for material in Material::ALL {
+                assert_eq!(
+                    state.player().get_inventory().count(Item::Raw(material)),
+                    1_000,
+                    "{material:?} was not granted"
+                );
+                assert_eq!(
+                    state
+                        .player()
+                        .get_inventory()
+                        .count(Item::Compressed(material)),
+                    0,
+                    "{material:?} was granted in the wrong denomination"
+                );
+            }
+        }
+
+        #[test]
+        fn dev_experience_files_the_levels_it_crosses() {
+            let mut state = state();
+            let to_second = match Player::xp_for_level(2) {
+                Some(needed) => needed,
+                None => unreachable!("level 2 has no price"),
+            };
+
+            let events = state.dev_add_experience(to_second);
+
+            assert_eq!(state.player().get_level(), 2);
+            assert!(state.is_unclaimed(2), "level 2's reward was not filed");
+            assert!(
+                matches!(events.as_slice(), [GameEvent::LevelUp { level: 2, .. }]),
+                "the climb was not announced: {events:?}"
+            );
+        }
+
+        #[test]
+        fn granted_experience_stops_at_the_cap_like_a_mined_one() {
+            let mut state = state();
+            state.dev_add_experience(u32::MAX);
+            assert_eq!(state.player().get_level(), crate::tunables::LEVEL_CAP);
+            assert!(state.validate().is_ok(), "the capped run is unsaveable");
+        }
+
+        #[test]
+        fn setting_the_level_drops_a_reward_waiting_above_it() {
+            let mut state = state();
+            state.dev_set_level(10);
+            state.unclaimed.insert(5);
+
+            state.dev_set_level(3);
+
+            assert_eq!(state.player().get_level(), 3);
+            assert!(
+                !state.is_unclaimed(5),
+                "a reward outlived the level that owed it"
+            );
+            assert!(state.validate().is_ok(), "the lowered run is unsaveable");
+        }
+
+        #[test]
+        fn setting_the_level_climbs_without_queueing_what_was_not_earned() {
+            let mut state = state();
+            state.dev_set_level(40);
+            assert_eq!(state.unclaimed_count(), 0);
+            assert!(state.validate().is_ok());
+        }
+
+        #[test]
+        fn a_level_outside_the_ladder_is_clamped_rather_than_written() {
+            let mut state = state();
+            state.dev_set_level(0);
+            assert_eq!(state.player().get_level(), 1);
+            state.dev_set_level(u32::MAX);
+            assert_eq!(state.player().get_level(), crate::tunables::LEVEL_CAP);
+        }
+
+        #[test]
+        fn a_free_pickaxe_climb_pays_nothing_and_still_stops_at_the_top() {
+            let mut state = state();
+            let rungs = upgrade::ladder().len();
+
+            for rung in 1..rungs {
+                assert!(
+                    state.dev_upgrade_pickaxe().is_ok(),
+                    "rung {rung} of {rungs} was refused"
+                );
+            }
+
+            assert!(matches!(
+                state.dev_upgrade_pickaxe(),
+                Err(CoreError::PickaxeFullyUpgraded)
+            ));
+            assert_eq!(
+                state.player().get_inventory(),
+                &Inventory::new(),
+                "a free climb spent something"
+            );
+        }
+
+        #[test]
+        fn a_free_enchant_still_stops_at_the_world_cap() {
+            let mut state = state();
+            let cap = crate::world::World::Overworld.enchant_cap();
+
+            for level in 1..=cap {
+                assert!(
+                    state.dev_upgrade_enchant(EnchantType::Explosive).is_ok(),
+                    "level {level} was refused below the cap"
+                );
+            }
+
+            assert!(matches!(
+                state.dev_upgrade_enchant(EnchantType::Explosive),
+                Err(CoreError::EnchantAtCap { .. })
+            ));
+        }
+
+        #[test]
+        fn efficiency_is_routed_to_the_pickaxe_ladder() {
+            let mut state = state();
+            assert!(state.dev_upgrade_enchant(EnchantType::Efficiency).is_ok());
+            assert_eq!(
+                state
+                    .player()
+                    .get_pickaxe()
+                    .enchants()
+                    .get_level(EnchantType::Efficiency),
+                1
+            );
+        }
+
+        #[test]
+        fn a_free_mine_upgrade_is_refused_on_a_mine_the_run_never_entered() {
+            let mut state = state();
+            assert!(matches!(
+                state.dev_upgrade_mine_size(MineKind::Coal),
+                Err(CoreError::MineNotEntered { .. })
+            ));
+            assert!(matches!(
+                state.dev_upgrade_mine_richness(MineKind::Coal),
+                Err(CoreError::MineNotEntered { .. })
+            ));
+        }
+
+        #[test]
+        fn a_free_size_rung_grows_the_standing_grid() {
+            let mut state = state();
+            let before = state.current_mine().capacity();
+            assert!(state.dev_upgrade_mine_size(MineKind::Stone).is_ok());
+            assert!(state.current_mine().capacity() > before);
+        }
+
+        #[test]
+        fn a_free_richness_rung_carries_a_pinned_dial() {
+            let mut state = state();
+            assert!(state.dev_upgrade_mine_richness(MineKind::Stone).is_ok());
+            assert_eq!(state.current_mine().get_richness_level(), 1);
+            assert_eq!(state.current_mine().get_richness_setting(), 1);
+        }
+
+        #[test]
+        fn a_rewind_hands_the_next_resume_an_absence_to_credit() {
+            let mut state = state();
+            let now = state.last_seen();
+            state.dev_rewind(Duration::from_secs(7_200));
+
+            match state.resume(now) {
+                Some(report) => assert_eq!(report.elapsed, Duration::from_secs(7_200)),
+                None => unreachable!("a rewound run credited nothing"),
+            }
+        }
+
+        #[test]
+        fn a_rewind_past_the_epoch_clamps_rather_than_wrapping() {
+            let mut state = state();
+            state.dev_rewind(Duration::from_secs(u64::from(u32::MAX)));
+            assert_eq!(state.last_seen(), SystemTime::UNIX_EPOCH);
+        }
+
+        #[test]
+        fn the_prestige_rank_moves_without_wiping_the_run() {
+            let mut state = state();
+            state.dev_grant(Item::Raw(Material::Iron), 10);
+            state.dev_set_prestige(3);
+
+            assert_eq!(state.player().get_prestige(), 3);
+            assert_eq!(
+                state
+                    .player()
+                    .get_inventory()
+                    .count(Item::Raw(Material::Iron)),
+                10
+            );
+        }
+
+        #[test]
+        fn granted_boost_charges_are_spendable_through_the_rule_that_fires_them() {
+            let mut state = state();
+            assert!(matches!(state.fire_boost(), Err(CoreError::NoBoostCharge)));
+
+            state.dev_grant_boost_charges(2);
+
+            assert!(state.fire_boost().is_ok());
+            assert_eq!(state.boost_charges(), 1);
+            assert!(state.active_boost().is_some());
+        }
+
+        #[test]
+        fn a_run_the_dev_doors_have_been_through_is_still_saveable() {
+            let mut state = state();
+            state.dev_grant_all(500);
+            state.dev_set_level(25);
+            state.dev_set_prestige(2);
+            state.dev_grant_boost_charges(4);
+            assert!(state.dev_upgrade_pickaxe().is_ok());
+            assert!(state.dev_upgrade_mine_size(MineKind::Stone).is_ok());
+            assert!(state.dev_upgrade_mine_richness(MineKind::Stone).is_ok());
+
+            assert!(state.validate().is_ok());
+        }
+    }
 }
 
 #[cfg(test)]
