@@ -159,6 +159,25 @@ pub enum CoreError {
     /// a boost already runs is **allowed**, and stacks (see
     /// [`Boost::extend`](crate::boost::Boost)).
     NoBoostCharge,
+    /// A level reward was collected that is not there to collect.
+    ///
+    /// **One variant for three mistakes** — a level never reached, one already
+    /// collected, and one of the two ends of the ladder that pay nothing — because
+    /// from the till they are the same event: there is nothing here for you. It is the
+    /// same argument
+    /// [`InsufficientItems`](CoreError::InsufficientItems) makes for folding its two
+    /// branches together, and it holds better here: the Levels screen marks which rows
+    /// have something waiting, so a player who reaches this has pressed `Enter` on a
+    /// row that visibly says otherwise.
+    ///
+    /// Carries the level and nothing else. There is no amount to name — that is the
+    /// whole point of the refusal — and the reward is a pure function of the level, so
+    /// a caller wanting to say what was missed can ask
+    /// [`reward_for_level`](crate::reward::reward_for_level) for it.
+    NothingToClaim {
+        /// The level whose reward was asked for.
+        level: u32,
+    },
     /// A prestige was asked for by a player who has not reached the End.
     ///
     /// The condition `docs/MECHANICS.md` sets is "reach the End **and** accumulate
@@ -241,6 +260,9 @@ impl fmt::Display for CoreError {
                 write!(f, "enter the {} mine once before upgrading it", kind.name())
             }
             Self::NoBoostCharge => write!(f, "no boost charge to fire"),
+            Self::NothingToClaim { level } => {
+                write!(f, "level {level} has no reward waiting")
+            }
             // One clause per shut gate, level first — the order `docs/UI.md` §6.8
             // leads the preview with, since Amethyst only drops past the level gate.
             // The tier prints through `Debug`, like `MineLocked`, every variant name

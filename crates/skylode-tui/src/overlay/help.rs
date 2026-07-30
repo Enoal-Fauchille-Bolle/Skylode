@@ -83,9 +83,16 @@ const LEGEND: [&str; 21] = [
     "  ●   where you are now",
     "  —   nothing to buy: maxed, or gated",
     "",
-    "  On Levels and on Stats, ✓ reads",
-    "  \"already yours\": nothing is bought",
-    "  on those two screens.",
+    // **Two glyphs re-read, in the three rows the pane has left.** `✓` has meant
+    // *already yours* on these screens since §6.11; `~` joined it in TUI phase 7,
+    // where the Levels roadmap marks a reward that has been earned and not collected
+    // — which is the same shape of fact the Upgrades reading has, a thing of yours
+    // that takes one more action to become useful.
+    // The phrase is kept whole on its line rather than wrapped: the pane is prose a
+    // reader scans, and `already yours` split across a break reads as two half-glosses.
+    "  ✓ is \"already yours\" on Levels",
+    "  and Stats; ~ on Levels is a",
+    "  reward waiting to be claimed.",
 ];
 
 /// Draws the Help screen for the screen it was opened from.
@@ -161,7 +168,12 @@ fn contextual(screen: Screen, config: &Config) -> Vec<String> {
             " ↑ ↓           scroll the history",
             " p             prestige",
         ]),
-        Screen::Levels => owned(&[" ↑ ↓           scroll", " Home          jump to your level"]),
+        Screen::Levels => owned(&[
+            " ↑ ↓           scroll",
+            " Home          jump to your level",
+            " Enter         claim this level",
+            " A             claim every level",
+        ]),
     }
 }
 

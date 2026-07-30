@@ -258,7 +258,7 @@ mod tests {
         use crate::cursor::Cursors;
 
         let state = GameState::new(0x5B1_0DE, std::time::UNIX_EPOCH);
-        let view = View::from_state(&state, Cursors::new(MineKind::Stone, 0), None);
+        let view = View::from_state(&state, Cursors::new(MineKind::Stone, 0, 1), None);
 
         assert_eq!(view.inventory.rows.len(), 15);
         for row in &view.inventory.rows {

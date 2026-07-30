@@ -143,6 +143,18 @@ pub struct Cursors {
     pub enchant: EnchantType,
     /// Which mine and which of its two paid tracks the Mines sub-tab points at.
     pub mine_track: (MineKind, MineTrack),
+    /// Which rung of the Levels roadmap is selected, as a **level** and not an index.
+    ///
+    /// The ladder is `1..=LEVEL_CAP` — a closed, contiguous set — so the value and the
+    /// index differ only by one, and the value is the one that matters: a claim is
+    /// addressed by level. This is what keeps [`pickaxe_rung`](Cursors::pickaxe_rung)
+    /// the crate's *only* index cursor, which is what its own note claims.
+    ///
+    /// Seeded from the run, like [`mine`](Cursors::mine) and unlike
+    /// [`material`](Cursors::material), by the same test: the run answers *"what level
+    /// am I"*, so opening anywhere else would point the roadmap at a rung the player
+    /// is not on. `Home` is what puts it back after scrolling.
+    pub level: u32,
 }
 
 impl Cursors {
@@ -168,7 +180,7 @@ impl Cursors {
     /// Takes the rung already computed rather than a `&GameState`, keeping this
     /// module free of the aggregate: a cursor is told where the player is, it does not
     /// go and look.
-    pub fn new(mine: MineKind, pickaxe_rung: usize) -> Self {
+    pub fn new(mine: MineKind, pickaxe_rung: usize, level: u32) -> Self {
         Self {
             mine,
             // `Material::ALL`'s first entry rather than `Material::Stone` spelled
@@ -190,6 +202,9 @@ impl Cursors {
             // the same fact `mine` above is seeded from — two lists about the twelve
             // mines should not disagree about where the player is.
             mine_track: (mine, MineTrack::ALL[0]),
+            // The third seeded cursor, for `mine`'s reason: the run knows what level
+            // the player is, so the roadmap opens on their own rung.
+            level,
         }
     }
 }
@@ -247,7 +262,10 @@ mod tests {
 
     #[test]
     fn a_session_opens_pointing_at_the_mine_it_is_standing_in() {
-        assert_eq!(Cursors::new(MineKind::Obsidian, 0).mine, MineKind::Obsidian);
+        assert_eq!(
+            Cursors::new(MineKind::Obsidian, 0, 1).mine,
+            MineKind::Obsidian
+        );
     }
 
     /// The other cursor has nothing in the run to be seeded from, so it opens on the
@@ -255,7 +273,10 @@ mod tests {
     /// a variant named here.
     #[test]
     fn the_material_cursor_opens_on_the_first_row_of_the_table() {
-        assert_eq!(Cursors::new(MineKind::Stone, 0).material, Material::ALL[0]);
+        assert_eq!(
+            Cursors::new(MineKind::Stone, 0, 1).material,
+            Material::ALL[0]
+        );
     }
 
     #[test]

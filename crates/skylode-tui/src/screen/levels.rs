@@ -17,7 +17,7 @@
 
 use ratatui::{
     Frame,
-    crossterm::event::KeyEvent,
+    crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::Line,
@@ -29,7 +29,7 @@ use crate::{
     format::{MAXED, grouped, justified, xp_progress},
     screen::{panel, scrollbar, window},
     theme,
-    view::View,
+    view::{LevelRow, NOTHING, View},
 };
 
 /// Draws the roadmap and its footer.
@@ -74,10 +74,9 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
         header_area,
     );
 
-    // The cursor sits on the current level until scrolling exists to move it
-    // (phase 7), so the two marks coincide at `player_level` for now.
     let current = view.player_level;
-    let selected = view.player_level;
+    let levels = &view.levels;
+    let selected = levels.selected;
 
     // The roadmap is the whole 1..=LEVEL_CAP ladder, so the window is computed here,
     // against the rows this frame actually has. `selected - 1` is the cursor's index:
@@ -85,21 +84,26 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     // level-zero case the rules never produce but the type still permits.
     let cursor = (selected as usize).saturating_sub(1);
     let visible = usize::from(rows_area.height);
-    let range = window(view.levels.len(), cursor, view.levels_offset, visible);
+    let range = window(levels.rows.len(), cursor, levels.offset, visible);
 
-    let lines: Vec<Line> = view.levels[range.clone()]
+    let lines: Vec<Line> = levels.rows[range.clone()]
         .iter()
         .map(|row| {
             let left = format!(
                 "{}{:<3}   {}",
-                mark(row.level, current, selected),
+                mark(row, current, selected),
                 row.level,
                 row.grants,
             );
             // This is the row the whole mark palette was designed around: on the
             // current level the cursor and the position render adjacent as `▸●`,
             // so the two must not collapse into one colour.
-            theme::marked(&justified(&left, &grouped(row.xp), width))
+            //
+            // The XP column reads `—` at the cap rather than a number: there is no
+            // level 51, so the last row has no requirement to state, and the Mine
+            // screen's rule about empty gauges applies unchanged.
+            let xp = row.xp.map_or_else(|| NOTHING.to_owned(), grouped);
+            theme::marked(&justified(&left, &xp, width))
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
@@ -108,35 +112,73 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     // stored offset: `window` may have moved it to keep the cursor on screen, and a
     // thumb pointing at where the list used to be would report a scroll that did not
     // happen.
-    scrollbar(frame, bar_area, view.levels.len(), visible, range.start);
+    scrollbar(frame, bar_area, levels.rows.len(), visible, range.start);
 
-    let footer =
-        format!(" ↑↓  scroll     Home  jump to Lv {current}     Tab  next screen     ?  help");
+    // **The footer changes with what is waiting**, which is the one place on this
+    // screen a binding can be advertised at the moment it does something: `Enter` and
+    // `A` are dead keys on a ladder with nothing on it, and a footer that listed them
+    // anyway would be teaching a gesture that answers with a refusal.
+    let footer = if levels.waiting == 0 {
+        format!(" ↑↓  scroll     Home  jump to Lv {current}     Tab  next screen     ?  help")
+    } else {
+        format!(
+            " ↑↓  scroll     Enter  claim     A  claim all ({})     Home  Lv {current}     ?  help",
+            levels.waiting,
+        )
+    };
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(theme::MUTED)),
         footer_area,
     );
 }
 
-/// The four-column mark field: which of `✓ ● ▸` (or a pair) a level shows.
+/// The four-column mark field: which of `✓ ● ▸ ~` (or a pair) a level shows.
 ///
 /// `▸` is the cursor and `●` the current level; they combine to `▸●` when they
 /// coincide. A level below the current one that is *not* the cursor reads `✓`,
 /// "already yours". Every arm is padded to four columns so the level numbers
 /// beside it line up whatever mark is drawn.
-fn mark(level: u32, current: u32, selected: u32) -> &'static str {
-    match (level == selected, level == current) {
+///
+/// **`~` is the level with a reward waiting**, and it beats `✓` on a row that is both
+/// — which every unclaimed row is, since a reward can only be waiting for a level
+/// already reached. The two glyphs answer different questions: `✓` says *you passed
+/// this*, which the row's position in the list already says, and `~` says *there is
+/// something here for you*, which nothing else on the screen does. When the more
+/// informative mark loses to the redundant one, the column stops being worth reading.
+///
+/// `~` and not a fourth glyph, because §6.11's legend already glosses it as *"you have
+/// it but not in the form you need"* — a thing of yours that takes one more action to
+/// become useful, which is exactly an uncollected reward. The position marks still
+/// win over it: `▸` and `●` are about *where you are*, and losing them would leave the
+/// player unable to find the cursor they are moving.
+fn mark(row: &LevelRow, current: u32, selected: u32) -> &'static str {
+    match (row.level == selected, row.level == current) {
         (true, true) => " ▸● ",
         (true, false) => "  ▸ ",
         (false, true) => "  ● ",
-        _ if level < current => "  ✓ ",
+        _ if row.unclaimed => "  ~ ",
+        _ if row.level < current => "  ✓ ",
         _ => "    ",
     }
 }
 
-/// No contextual bindings yet; `↑↓` scrolls, `Home` jumps to the current level.
-pub fn map_key(_key: KeyEvent) -> Option<Action> {
-    None
+/// `↑↓` walks the ladder, `Home` jumps back to the player's own level, `Enter`
+/// collects the row under the cursor and `A` collects everything.
+///
+/// **`A` and not `a`**, following the Upgrades screen's `M`: it spends nothing, but it
+/// acts on the whole ladder at once, and a shifted key is one the hand does not reach
+/// for while scrolling. It is a claim-all and not the compression dialog's `a`
+/// ([`Action::AdjustMax`]) — that one moves a number to its ceiling and this one
+/// empties a queue — so it is a gesture of its own rather than a reuse.
+pub fn map_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Up => Some(Action::CursorUp),
+        KeyCode::Down => Some(Action::CursorDown),
+        KeyCode::Home => Some(Action::JumpToCurrent),
+        KeyCode::Enter => Some(Action::Confirm),
+        KeyCode::Char('A') => Some(Action::ClaimAll),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -236,7 +278,7 @@ mod tests {
         // on that line's text rather than on `row_with(" 12 ")`, whose fallback hands
         // back the whole frame when nothing matches — which is exactly the case a
         // negative assertion is testing for, so it would always pass.
-        let below_the_window = &View::sample().levels[11].grants;
+        let below_the_window = View::sample().levels.rows[11].grants.clone();
         assert!(!frame.contains(below_the_window.as_str()), "{frame}");
     }
 
@@ -250,7 +292,7 @@ mod tests {
             tall > counted,
             "a 48-row terminal drew {tall} levels, no more than the {counted} at 24"
         );
-        assert!(tall <= View::sample().levels.len());
+        assert!(tall <= View::sample().levels.rows.len());
     }
 
     /// The one row that contains `needle`, or the whole frame on failure.
@@ -306,27 +348,78 @@ mod tests {
         assert!(frame.contains('░'), "no scrollbar track: {frame}");
     }
 
-    #[test]
-    fn the_footer_names_scroll_and_the_home_jump() {
-        let buffer = render_screen();
-        let last = (0..buffer.area.width)
-            .map(|x| buffer[(x, 23)].symbol())
-            .collect::<String>();
-        assert!(last.contains("↑↓  scroll"), "{last:?}");
-        assert!(last.contains("Home  jump to Lv 23"), "{last:?}");
-        assert!(last.contains("?  help"), "{last:?}");
+    /// The last row of a rendered frame.
+    fn footer_of(buffer: &Buffer) -> String {
+        let bottom = buffer.area.height.saturating_sub(1);
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, bottom)].symbol())
+            .collect()
     }
 
     #[test]
-    fn the_mark_column_tells_the_three_states_and_their_overlap() {
+    fn the_footer_offers_the_claim_keys_while_something_is_waiting() {
+        // The fixture has three rewards on the ladder, so this is the footer a player
+        // sees for most of a run.
+        let footer = footer_of(&render_screen());
+        assert!(footer.contains("↑↓  scroll"), "{footer:?}");
+        assert!(footer.contains("Enter  claim"), "{footer:?}");
+        assert!(footer.contains("A  claim all (3)"), "{footer:?}");
+        assert!(footer.contains("Home  Lv 23"), "{footer:?}");
+        assert!(footer.contains("?  help"), "{footer:?}");
+    }
+
+    /// With nothing waiting, the two claim keys are not advertised at all.
+    ///
+    /// **A footer is a promise**, and `Enter` on an empty ladder answers with a
+    /// refusal — so listing it would teach a gesture that does not work. The scroll
+    /// keys stay, because they always do something.
+    #[test]
+    fn the_footer_drops_the_claim_keys_once_the_ladder_is_empty() {
+        let mut view = View::sample();
+        for row in &mut view.levels.rows {
+            row.unclaimed = false;
+        }
+        view.levels.waiting = 0;
+
+        let footer = footer_of(&render_view(&view, 80, 24));
+        assert!(footer.contains("↑↓  scroll"), "{footer:?}");
+        assert!(footer.contains("Home  jump to Lv 23"), "{footer:?}");
+        assert!(!footer.contains("claim"), "{footer:?}");
+    }
+
+    /// A row at `level`, collected or not — the shape [`mark`] reads.
+    fn row(level: u32, unclaimed: bool) -> LevelRow {
+        LevelRow {
+            level,
+            grants: String::new(),
+            xp: Some(level * 100),
+            unclaimed,
+        }
+    }
+
+    #[test]
+    fn the_mark_column_tells_the_four_states_and_their_overlap() {
         // The cursor overlaps the current level (▸●); a reached level below the
         // cursor is ticked; a future level is blank; and a cursor parked away from
         // the current level shows ▸ and ● apart, which scrolling will produce.
-        assert_eq!(mark(23, 23, 23), " ▸● ");
-        assert_eq!(mark(15, 23, 23), "  ✓ ");
-        assert_eq!(mark(24, 23, 23), "    ");
-        assert_eq!(mark(23, 23, 20), "  ● ");
-        assert_eq!(mark(20, 23, 20), "  ▸ ");
+        assert_eq!(mark(&row(23, false), 23, 23), " ▸● ");
+        assert_eq!(mark(&row(15, false), 23, 23), "  ✓ ");
+        assert_eq!(mark(&row(24, false), 23, 23), "    ");
+        assert_eq!(mark(&row(23, false), 23, 20), "  ● ");
+        assert_eq!(mark(&row(20, false), 23, 20), "  ▸ ");
+    }
+
+    #[test]
+    fn a_waiting_reward_outranks_the_tick_and_yields_to_the_position_marks() {
+        // `~` beats `✓`, because "there is something here for you" is news and
+        // "you passed this" is what the row's own place in the list already says.
+        assert_eq!(mark(&row(15, true), 23, 23), "  ~ ");
+        // But not `▸` or `●`: losing those would leave the player unable to find the
+        // cursor they are moving, and the reward is still legible from the footer's
+        // count and from every other waiting row.
+        assert_eq!(mark(&row(23, true), 23, 23), " ▸● ");
+        assert_eq!(mark(&row(20, true), 23, 20), "  ▸ ");
+        assert_eq!(mark(&row(23, true), 23, 20), "  ● ");
     }
 
     /// The foreground of the first cell drawn with `glyph`. See the same helper on

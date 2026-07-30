@@ -842,6 +842,43 @@ two-denomination rule governs **paying**, never receiving.
 just the level that fired — a roadmap that can only show the past is a history, and
 Stats already has one.
 
+#### 5.6.1 Departures from the frame above
+
+**This screen collects, where the frame only listed.** Enoal's call, TUI phase 7:
+crossing a level no longer credits its bundle. The tick files it, the toast says
+`Level 16 — +80 Quartz, … — claim on 6`, and the player collects it here. The
+argument is that the roadmap had nothing to *be* — every number on it described
+something that had already happened somewhere the player was not looking — and that a
+reward you go and take is an event, where one that lands silently is a rounding on the
+inventory. `GameState::claim_level` and `claim_all` are the two doors; an uncollected
+reward is lost to a prestige, like everything else a run accumulates.
+
+Four departures follow from it, and one does not:
+
+- **`~` is a fourth mark**, for a level whose reward is still waiting, and it
+  **outranks `✓`** on a row that is both — which every waiting row is, since a reward
+  can only be owed for a level already reached. `✓` says *you passed this*, which the
+  row's own place in the list already says; `~` says *there is something here for
+  you*. It still loses to `▸` and `●`, which are about where the player is. §6.11's
+  legend glosses it in the same breath as its Upgrades sense: a thing of yours that
+  takes one more action to become useful.
+- **The footer is conditional.** With something waiting it reads
+  `↑↓ scroll · Enter claim · A claim all (3) · Home Lv 23 · ? help`; with nothing
+  waiting the two claim keys are dropped and `Tab next screen` comes back. A footer is
+  a promise, and `Enter` on an empty ladder answers with a refusal.
+- **`A` collects everything, and the sweep gets one toast.** Shifted for the reason
+  Upgrades' `M` is: it acts on the whole ladder at once. One announcement rather than
+  one per level, because six three-second toasts stacked on each other are six the
+  player reads none of — the same argument §8.4 makes for naming only the first
+  shortfall of a refused price. A sweep of exactly one level names that level.
+- **The XP column reads `—` at level 50**, where the frame drew a number for every
+  row it happened to include. There is no level 51, so the last rung has no
+  requirement to state, and §5.1's rule against `0%` on an empty gauge applies: a
+  `5 000` there names a price nothing is for sale at.
+
+The one that does not follow: the cursor is now real (`↑↓`, and `Home` to come back),
+which the frame already drew as `▸` apart from `●` and which phase 7 simply wired.
+
 ## 6. The overlays
 
 ### 6.1 Splash

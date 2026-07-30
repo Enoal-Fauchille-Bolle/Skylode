@@ -19,7 +19,7 @@
 //! contract, and it is the one invariant in this module the compiler cannot hold
 //! on its own — `a_state_reads_no_clock_of_its_own` is what does.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
 use crate::block::Block;
@@ -89,6 +89,37 @@ pub struct GameState {
     /// stored one carries no information beyond *how many*.
     /// [`Boost`] is the type of a boost that is **running**.
     boost_charges: u32,
+    /// The levels reached whose reward is still sitting on the Levels screen.
+    ///
+    /// **A level-up announces; it does not pay.** Crossing a level used to credit its
+    /// bundle into the inventory in the same instant, which made the reward a number
+    /// moving somewhere the player was not looking — the toast said `+80 Quartz` and
+    /// the Quartz had already landed, so the Levels screen had nothing to be for. The
+    /// grant is now a two-step: the tick records the level here, and
+    /// [`claim_level`](GameState::claim_level) hands it over when the player asks.
+    ///
+    /// **The levels and not the rewards**, because
+    /// [`reward_for_level`](crate::reward::reward_for_level) is a pure total function
+    /// of the level: storing the bundle would save fifty numbers a formula already
+    /// knows, and would let a save disagree with the ladder the same screen draws
+    /// beside it. A level is in here only if it *has* a reward, which is what makes
+    /// membership mean "there is something to collect" rather than "you passed this".
+    ///
+    /// Ordered rather than hashed, for [`visited`](GameState)'s reason: the same run
+    /// must write the same bytes. It also makes `claim all` pay out in climbing order,
+    /// which is the order the screen lists them in.
+    ///
+    /// **Cleared by a prestige**, like everything else a run accumulates — see
+    /// [`prestige`](GameState::prestige).
+    ///
+    /// `serde(default)` and **no bump of [`SAVE_VERSION`](crate::save::SAVE_VERSION)**,
+    /// which is that constant's own stated exception: a save written before this field
+    /// existed already answers for it, and the answer is the right one. Those runs
+    /// credited every level the instant it was reached, so they have nothing waiting —
+    /// an empty set is not a default standing in for missing information, it is the
+    /// truth about that file.
+    #[serde(default)]
+    unclaimed: BTreeSet<u32>,
     /// The running boost, if one is.
     active_boost: Option<Boost>,
     /// The auto-miner's unpaid fraction of a **common** cell, in microblocks.
@@ -201,6 +232,7 @@ impl GameState {
             mine,
             visited: BTreeMap::new(),
             boost_charges: 0,
+            unclaimed: BTreeSet::new(),
             active_boost: None,
             auto_common_progress: 0,
             auto_value_progress: 0,
@@ -334,12 +366,105 @@ impl GameState {
             return Err("a yield carry is a whole item that was never paid");
         }
 
+        // Two ways an unclaimed level can be a lie, and both would hand out ore for a
+        // threshold nobody crossed: a level ahead of the player, and one the ladder
+        // pays nothing for. Refused rather than dropped — `save`'s rule is that a
+        // document either describes a run this game could have produced or it does
+        // not, and silently discarding the entry would turn a corrupt save into a
+        // slightly poorer one without saying so.
+        for &level in &self.unclaimed {
+            if level > self.player.get_level() {
+                return Err("a reward is waiting for a level the player has not reached");
+            }
+            if reward::reward_for_level(level).is_none() {
+                return Err("a reward is waiting for a level that grants nothing");
+            }
+        }
+
         Ok(())
     }
 
     /// Boost charges held and not yet fired.
     pub fn boost_charges(&self) -> u32 {
         self.boost_charges
+    }
+
+    /// Whether `level`'s reward is still waiting to be collected.
+    ///
+    /// The question the Levels screen asks fifty times to draw its mark column, which
+    /// is why it is a predicate rather than a borrow of the set: a front-end that held
+    /// the collection would be one `for` loop away from deciding *which* level to pay
+    /// out, and that decision is [`claim_level`](GameState::claim_level)'s.
+    pub fn is_unclaimed(&self, level: u32) -> bool {
+        self.unclaimed.contains(&level)
+    }
+
+    /// How many rewards are waiting.
+    ///
+    /// A count and not a list, for the one thing a caller needs that
+    /// [`is_unclaimed`](GameState::is_unclaimed) cannot answer cheaply: whether to
+    /// advertise the collect-everything key at all, and what number to put beside it.
+    pub fn unclaimed_count(&self) -> usize {
+        self.unclaimed.len()
+    }
+
+    /// Hands over the reward `level` was owed, or refuses without touching the run.
+    ///
+    /// **The player's act, and the only path any level reward takes into the
+    /// inventory.** The tick that crossed the level filed it; this is the collection.
+    /// Splitting the two is what gives the Levels screen something to be — see
+    /// [`unclaimed`](GameState).
+    ///
+    /// Refuses with [`CoreError::NothingToClaim`] on a level that was never reached,
+    /// on one already collected, and on the ends of the ladder that pay nothing at all
+    /// — three different mistakes with one honest answer, because from the till they
+    /// are the same event: there is nothing here for you. **Refuses before it removes
+    /// anything**, so a refusal cannot consume the entry it refused to pay.
+    ///
+    /// Returns the [`LevelReward`] rather than a bare `Ok(())`: the front-end has a
+    /// toast to word and the numbers are exactly the ones just credited, so re-deriving
+    /// them from the level would be a second reading that could disagree with the
+    /// first.
+    pub fn claim_level(&mut self, level: u32) -> Result<LevelReward, CoreError> {
+        // Asked of the ladder before the set, so a level the formula pays nothing for
+        // is refused on its own terms even if a damaged save had filed it.
+        let Some(reward) = reward::reward_for_level(level) else {
+            return Err(CoreError::NothingToClaim { level });
+        };
+        if !self.unclaimed.remove(&level) {
+            return Err(CoreError::NothingToClaim { level });
+        }
+
+        // A world payout has nothing to credit — reaching the level opened it — so the
+        // charge below is the whole of what levels 15 and 30 hand over here.
+        if let Payout::Ore(lines) = &reward.payout {
+            for &(item, amount) in lines {
+                self.player.inventory_mut().add(item, amount);
+            }
+        }
+        self.boost_charges += reward.boost_charges;
+        Ok(reward)
+    }
+
+    /// Collects everything waiting, in climbing order, and reports what was handed
+    /// over.
+    ///
+    /// **Built on [`claim_level`](GameState::claim_level) rather than beside it**, so
+    /// there is exactly one implementation of "what does collecting a level do". The
+    /// snapshot is taken first because the loop mutates the set it is walking; it is
+    /// at most [`LEVEL_CAP`](crate::tunables::LEVEL_CAP) entries, so the copy is free.
+    ///
+    /// Returns pairs rather than a count: a front-end announcing *"3 rewards
+    /// collected"* would be throwing away the only interesting half, and the numbers
+    /// are already in hand. Every claim inside is known to succeed — each level came
+    /// out of the set a line earlier — so a refusal here is nothing the caller has to
+    /// answer for, and it simply does not join the list.
+    pub fn claim_all(&mut self) -> Vec<(u32, LevelReward)> {
+        let waiting: Vec<u32> = self.unclaimed.iter().copied().collect();
+        waiting
+            .into_iter()
+            .filter_map(|level| self.claim_level(level).ok().map(|reward| (level, reward)))
+            .collect()
     }
 
     /// The running boost, if one is.
@@ -824,23 +949,27 @@ impl GameState {
     /// reached, and [`Player::add_experience`] returning the count is what makes that
     /// countable without sampling the level before and after.
     ///
-    /// A [`Payout::World`](crate::reward::Payout) needs no action — the unlocked set
-    /// is derived from the level, so reaching it *is* the unlock — while
-    /// [`Payout::Ore`](crate::reward::Payout) is credited raw, exactly as it is
-    /// quoted.
+    /// **Nothing is paid here.** A level that has a reward is filed in
+    /// [`unclaimed`](GameState), and [`claim_level`](GameState::claim_level) is what
+    /// hands it over. The event still carries the whole [`LevelReward`] because the
+    /// announcement is owed the same instant the level is: a toast that could only say
+    /// *"you reached 16"* would leave the player to go and look up what that was worth.
+    ///
+    /// The one grant this split does **not** defer is the world. A
+    /// [`Payout::World`](crate::reward::Payout) needs no action at all — the unlocked
+    /// set is derived from the level, so *reaching* it is the unlock, and there is
+    /// nothing sitting in a pile to collect. Levels 15 and 30 are therefore claimable
+    /// for their boost charge alone, and the dimension is open either way. Anything
+    /// else would mean a player could stand in the Nether-locked Overworld holding an
+    /// unclaimed Nether.
     fn grant_experience(&mut self, broken: &[Block], events: &mut Vec<GameEvent>) {
         let before = self.player.get_level();
         let gained = self.player.grant_break_experience(broken);
 
         for level in before + 1..=before + gained {
             let reward = reward::reward_for_level(level);
-            if let Some(reward) = &reward {
-                if let Payout::Ore(lines) = &reward.payout {
-                    for &(item, amount) in lines {
-                        self.player.inventory_mut().add(item, amount);
-                    }
-                }
-                self.boost_charges += reward.boost_charges;
+            if reward.is_some() {
+                self.unclaimed.insert(level);
             }
             events.push(GameEvent::LevelUp { level, reward });
         }
@@ -1069,6 +1198,14 @@ impl GameState {
         self.visited.clear();
         self.mine = Mine::new(MineKind::Stone, &mut self.rng);
         self.boost_charges = 0;
+        // **Uncollected rewards are lost, and that is the deep reset applied
+        // honestly.** Enoal's call (TUI phase 7). Carrying them across would make them
+        // the one thing in the game that survives a prestige without being the rank or
+        // its multiplier — and it would carry nothing useful anyway, since the
+        // inventory they would pay into has just been emptied by the line above this
+        // method's `prestige_reset`. What is left is a small, legible tension: collect
+        // before you trade the run in.
+        self.unclaimed.clear();
         self.active_boost = None;
         self.auto_common_progress = 0;
         self.auto_value_progress = 0;
@@ -2267,10 +2404,14 @@ mod tests {
         );
     }
 
-    /// Crossing a level announces it and hands over what the level owes: the ore
-    /// bundle lands in the inventory, raw, and a charge lands in the reserve.
+    /// Crossing a level announces it and **pays nothing**: the bundle is filed, and
+    /// the inventory does not move until the player collects it.
+    ///
+    /// The event still carries the whole reward, because the toast is owed the numbers
+    /// the same instant the level is — what changed is that quoting them is no longer
+    /// the same act as crediting them.
     #[test]
-    fn crossing_a_level_announces_it_and_pays_what_it_owes() {
+    fn crossing_a_level_announces_it_and_pays_nothing_yet() {
         let mut state = state();
         equip(&mut state, PickaxeTier::Netherite, instamining());
 
@@ -2288,6 +2429,11 @@ mod tests {
         };
         assert_eq!(*level, 2, "the first level crossed must be the second");
         assert_eq!(state.player().get_level() as usize, 1 + levels.len());
+        assert_eq!(
+            state.unclaimed_count(),
+            levels.len(),
+            "every level crossed must have filed exactly one reward"
+        );
 
         let Some(reward) = reward else {
             unreachable!("level 2 owes a reward")
@@ -2295,13 +2441,144 @@ mod tests {
         let Payout::Ore(lines) = &reward.payout else {
             unreachable!("level 2 pays ore, not a world")
         };
+        // The bundle is quoted in raw and is **not** in the inventory. Measured
+        // against a purse that has been mining Stone for 600 ticks, so the materials
+        // checked are the ones the bundle names and the mine does not drop.
         for &(item, amount) in lines {
             assert!(matches!(item, Item::Raw(_)), "a bundle was pre-compressed");
-            assert!(
-                state.player().get_inventory().count(item) >= amount,
-                "the bundle never landed"
+            assert!(amount > 0, "an empty line in a bundle says nothing");
+        }
+        assert!(state.is_unclaimed(2), "level 2's reward was not filed");
+    }
+
+    /// Collecting is what pays, and it pays exactly what the announcement quoted.
+    #[test]
+    fn collecting_a_level_hands_over_what_its_announcement_quoted() {
+        let mut state = state();
+        equip(&mut state, PickaxeTier::Netherite, instamining());
+
+        let mut quoted = None;
+        while quoted.is_none() {
+            for event in state.tick(MINING) {
+                if let GameEvent::LevelUp {
+                    level: 2,
+                    reward: Some(reward),
+                } = event
+                {
+                    quoted = Some(reward);
+                }
+            }
+        }
+        let Some(quoted) = quoted else {
+            unreachable!("the loop only leaves with a reward in hand")
+        };
+        let Payout::Ore(lines) = &quoted.payout else {
+            unreachable!("level 2 pays ore, not a world")
+        };
+
+        // Read after the level-up and before the claim, so what the claim adds is the
+        // only thing measured — the mine has been paying Stone throughout.
+        let before: Vec<u32> = lines
+            .iter()
+            .map(|&(item, _)| state.player().get_inventory().count(item))
+            .collect();
+        let charges_before = state.boost_charges();
+
+        let paid = match state.claim_level(2) {
+            Ok(paid) => paid,
+            Err(refusal) => unreachable!("level 2 was filed and is claimable: {refusal}"),
+        };
+        assert_eq!(
+            paid, quoted,
+            "the claim paid something other than it quoted"
+        );
+
+        for (index, &(item, amount)) in lines.iter().enumerate() {
+            assert_eq!(
+                state.player().get_inventory().count(item),
+                before[index] + amount,
+                "the bundle's {item} line did not land"
             );
         }
+        assert_eq!(state.boost_charges(), charges_before + quoted.boost_charges);
+        assert!(!state.is_unclaimed(2), "a collected level is still waiting");
+    }
+
+    /// The three ways there is nothing to collect are one refusal, and none of them
+    /// touch the run.
+    #[test]
+    fn collecting_nothing_is_refused_three_ways_and_changes_nothing() {
+        let mut state = state();
+        equip(&mut state, PickaxeTier::Netherite, instamining());
+        while state.player().get_level() < 3 {
+            state.tick(MINING);
+        }
+
+        // Never reached — and level 50 is on the ladder, so this is the set's answer
+        // and not the formula's.
+        assert!(matches!(
+            state.claim_level(LEVEL_CAP),
+            Err(CoreError::NothingToClaim { level }) if level == LEVEL_CAP
+        ));
+        // Reached, and pays nothing: level 1 is where the run *starts*, so it was
+        // never crossed.
+        assert!(matches!(
+            state.claim_level(1),
+            Err(CoreError::NothingToClaim { level: 1 })
+        ));
+        // Reached, collected, asked for twice.
+        assert!(state.claim_level(2).is_ok());
+        let inventory = state.player().get_inventory().clone();
+        let charges = state.boost_charges();
+        assert!(matches!(
+            state.claim_level(2),
+            Err(CoreError::NothingToClaim { level: 2 })
+        ));
+        assert_eq!(state.player().get_inventory(), &inventory);
+        assert_eq!(state.boost_charges(), charges);
+    }
+
+    /// `claim_all` is `claim_level` repeated, and empties the queue.
+    #[test]
+    fn collecting_everything_pays_each_level_once_in_climbing_order() {
+        let mut state = state();
+        equip(&mut state, PickaxeTier::Netherite, instamining());
+        while state.player().get_level() < 5 {
+            state.tick(MINING);
+        }
+        let waiting = state.unclaimed_count();
+        assert!(waiting >= 3, "the run did not stack up enough to be a lump");
+
+        let collected = state.claim_all();
+
+        assert_eq!(collected.len(), waiting);
+        let levels: Vec<u32> = collected.iter().map(|&(level, _)| level).collect();
+        let mut climbing = levels.clone();
+        climbing.sort_unstable();
+        assert_eq!(levels, climbing, "the payout was not in climbing order");
+        assert_eq!(state.unclaimed_count(), 0, "the queue was not emptied");
+        // And a second sweep pays nothing rather than refusing loudly: an empty queue
+        // is a state, not a mistake.
+        assert!(state.claim_all().is_empty());
+    }
+
+    /// A prestige takes the uncollected rewards with it, like everything else a run
+    /// accumulated. Enoal's call — see [`GameState::prestige`].
+    #[test]
+    fn a_prestige_discards_what_was_never_collected() {
+        let mut state = state();
+        // Level 30 and the Amethyst, so the trade is legal — and both rewards below
+        // are levels that player really did cross on the way up.
+        ready_to_prestige(&mut state);
+        state.unclaimed.insert(2);
+        state.unclaimed.insert(3);
+
+        assert_eq!(state.prestige(), Ok(()));
+
+        assert_eq!(state.unclaimed_count(), 0);
+        // And the run that comes out of it is still a legal one, which is the check
+        // that would catch a reset clearing the set but not the level under it.
+        assert_eq!(state.validate(), Ok(()));
     }
 
     // --- Boosts ---
@@ -2855,6 +3132,30 @@ mod tests {
 
         state.visited.insert(MineKind::Diamond, coal);
 
+        assert!(state.validate().is_err());
+    }
+
+    /// Two ways a filed reward can be a lie, both refused on the way in.
+    ///
+    /// **Deserialisation writes private fields directly**, so this is the only place a
+    /// hand-edited save is stopped from handing out ore for a threshold nobody
+    /// crossed. Refused rather than dropped: `save`'s rule is that a document either
+    /// describes a run this game could have produced or it does not, and silently
+    /// discarding the entry would turn a corrupt save into a slightly poorer one
+    /// without saying so.
+    #[test]
+    fn a_reward_waiting_for_a_level_that_was_never_reached_is_refused() {
+        let mut state = a_run_in_progress(2024);
+        assert_eq!(state.validate(), Ok(()));
+
+        // Ahead of the player: a level they have not climbed to.
+        state.unclaimed.insert(state.player.get_level() + 1);
+        assert!(state.validate().is_err());
+        state.unclaimed.clear();
+
+        // Reached, but the ladder pays nothing for it — level 1 is where a run
+        // starts, so it is never *crossed*.
+        state.unclaimed.insert(1);
         assert!(state.validate().is_err());
     }
 
@@ -3677,6 +3978,25 @@ mod tests {
             .all(|kind| mine_fully_developed(state, kind))
     }
 
+    /// Collects every level reward waiting — the modelled player pressing `A` on the
+    /// Levels screen.
+    ///
+    /// **A step these harnesses did not need until level-ups stopped paying
+    /// themselves**, and the reason it is not optional: a run that never claims throws
+    /// away every bundle the ladder grants, which is around 3 % of everything it must
+    /// buy, and the pacing bands below were measured on a run that received them.
+    /// Leaving it out would not have failed silently — it made the first prestige fall
+    /// out of its window, which is how it was noticed — but it would have been the
+    /// wrong player either way.
+    ///
+    /// Called from the decision block, where every other act of the modelled player
+    /// lives, so the ore lands before the same block decides what to spend it on. The
+    /// return value is dropped: what is claimed is already in the inventory the report
+    /// measures, and the pairs exist for a front-end with a toast to word.
+    fn claim_rewards(state: &mut GameState) {
+        state.claim_all();
+    }
+
     /// Fires a held charge if none is running, for the boost's whole reason to
     /// exist: instamining the two blocks no permanent upgrade reaches.
     fn fire_boost_if_idle(state: &mut GameState) {
@@ -3773,6 +4093,7 @@ mod tests {
                 continue;
             }
 
+            claim_rewards(&mut state);
             fire_boost_if_idle(&mut state);
             select_working_mine(&mut state, style);
             advance_progression(&mut state, style);
@@ -3914,6 +4235,7 @@ mod tests {
             if !tick.is_multiple_of(DECISION_CADENCE) {
                 continue;
             }
+            claim_rewards(&mut state);
             fire_boost_if_idle(&mut state);
             select_working_mine(&mut state, style);
             advance_progression(&mut state, style);
@@ -3981,6 +4303,7 @@ mod tests {
             if !tick.is_multiple_of(DECISION_CADENCE) {
                 continue;
             }
+            claim_rewards(&mut state);
             fire_boost_if_idle(&mut state);
             select_working_mine(&mut state, style);
             advance_progression(&mut state, style);

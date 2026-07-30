@@ -23,7 +23,7 @@ use skylode_core::{
     material::{Item, Material},
     mine::Mine,
     mine_kind::MineKind,
-    tunables::{RAW_PER_COMPRESSED, TICKS_PER_SECOND},
+    tunables::{LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND},
     upgrade,
 };
 
@@ -244,6 +244,7 @@ impl App {
         let cursors = Cursors::new(
             state.current_mine().kind(),
             upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
+            state.player().get_level(),
         );
         let view = View::from_state(&state, cursors, None);
         // Both clocks start due, so the first pass through the loop draws and the
@@ -425,8 +426,22 @@ impl App {
             Action::Confirm => match self.screen {
                 Screen::Mines => self.enter_selected_mine(),
                 Screen::Upgrades => self.buy_at_cursor(Reach::ToCursor),
+                Screen::Levels => self.claim_at_cursor(),
                 _ => {}
             },
+            Action::ClaimAll => {
+                if self.screen == Screen::Levels {
+                    self.claim_everything();
+                }
+            }
+            // `Home`. Only the Levels roadmap has a "where you actually are" to jump
+            // back to — the other lists are short enough to walk, and on Inventory or
+            // Mines the player's position is already the row they opened on.
+            Action::JumpToCurrent => {
+                if self.screen == Screen::Levels {
+                    self.cursors.level = self.state.player().get_level();
+                }
+            }
             // `M`, and only where something is for sale. It reaches the *same* buy as
             // `Enter` with a further target, which is what keeps "buy to here" and
             // "buy max" from being two implementations of one purchase.
@@ -1055,8 +1070,80 @@ impl App {
                         cursor::step_in(&cursor::mine_tracks(), self.cursors.mine_track, delta);
                 }
             },
+            // The ladder is `1..=LEVEL_CAP`, contiguous and one-based, so the clamp is
+            // over indices and the level is that index plus one. Routed through
+            // `step_index` rather than done here with a `+ delta`, so *lists clamp* has
+            // one implementation on this screen too — the failure mode being a `↑` on
+            // level 1 that wrapped the roadmap to the cap.
+            Screen::Levels => {
+                let index = cursor::step_index(LEVEL_CAP as usize, self.level_index(), delta);
+                self.cursors.level = index.saturating_add(1) as u32;
+            }
             _ => {}
         }
+    }
+
+    /// The Levels cursor as an index into the roadmap's rows.
+    ///
+    /// Levels are one-based and lists are not, and this is the one place the offset is
+    /// written — a second `- 1` somewhere else is how a cursor ends up one row from
+    /// where it is drawn.
+    fn level_index(&self) -> usize {
+        (self.cursors.level as usize).saturating_sub(1)
+    }
+
+    /// Collects the reward under the Levels cursor, and says what it handed over.
+    ///
+    /// **The refusal is announced, unlike the richness dial's.** Reaching the end of a
+    /// slider is not a player error and toasting it would bury the announcements that
+    /// matter; pressing `Enter` on a row with nothing on it is a different case, since
+    /// the row's own mark column says whether there is anything there and the player
+    /// has read it or not. One toast per press, and no press repeats.
+    fn claim_at_cursor(&mut self) {
+        let level = self.cursors.level;
+        match self.state.claim_level(level) {
+            Ok(reward) => {
+                let message = format!("Claimed Lv {level} — {}", announce::payout(&reward.payout));
+                self.toasts.push(message, Tone::Success, TOAST_TTL);
+            }
+            Err(refusal) => self
+                .toasts
+                .push(refusal.to_string(), Tone::Neutral, TOAST_TTL),
+        }
+    }
+
+    /// Collects everything waiting, and announces the sweep rather than each level.
+    ///
+    /// **One toast for the lump**, which is the same argument
+    /// [`announce_refusal`](App::announce_refusal) makes for naming only the first
+    /// shortfall: a player who has just crossed six levels offline gets six three-second
+    /// toasts stacked on top of each other and reads none of them. What they need to
+    /// know is that the sweep happened and how much of it there was; the ladder behind
+    /// the toast still lists every row, now unmarked.
+    ///
+    /// A sweep that collects nothing is neutral rather than a refusal: the key is only
+    /// advertised when something is waiting, so this is a press against an empty queue
+    /// and not a mistake about a particular level.
+    fn claim_everything(&mut self) {
+        let collected = self.state.claim_all();
+        // Matched on the **slice** and not on its length, which is what makes the
+        // one-level arm bind the pair directly. A `match len { 1 => collected.first()
+        // … }` needs an arm for a `None` the length has already ruled out — a branch
+        // no test can reach and no reader can verify. Slice patterns are how Rust
+        // lets the compiler carry that instead.
+        let message = match collected.as_slice() {
+            [] => "Nothing waiting to claim".to_owned(),
+            [(level, reward)] => {
+                format!("Claimed Lv {level} — {}", announce::payout(&reward.payout))
+            }
+            many => format!("Claimed {} levels", many.len()),
+        };
+        let tone = if collected.is_empty() {
+            Tone::Neutral
+        } else {
+            Tone::Success
+        };
+        self.toasts.push(message, tone, TOAST_TTL);
     }
 
     /// Slides the selected mine's richness dial one step, silently at its bounds.
@@ -2061,8 +2148,14 @@ mod tests {
     /// actually produce.
     fn holding_stone(app: &mut App) -> u32 {
         // A fresh run stands in the Stone mine, so a held Space is Stone in the bag.
-        // Two thousand ticks is comfortably past the hundred raw one unit needs.
-        for _ in 0..2_000 {
+        //
+        // **Six thousand ticks, where two used to do.** The difference is the level
+        // rewards: crossing a level once credited its bundle on the spot, and the
+        // early bundles are half Stone, so a short session arrived at the dialog with
+        // ore it had not actually mined. Rewards are collected by hand now and this
+        // helper never presses the key, so the pile is swung for — which is the more
+        // honest fixture besides, and what the spinner tests want two whole units of.
+        for _ in 0..6_000 {
             app.state.tick(Input { space_held: true });
         }
         app.state
@@ -2726,6 +2819,186 @@ mod tests {
         assert!(frame.contains("Not yet"), "{frame}");
     }
 
+    // --- Claiming level rewards (UI.md §5.6) ---
+
+    /// A session that has mined its way to level 3 or better, standing on the Levels
+    /// screen — so there is more than one reward waiting and a lump to sweep.
+    fn with_rewards_waiting() -> App {
+        let mut app = session();
+        app.screen = Screen::Levels;
+        for _ in 0..6_000 {
+            app.state.tick(Input { space_held: true });
+        }
+        assert!(
+            app.state.player().get_level() >= 3,
+            "the fixture never crossed a level"
+        );
+        app.sync_view();
+        app
+    }
+
+    /// Crossing a level leaves the reward on the roadmap instead of paying it.
+    ///
+    /// The half of TUI phase 7's split the front-end can see: the row is marked, the
+    /// footer offers the keys, and nothing has moved in the inventory.
+    #[test]
+    fn a_crossed_level_shows_up_on_the_roadmap_rather_than_in_the_bag() {
+        let app = with_rewards_waiting();
+
+        let waiting: Vec<u32> = app
+            .view
+            .levels
+            .rows
+            .iter()
+            .filter(|row| row.unclaimed)
+            .map(|row| row.level)
+            .collect();
+        assert!(!waiting.is_empty(), "no level was left waiting");
+        assert_eq!(app.view.levels.waiting, waiting.len());
+        // Level 1 is where a run starts, so it is never crossed and never waiting.
+        assert!(!waiting.contains(&1));
+
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("claim all"), "{frame}");
+    }
+
+    #[test]
+    fn enter_claims_the_row_under_the_cursor_and_says_what_it_paid() {
+        let mut app = with_rewards_waiting();
+        app.cursors.level = 2;
+        let before = app.state.unclaimed_count();
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.unclaimed_count(), before - 1);
+        assert!(!app.state.is_unclaimed(2));
+        // The toast names the level and quotes what landed, which is the same phrase
+        // the roadmap's own row prints — one wording, two renderings.
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Claimed Lv 2"), "{frame}");
+    }
+
+    /// `Enter` on a row with nothing on it is announced, unlike the richness dial's
+    /// silent clamp: the mark column says whether there is anything there, so this is
+    /// a press against what the screen already told the player.
+    #[test]
+    fn enter_on_a_row_with_nothing_waiting_says_so() {
+        let mut app = with_rewards_waiting();
+        // A level far past the player's — reached by nobody, so waiting for nobody.
+        app.cursors.level = LEVEL_CAP;
+        let before = app.state.unclaimed_count();
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.unclaimed_count(), before, "a claim leaked");
+        assert!(!app.toasts.is_empty(), "an empty row refused in silence");
+    }
+
+    #[test]
+    fn claim_all_empties_the_ladder_in_one_announcement() {
+        let mut app = with_rewards_waiting();
+        let waiting = app.state.unclaimed_count();
+        assert!(waiting >= 2, "a sweep of one level tests nothing");
+
+        app.update(Action::ClaimAll);
+
+        assert_eq!(app.state.unclaimed_count(), 0);
+        // **One toast for the lump.** Six three-second toasts stacked on each other
+        // are six the player reads none of, which is the same argument the refusal
+        // wording makes for naming only the first shortfall.
+        assert_eq!(app.toasts.len(), 1, "the sweep announced level by level");
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(
+            frame.contains(&format!("Claimed {waiting} levels")),
+            "{frame}"
+        );
+        // And the footer stops offering keys that would now refuse.
+        assert!(!frame.contains("claim all"), "{frame}");
+    }
+
+    /// The sweep's three shapes of sentence, since each is a different arm.
+    ///
+    /// A sweep of exactly one level names it, the way `Enter` would — announcing
+    /// `Claimed 1 levels` for a single bundle would be a plural and a lost number at
+    /// the same time. A sweep of nothing says so and is neutral: the key is only
+    /// advertised when something is waiting, so an empty press is not a mistake about
+    /// any particular level.
+    #[test]
+    fn a_sweep_of_one_names_it_and_a_sweep_of_none_says_so() {
+        let mut app = with_rewards_waiting();
+        // Down to a single reward, collected by hand through the other door.
+        while app.state.unclaimed_count() > 1 {
+            let level = (1..=LEVEL_CAP).find(|&level| app.state.is_unclaimed(level));
+            match level {
+                Some(level) => assert!(app.state.claim_level(level).is_ok()),
+                None => unreachable!("the count says one is left"),
+            }
+        }
+
+        app.update(Action::ClaimAll);
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Claimed Lv"), "{frame}");
+        assert!(
+            !frame.contains("levels"),
+            "a single bundle was pluralised: {frame}"
+        );
+
+        // And again, against a ladder with nothing on it.
+        app.toasts = Toasts::new();
+        app.update(Action::ClaimAll);
+        app.sync_view();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Nothing waiting"), "{frame}");
+    }
+
+    #[test]
+    fn the_claim_gestures_do_nothing_off_the_levels_screen() {
+        for screen in [
+            Screen::Mine,
+            Screen::Mines,
+            Screen::Inventory,
+            Screen::Upgrades,
+        ] {
+            let mut app = with_rewards_waiting();
+            app.screen = screen;
+            let before = app.state.unclaimed_count();
+
+            app.update(Action::ClaimAll);
+            app.update(Action::Confirm);
+
+            assert_eq!(
+                app.state.unclaimed_count(),
+                before,
+                "{screen:?} claimed a reward it does not own"
+            );
+        }
+    }
+
+    /// The cursor walks the ladder, clamps at both ends, and `Home` brings it back.
+    #[test]
+    fn the_roadmap_cursor_clamps_at_both_ends_and_home_returns_to_the_player() {
+        let mut app = with_rewards_waiting();
+        let here = app.state.player().get_level();
+        assert_eq!(app.cursors.level, 1, "the session opened above level 1");
+
+        app.update(Action::CursorUp);
+        assert_eq!(
+            app.cursors.level, 1,
+            "the roadmap wrapped past its first rung"
+        );
+
+        for _ in 0..LEVEL_CAP + 10 {
+            app.update(Action::CursorDown);
+        }
+        assert_eq!(app.cursors.level, LEVEL_CAP, "the roadmap ran past its cap");
+
+        app.update(Action::JumpToCurrent);
+        assert_eq!(app.cursors.level, here);
+    }
+
     // --- The compress-first loop (UI.md §8.4) ---
 
     /// A run holding the *value* of a pickaxe rung but not its *denomination*.
@@ -2784,15 +3057,21 @@ mod tests {
 
     #[test]
     fn compressing_by_hand_and_coming_back_completes_the_loop() {
-        // The §8.4 walk, end to end: refused, over to the Inventory, `c` and `Enter`,
-        // back to Upgrades — and the cursor is still on the rung they left, because
-        // it lives in `Cursors` and never went anywhere.
+        // The §8.4 walk, end to end and **entirely through gestures**: refused, `c` to
+        // walk to the pile that was named, `c` and `Enter` to convert, back to Upgrades
+        // — and the cursor is still on the rung they left, because it lives in
+        // `Cursors` and never went anywhere.
+        //
+        // The two legs the player used to walk by hand are the two `Action`s at the
+        // top: this test set `screen` and `cursors.material` itself before `GoCompress`
+        // existed, which is precisely the work the key took over.
         let mut app = holding_the_value_but_not_the_denomination();
         app.update(Action::Confirm);
         assert!(app.refused.is_some());
 
-        app.screen = Screen::Inventory;
-        app.cursors.material = Material::Stone;
+        app.update(Action::GoCompress);
+        assert_eq!(app.screen, Screen::Inventory);
+        assert_eq!(app.cursors.material, Material::Stone);
         app.update(Action::Compress);
         app.update(Action::Confirm);
 

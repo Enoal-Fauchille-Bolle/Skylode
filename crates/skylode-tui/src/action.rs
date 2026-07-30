@@ -126,4 +126,31 @@ pub enum Action {
     /// mnemonic [`Compress`](Action::Compress) spends on the Inventory: one letter,
     /// one idea, on the two screens the loop runs between.
     GoCompress,
+    /// Collect the level reward the Levels cursor is sitting on (`Enter`).
+    ///
+    /// Not a variant of its own: `Enter` on this screen *is*
+    /// [`Confirm`](Action::Confirm), acting on the row under the cursor exactly as it
+    /// does on the other three lists. Named here only so the doc for the screen has
+    /// somewhere to point — see [`ClaimAll`](Action::ClaimAll), which does need one.
+    ///
+    /// Collect **everything** waiting on the ladder (`A`).
+    ///
+    /// A gesture of its own rather than a [`Confirm`](Action::Confirm) the screen
+    /// interprets, for [`BuyMax`](Action::BuyMax)'s reason: acting on one row and
+    /// acting on all of them are different acts, and folding them into one key would
+    /// leave the player unable to collect a single level deliberately.
+    ///
+    /// **Not [`AdjustMax`](Action::AdjustMax)**, whose key is also a letter `a`. That
+    /// one moves a *number* to its ceiling inside a dialog; this one empties a queue.
+    /// The two never coexist on a screen, which is exactly why keeping them apart
+    /// matters — a shared variant would be a coincidence of keycaps standing in for a
+    /// shared meaning.
+    ClaimAll,
+    /// Put the active screen's cursor back where the player actually is (`Home`).
+    ///
+    /// The Levels roadmap is fifty rows and the cursor opens on the player's own
+    /// level, so scrolling away is easy and scrolling back is fifty presses. Generic
+    /// in the same way the list gestures are: `keymap` cannot know what "where the
+    /// player is" means on a given screen, so the reducer answers it.
+    JumpToCurrent,
 }

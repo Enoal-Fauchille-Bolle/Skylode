@@ -441,9 +441,11 @@ mod tests {
             KeyCode::Char('c'),
             KeyCode::Char('\u{1}'),
             KeyCode::Char('M'),
+            KeyCode::Home,
+            KeyCode::Char('A'),
         ];
         // What each screen answers, in the order of `keys` above.
-        let claimed = |screen: Screen| -> [Option<Action>; 8] {
+        let claimed = |screen: Screen| -> [Option<Action>; 10] {
             match screen {
                 Screen::Mines => [
                     Some(Action::CursorUp),
@@ -451,6 +453,8 @@ mod tests {
                     Some(Action::AdjustLeft),
                     Some(Action::AdjustRight),
                     Some(Action::Confirm),
+                    None,
+                    None,
                     None,
                     None,
                     None,
@@ -468,11 +472,19 @@ mod tests {
                     Some(Action::Compress),
                     None,
                     None,
+                    None,
+                    None,
                 ],
                 // **The one screen that answers nothing lateral**, deliberately: UI.md
                 // §9 leaves `←/→` free here so the configurable sub-tab binding can own
                 // it, and that binding is resolved in `keymap` — the only place the
                 // config is visible — before this function is ever reached.
+                //
+                // `c` is claimed here *and* on the Inventory, to two different
+                // actions: the walk out and the dialog it walks to. One letter for one
+                // idea across the two screens §8.4's loop runs between — which this
+                // table is the place to notice, since it is the only view of the
+                // bindings laid side by side.
                 Screen::Upgrades => [
                     Some(Action::CursorUp),
                     Some(Action::CursorDown),
@@ -482,10 +494,29 @@ mod tests {
                     Some(Action::GoCompress),
                     None,
                     Some(Action::BuyMax),
+                    None,
+                    None,
                 ],
-                // Phase 7 owns the rest; `None` is "not mine", which lets `keymap`
-                // fall through instead of swallowing the key.
-                _ => [const { None }; 8],
+                // **`Home` and `A` are the Levels screen's alone**, which is what the
+                // two columns added for them are here to pin: `A` collects a whole
+                // ladder of rewards and `Home` jumps to the player's own rung, and
+                // both would be nonsense claimed globally.
+                Screen::Levels => [
+                    Some(Action::CursorUp),
+                    Some(Action::CursorDown),
+                    None,
+                    None,
+                    Some(Action::Confirm),
+                    None,
+                    None,
+                    None,
+                    Some(Action::JumpToCurrent),
+                    Some(Action::ClaimAll),
+                ],
+                // Mine takes only `Space`, which `keymap` resolves above this table;
+                // Stats is phase 7's remaining screen. `None` is "not mine", which
+                // lets `keymap` fall through instead of swallowing the key.
+                _ => [const { None }; 10],
             }
         };
         for screen in Screen::ALL {

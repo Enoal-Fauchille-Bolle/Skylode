@@ -364,6 +364,12 @@ mod tests {
                 r#""richness_setting":0,"grid":[["Stone","Stone","Cobblestone"],"#,
                 r#"["Stone","Stone","Stone"],["Stone","Stone","Stone"]],"#,
                 r#""break_progress":0.0,"target":null},"visited":{},"boost_charges":0,"#,
+                // `unclaimed` joined the document without a `SAVE_VERSION` bump, which
+                // is the one change this constant's own doc says does not need one: a
+                // file written before it exists reads back as an empty set, and an
+                // empty set is the *truth* about such a file rather than a default
+                // covering for missing information — those runs were paid at the tick.
+                r#""unclaimed":[],"#,
                 r#""active_boost":null,"auto_common_progress":0,"auto_value_progress":0,"#,
                 r#""yield_carry":[],"rng":{"seed":[234,216,29,114,93,38,16,78,137,156,"#,
                 r#"59,248,66,206,120,46,186,211,3,218,153,151,210,194,18,2,86,172,115,"#,

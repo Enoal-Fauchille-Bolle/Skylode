@@ -22,6 +22,8 @@ use skylode_core::{
     mine::{MAX_RICHNESS_LEVEL, Mine},
     mine_kind::{MineKind, MineLock},
     pickaxe::{Pickaxe, PickaxeTier},
+    player::Player,
+    reward::{self, LevelReward},
     tunables::{
         BOOST_DURATION_TICKS, HASTE_PER_LEVEL, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND,
     },
@@ -30,6 +32,7 @@ use skylode_core::{
 };
 
 use crate::{
+    announce,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     format::{MAXED, roman, rung_label},
     palette::ColourMode,
@@ -44,20 +47,76 @@ pub const NOTHING: &str = "—";
 
 /// One row of the Levels roadmap (UI.md §5.6).
 ///
-/// `grants` is a **placeholder string** — the core exposes `xp_for_level` but not
-/// yet a `loot_for_level`, so what each level pays is transcribed from the frame
-/// rather than derived; the tick wires the real bundles (phase 7). `xp` is the
-/// per-level requirement counted from zero (`level × 100` on today's curve), which
-/// is what the status bar's `1 240 / 2 300` also counts against.
+/// `xp` is the per-level requirement counted from zero (`level × 100` on today's
+/// curve), which is what the status bar's `1 240 / 2 300` also counts against.
 #[derive(Clone, Debug)]
 pub struct LevelRow {
     /// The level this row is for.
     pub level: u32,
     /// What reaching it grants, pre-formatted: `+115 Quartz, +80 A. Debris, …`, or
     /// a world line like `The Nether opens, +1 charge`.
+    ///
+    /// **Pre-formatted, and this is the one place in the read model that stays so on
+    /// purpose.** Everywhere else a `String` here was a decision taken too early —
+    /// phases 4 and 5 deleted five of them — but a roadmap row is *prose about a
+    /// level*, three materials wide, with a world line that is not a material list at
+    /// all. There is no layout decision hiding in it: the screen prints the sentence
+    /// and justifies the XP after it. It is also the same sentence
+    /// [`announce`] puts in the level-up toast, and sharing the
+    /// wording is what stops the toast and the row disagreeing about what a level
+    /// pays.
     pub grants: String,
-    /// The XP that level costs, counted from zero.
-    pub xp: u32,
+    /// The XP that level costs, counted from zero, or [`None`] at the cap.
+    ///
+    /// [`None`] at [`LEVEL_CAP`] because there is
+    /// no level 51 to climb to, so the row has no requirement to state — the same
+    /// answer [`Player::xp_for_level`](skylode_core::player::Player) gives, carried
+    /// rather than flattened. It draws as `—`, following the Mine screen's rule that
+    /// an empty gauge never reads `0`: a `5 000` on the last row would name a price
+    /// nothing is for sale at.
+    pub xp: Option<u32>,
+    /// Whether this level's reward is still waiting to be collected.
+    ///
+    /// **Distinct from "reached"**, which the screen derives from `player_level`, and
+    /// the two really do come apart: a level below the player is reached and may still
+    /// be waiting, which is the whole state this screen now exists to show. It is the
+    /// core's answer ([`GameState::is_unclaimed`](skylode_core::game::GameState)) and
+    /// not a guess from the level, because only the run knows what has been collected.
+    pub unclaimed: bool,
+}
+
+/// The Levels screen: the whole ladder, where the cursor is, and how much is waiting
+/// (UI.md §5.6).
+///
+/// **Grouped, where the two fields used to sit loose on [`View`]**, and phase 7 is
+/// what forced it: a third one was about to join them. The other four screens have
+/// carried a `*View` of their own since phase 3, and the reason is the same here —
+/// a cursor and the list it points into are one thing, and a screen that has to
+/// reach for them separately is one refactor away from them disagreeing.
+#[derive(Clone, Debug)]
+pub struct LevelsView {
+    /// The **whole** roadmap, `1..=LEVEL_CAP`.
+    ///
+    /// It was the visible window until the screens learned to window their own lists;
+    /// carrying the slice meant a taller terminal could not show more of the ladder,
+    /// because the extra rows were never in the view to begin with.
+    pub rows: Vec<LevelRow>,
+    /// The topmost drawn row — scroll position, not selection.
+    pub offset: usize,
+    /// The level under the cursor, drawn `▸`.
+    ///
+    /// **A level and not an index**, matching every other cursor in the read model:
+    /// the ladder is `1..=LEVEL_CAP` and a level is what the claim is addressed by, so
+    /// an index would have to be converted back at the one moment it matters. It opens
+    /// on the player's own level and parts company with it the moment `↑` is pressed —
+    /// which is what `Home` exists to undo.
+    pub selected: u32,
+    /// How many rewards are waiting anywhere on the ladder.
+    ///
+    /// Carried rather than counted off `rows`, because the footer prints it on every
+    /// frame and the screen would otherwise walk fifty rows to render one number. It
+    /// is also what decides whether the collect-everything key is advertised at all.
+    pub waiting: usize,
 }
 
 /// One row of an Upgrades sub-tab's list (UI.md §5.4).
@@ -983,17 +1042,8 @@ pub struct View {
     pub grid: Vec<Vec<Option<Block>>>,
     /// The cell being dug and its progress, [`None`] before the first swing.
     pub target: Option<TargetView>,
-    /// The **whole** Levels roadmap, `1..=LEVEL_CAP` (UI.md §5.6).
-    ///
-    /// It was the visible window until the screens learned to window their own
-    /// lists; carrying the slice meant a taller terminal could not show more of the
-    /// ladder, because the extra rows were never in the view to begin with.
-    pub levels: Vec<LevelRow>,
-    /// The topmost drawn row of that roadmap — scroll position, not selection.
-    ///
-    /// The cursor is `player_level`, so unlike the Upgrades sub-tabs there is
-    /// nothing to derive; only where the window sits is state.
-    pub levels_offset: usize,
+    /// The Levels roadmap, its cursor, and what is waiting on it (UI.md §5.6).
+    pub levels: LevelsView,
     /// The three panels of the Stats screen (UI.md §5.5).
     pub stats: StatsView,
     /// The Inventory table and its compress panel (UI.md §5.3).
@@ -1084,9 +1134,11 @@ impl View {
             mines: mines_view(state, cursors),
             inventory: inventory_view(player.get_inventory(), cursors, refused),
             upgrades: upgrades_view(state, cursors),
+            levels: levels_view(state, cursors),
 
-            // Everything below is still the fixture. Phases 6-7 own these, one
-            // screen at a time; see this function's own note on the `..`.
+            // **One field left.** `stats` is the last screen still drawn from the
+            // fixture, and this `..` is the literal list of what phase 7 still owes;
+            // it disappears when that screen is wired.
             ..Self::sample()
         }
     }
@@ -1155,7 +1207,6 @@ impl View {
             grid,
             target: Some(TargetView { cell, ratio: 0.61 }),
             levels: sample_levels(),
-            levels_offset: LEVELS_OFFSET,
             stats: sample_stats(),
             inventory: sample_inventory(),
             mines: sample_mines(),
@@ -1388,6 +1439,64 @@ fn inventory_view(
 /// one would put a `match` on the cursor in front of a projection that has no other
 /// reason to know which tab is up. [`App`](crate::app::App) caches the whole `View`
 /// anyway, so this runs when the run changes rather than thirty times a second.
+/// The Levels roadmap, projected from the run (UI.md §5.6).
+///
+/// **The whole ladder every frame, rewards included, and it costs nothing to build**:
+/// [`reward_for_level`](reward::reward_for_level) is a pure total function of the
+/// level, which is precisely why the roadmap can show what level 40 pays to a player
+/// on level 3. A run that *stored* its rewards could not — a save holds what has
+/// happened, and this list is mostly about what has not.
+///
+/// The only thing here that the run answers is
+/// [`unclaimed`](LevelRow::unclaimed): what a formula cannot know is what the player
+/// has already picked up.
+///
+/// `offset` is `0` and not the cursor's neighbourhood, for the reason every other list
+/// in this crate leaves it so: the screen windows its own rows against the height it
+/// actually has, and [`window`](crate::screen::window) moves the offset to keep the
+/// cursor on screen. A view that pre-scrolled would be guessing at a terminal size it
+/// cannot see.
+fn levels_view(state: &GameState, cursors: Cursors) -> LevelsView {
+    LevelsView {
+        rows: (1..=LEVEL_CAP)
+            .map(|level| {
+                let reward = reward::reward_for_level(level);
+                LevelRow {
+                    level,
+                    grants: grants_line(reward.as_ref()),
+                    xp: Player::xp_for_level(level),
+                    unclaimed: state.is_unclaimed(level),
+                }
+            })
+            .collect(),
+        offset: 0,
+        selected: cursors.level,
+        waiting: state.unclaimed_count(),
+    }
+}
+
+/// A roadmap row's `Grants` cell: the payout, then the charge if the level carries one.
+///
+/// **The charge is appended here and not in [`announce::payout`]**, which is the seam
+/// between the roadmap and the toast: §5.6 draws `The Nether opens, +1 charge` and the
+/// toast deliberately drops the garnish. Both read the same payout wording, so the two
+/// cannot name different materials — they differ only in what each frame has room to
+/// care about.
+///
+/// A level with no reward at all gets an empty cell rather than a dash: the row's own
+/// level number and XP are still there, so the line is not empty, and `—` would read
+/// as *"a reward that is nothing"* instead of *"no reward"*.
+fn grants_line(reward: Option<&LevelReward>) -> String {
+    let Some(reward) = reward else {
+        return String::new();
+    };
+    let mut line = announce::payout(&reward.payout);
+    if reward.boost_charges > 0 {
+        line.push_str(&format!(", +{} charge", reward.boost_charges));
+    }
+    line
+}
+
 fn upgrades_view(state: &GameState, cursors: Cursors) -> UpgradesView {
     UpgradesView {
         active: cursors.upgrade_tab,
@@ -2559,13 +2668,19 @@ const LEVELS_OFFSET: usize = 12;
 ///
 /// **Two sources, deliberately not merged.** The nineteen levels the wireframe
 /// counted stay *verbatim* below, so the frame can still be compared row for row
-/// against the document; every other level gets a generated filler line, because
-/// `loot_for_level` does not exist in the core and inventing thirty-one more
-/// hand-written reward strings would be inventing balance, not fixture data. `xp`
-/// is `level × 100` throughout, which is the curve the counted rows already follow.
-fn sample_levels() -> Vec<LevelRow> {
+/// against the document; every other level gets a generated filler line, because the
+/// wireframe never drew them and generating the *real* bundle here would make the
+/// fixture agree with `from_state` by construction and so test nothing. `xp` is
+/// `level × 100` throughout, which is the curve the counted rows already follow.
+///
+/// **Three of the fixture's levels have a reward waiting**, chosen to be the three
+/// states the mark column has to tell apart at once: one behind the player (`~` where
+/// a plain row would read `✓`), one *on* the player's level (`▸●` must still win), and
+/// one at the very top of the drawn window. A fixture with nothing waiting would draw
+/// a screen no player reaches after their first level-up.
+fn sample_levels() -> LevelsView {
     let counted = counted_levels();
-    (1..=LEVEL_CAP)
+    let rows: Vec<LevelRow> = (1..=LEVEL_CAP)
         .map(|level| {
             let row = counted.iter().find(|(counted, _, _)| *counted == level);
             LevelRow {
@@ -2577,11 +2692,22 @@ fn sample_levels() -> Vec<LevelRow> {
                 // The counted rows keep their transcribed XP rather than a
                 // recomputed one, so a wireframe row stays verbatim to the digit
                 // even if the curve is ever retuned under it.
-                xp: row.map_or(level * 100, |(_, _, xp)| *xp),
+                xp: (level < LEVEL_CAP).then(|| row.map_or(level * 100, |(_, _, xp)| *xp)),
+                unclaimed: SAMPLE_WAITING.contains(&level),
             }
         })
-        .collect()
+        .collect();
+    LevelsView {
+        rows,
+        offset: LEVELS_OFFSET,
+        // The fixture's player is on level 23, and a cursor opens where the player is.
+        selected: 23,
+        waiting: SAMPLE_WAITING.len(),
+    }
 }
+
+/// The fixture's uncollected levels — see [`sample_levels`] for why these three.
+const SAMPLE_WAITING: [u32; 3] = [13, 21, 23];
 
 /// A stand-in reward line for a level the wireframe never drew.
 ///
@@ -2782,6 +2908,7 @@ mod tests {
             Cursors::new(
                 state.current_mine().kind(),
                 upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
+                state.player().get_level(),
             ),
             None,
         )
@@ -2849,6 +2976,7 @@ mod tests {
         let mut cursors = Cursors::new(
             state.current_mine().kind(),
             upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
+            state.player().get_level(),
         );
         cursors.upgrade_tab = tab;
         cursors
@@ -3258,13 +3386,20 @@ mod tests {
         // The full 1..=LEVEL_CAP, with the wireframe's own rows still verbatim
         // inside it — that pairing is the reason `counted_levels` exists at all.
         let levels = sample_levels();
-        assert_eq!(levels.len(), LEVEL_CAP as usize);
-        let level_23 = levels.iter().find(|row| row.level == 23);
+        assert_eq!(levels.rows.len(), LEVEL_CAP as usize);
+        let level_23 = levels.rows.iter().find(|row| row.level == 23);
         assert_eq!(
             level_23.map(|row| row.grants.as_str()),
             Some("+115 Quartz, +80 A. Debris, +34 Obsidian")
         );
-        assert_eq!(level_23.map(|row| row.xp), Some(2_300));
+        assert_eq!(level_23.map(|row| row.xp), Some(Some(2_300)));
+        // The last rung has no next level to price, so its requirement is absent
+        // rather than a number nothing is for sale at.
+        assert_eq!(
+            levels.rows.last().map(|row| row.xp),
+            Some(None),
+            "the capped row quoted an XP requirement"
+        );
     }
 
     #[test]

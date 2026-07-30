@@ -31,8 +31,19 @@ use crate::{format::grouped, toast::Tone};
 /// renderings of the buffer read alike.
 pub fn of(event: &GameEvent) -> (String, Tone) {
     match event {
+        // **The sentence says what is waiting, not what arrived**, because as of TUI
+        // phase 7 nothing arrives: crossing a level files its reward and the player
+        // collects it on the Levels screen. The numbers stay in the toast — the
+        // announcement is owed them the instant the level is reached — but the
+        // trailing clause is what turns a receipt into an errand.
+        //
+        // A level that pays nothing gets no clause and so no errand, which is the
+        // right reading: the two ends of the ladder leave nothing on the screen.
         GameEvent::LevelUp { level, reward } => (
-            format!("Level {level}{}", granted(reward.as_ref())),
+            match granted(reward.as_ref()) {
+                grants if grants.is_empty() => format!("Level {level}"),
+                grants => format!("Level {level}{grants} — claim on 6"),
+            },
             Tone::Success,
         ),
         // **`broken`, never `cells.len()`.** The shape covers ground the swing had
@@ -68,10 +79,27 @@ pub fn of(event: &GameEvent) -> (String, Tone) {
 ///
 /// [`reward_for_level`]: skylode_core::reward::reward_for_level
 fn granted(reward: Option<&LevelReward>) -> String {
-    match reward.map(|reward| &reward.payout) {
-        Some(Payout::World(world)) => format!(" — The {} opens", world.name()),
-        Some(Payout::Ore(lines)) => format!(" — {}", ore(lines)),
+    match reward {
+        Some(reward) => format!(" — {}", payout(&reward.payout)),
         None => String::new(),
+    }
+}
+
+/// What a payout hands over, as one phrase and with no leading punctuation.
+///
+/// **Shared with the Levels roadmap**, which prints the same phrase as its `Grants`
+/// column. One wording, two renderings — the toast's is the tail of a sentence and the
+/// row's is a cell — and sharing it is what stops the announcement of a level and the
+/// row describing that same level from quoting different materials.
+///
+/// The **boost charge is not in here**, and that is the seam between the two callers:
+/// UI.md §5.6's roadmap appends `, +1 charge` and the toast deliberately does not,
+/// since a garnish landing every fifth level announces nothing and dilutes the payout
+/// beside it. Each caller adds what its own frame asks for.
+pub fn payout(payout: &Payout) -> String {
+    match payout {
+        Payout::World(world) => format!("The {} opens", world.name()),
+        Payout::Ore(lines) => ore(lines),
     }
 }
 
@@ -107,8 +135,13 @@ mod tests {
 
     use super::*;
 
+    /// A level-up names the level, what it is worth, and where to go and get it.
+    ///
+    /// The trailing clause is the whole of TUI phase 7's change to this line: the
+    /// bundle is filed rather than credited, so the sentence is an errand and not a
+    /// receipt.
     #[test]
-    fn a_level_up_names_the_level_and_what_it_paid() {
+    fn a_level_up_names_the_level_and_where_to_claim_it() {
         let (text, tone) = of(&GameEvent::LevelUp {
             level: 23,
             reward: Some(LevelReward {
@@ -119,7 +152,10 @@ mod tests {
                 boost_charges: 0,
             }),
         });
-        assert_eq!(text, "Level 23 — +115 Quartz, +80 Ancient Debris");
+        assert_eq!(
+            text,
+            "Level 23 — +115 Quartz, +80 Ancient Debris — claim on 6"
+        );
         assert_eq!(tone, Tone::Success);
     }
 
@@ -134,7 +170,7 @@ mod tests {
                 boost_charges: 1,
             }),
         });
-        assert_eq!(text, "Level 15 — The Nether opens");
+        assert_eq!(text, "Level 15 — The Nether opens — claim on 6");
     }
 
     #[test]

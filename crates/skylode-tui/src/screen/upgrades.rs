@@ -932,6 +932,7 @@ mod tests {
 
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
     use skylode_core::{
+        block::Block,
         enchant::EnchantType,
         game::GameState,
         material::{Item, Material},
