@@ -29,11 +29,12 @@ upgrades are on.
 | Compilation | `#[cfg(debug_assertions)]` | A `--release` binary contains **no** dev code — not the doors in `skylode-core`, not the overlay, not the key, not the strings |
 | Activation | `SKYLODE_DEV` present in the environment | A debug build without it is an ordinary game |
 
-`debug_assertions` rather than a Cargo feature, and the reason is the pre-commit
-hook. It runs `clippy --all-targets -D warnings`, `cargo doc -D warnings` and
-`cargo tarpaulin`, and all three build the **dev** profile — so gating this way keeps
-the dev code linted, documented and covered exactly like the rules it bypasses. Code
-behind a feature left off is none of those things, which is the objection
+`debug_assertions` rather than a Cargo feature, and the reason is the checks the
+project runs. The pre-commit hook runs `clippy --all-targets -D warnings` and
+`cargo doc -D warnings`; `cargo test` and a hand-run `cargo tarpaulin` complete the
+set. All of them build the **dev** profile — so gating this way keeps the dev code
+linted, documented and covered exactly like the rules it bypasses. Code behind a
+feature left off is none of those things, which is the objection
 `skylode-core/Cargo.toml` already records against putting `serde` behind one.
 
 The price is stated where it is paid: **`cargo build --release` is the only build the
