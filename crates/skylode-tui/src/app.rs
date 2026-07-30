@@ -2674,7 +2674,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mines_cursor_walks_the_list_and_stops_at_both_ends() {
+    fn the_mines_cursor_walks_the_list_and_wraps_at_both_ends() {
         let mut app = browsing_mines();
         // A fresh run stands in the Stone mine, which is row zero.
         assert_eq!(app.cursors.mine, MineKind::Stone);
@@ -2684,13 +2684,14 @@ mod tests {
         app.update(Action::CursorUp);
         assert_eq!(app.cursors.mine, MineKind::Stone);
 
-        // Off the top: it stops rather than wrapping to the End mine. Lists clamp,
-        // rings wrap — a `↑` that jumped across the whole game would be a surprise.
+        // Off the top: it comes out at the last mine. The cursor only highlights —
+        // entering a mine still costs an `Enter` — so a lap of the twelve is a walk
+        // and not a jump across the game.
         app.update(Action::CursorUp);
-        assert_eq!(app.cursors.mine, MineKind::Stone);
+        assert_eq!(app.cursors.mine, MineKind::Amethyst);
 
-        // And off the bottom, walked the whole way to prove the clamp is the list's
-        // length rather than a number written down here.
+        // And a full lap from there, walked the whole way to prove the wrap is the
+        // list's length rather than a number written down here.
         for _ in MineKind::ALL {
             app.update(Action::CursorDown);
         }
@@ -2705,7 +2706,7 @@ mod tests {
     }
 
     #[test]
-    fn the_material_cursor_walks_the_table_and_stops_at_both_ends() {
+    fn the_material_cursor_walks_the_table_and_wraps_at_both_ends() {
         let mut app = browsing_inventory();
         // Nothing in the run says which material the player is looking at, so the
         // table opens at its first row.
@@ -2716,12 +2717,12 @@ mod tests {
         app.update(Action::CursorUp);
         assert_eq!(app.cursors.material, Material::Stone);
 
-        // Lists clamp, rings wrap — the same rule the Mines list keeps, and here it
-        // is kept by the same helper rather than by a second copy of the arithmetic.
+        // The same rule the Mines list keeps, and here it is kept by the same helper
+        // rather than by a second copy of the arithmetic.
         app.update(Action::CursorUp);
-        assert_eq!(app.cursors.material, Material::Stone);
+        assert_eq!(app.cursors.material, Material::Amethyst);
 
-        // Walked the whole way, so the clamp is the table's length and not a number
+        // Walked the whole way, so the wrap is the table's length and not a number
         // written down here.
         for _ in Material::ALL {
             app.update(Action::CursorDown);
@@ -3178,11 +3179,11 @@ mod tests {
         }
     }
 
-    /// **The sub-tab ring wraps, and the lists inside it clamp.** Two rules in one
-    /// screen, which is exactly why they are two functions — [`UpgradeTab::next`] and
-    /// [`cursor::step_index`] — rather than one helper with a flag.
+    /// **The sub-tab bar and the ladder inside it are both rings.** They used to be the
+    /// screen's two rules and the reason for two functions; now the pair asserts that
+    /// [`UpgradeTab::next`] and [`cursor::step_index`] agree.
     #[test]
-    fn the_sub_tabs_are_a_ring_and_the_rows_inside_them_are_not() {
+    fn the_sub_tabs_and_the_rows_inside_them_are_both_rings() {
         let mut app = upgrading(UpgradeTab::Pickaxe);
 
         app.update(Action::NextSubTab);
@@ -3198,11 +3199,14 @@ mod tests {
         app.update(Action::PrevSubTab);
         assert_eq!(app.cursors.upgrade_tab, UpgradeTab::Mines, "nor backwards");
 
-        // The ladder, by contrast, stops. A fresh run stands on rung 0, so `↑` has
-        // nowhere to go and must not land on a maxed Netherite pickaxe.
+        // The ladder too. A fresh run stands on rung 0, so `↑` comes out at the last
+        // rung — a maxed Netherite pickaxe, which the cursor may point at freely: it
+        // highlights, and `Enter` still refuses everything past the `✓` prefix.
         app.cursors.upgrade_tab = UpgradeTab::Pickaxe;
         app.update(Action::CursorUp);
-        assert_eq!(app.cursors.pickaxe_rung, 0);
+        assert_eq!(app.cursors.pickaxe_rung, upgrade::ladder().len() - 1);
+        app.update(Action::CursorDown);
+        assert_eq!(app.cursors.pickaxe_rung, 0, "the last rung did not wrap");
         app.update(Action::CursorDown);
         assert_eq!(app.cursors.pickaxe_rung, 1);
     }
@@ -3598,23 +3602,31 @@ mod tests {
         }
     }
 
-    /// The cursor walks the ladder, clamps at both ends, and `Home` brings it back.
+    /// The cursor walks the ladder, wraps at both ends, and `Home` brings it back.
+    ///
+    /// The longest list in the game, and the one where the wrap earns the most: `Home`
+    /// is the *other* way back to where the player stands, and the two must not fight —
+    /// so this asserts a lap and a jump in the same run.
     #[test]
-    fn the_roadmap_cursor_clamps_at_both_ends_and_home_returns_to_the_player() {
+    fn the_roadmap_cursor_wraps_at_both_ends_and_home_returns_to_the_player() {
         let mut app = with_rewards_waiting();
         let here = app.state.player().get_level();
         assert_eq!(app.cursors.level, 1, "the session opened above level 1");
 
         app.update(Action::CursorUp);
         assert_eq!(
-            app.cursors.level, 1,
-            "the roadmap wrapped past its first rung"
+            app.cursors.level, LEVEL_CAP,
+            "the first rung did not wrap to the cap"
         );
+        app.update(Action::CursorDown);
+        assert_eq!(app.cursors.level, 1, "nor the cap back to the first rung");
 
-        for _ in 0..LEVEL_CAP + 10 {
+        // A full lap, so the wrap is the ladder's own length: `LEVEL_CAP` steps from
+        // rung one land back on rung one, and the level stays one-based throughout.
+        for _ in 0..LEVEL_CAP {
             app.update(Action::CursorDown);
         }
-        assert_eq!(app.cursors.level, LEVEL_CAP, "the roadmap ran past its cap");
+        assert_eq!(app.cursors.level, 1, "a full lap did not come back");
 
         app.update(Action::JumpToCurrent);
         assert_eq!(app.cursors.level, here);

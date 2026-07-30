@@ -16,8 +16,9 @@
 //! The two ladders below are **value ladders, not free numbers**: this menu adjusts
 //! with `←/→` like every other list in the crate rather than growing the crate's first
 //! text field. A spinner cannot be wrong, and the amounts a dev actually wants are
-//! powers of ten (`compression`'s note, applied to a row that has no ceiling to clamp
-//! against).
+//! powers of ten (`compression`'s note, applied to a row that has no ceiling to stop
+//! against). Every row of this menu **wraps** in both directions, rows and values
+//! alike — the same rule [`crate::cursor::step_in`] states for the screens.
 
 use std::time::Duration;
 
@@ -202,21 +203,23 @@ impl DevState {
         SKIPS.get(self.skip).map_or("", |&(_, label)| label)
     }
 
-    /// Moves the `▸` by `delta`, stopping at the ends.
+    /// Moves the `▸` by `delta`, wrapping past either end.
     ///
-    /// [`step_in`] rather than a match, so this list clamps by the same
-    /// implementation every other list in the crate does — the rule that only the tab
-    /// ring wraps is written once.
+    /// [`step_in`] rather than a match, so this list wraps by the same implementation
+    /// every other list in the crate does — the rule is written once.
     pub fn step_row(&mut self, delta: isize) {
         self.row = step_in(&ROWS, self.row, delta);
     }
 
     /// Turns the value under the cursor by `delta`.
     ///
-    /// Every arm clamps rather than wrapping, and the two index rows go through
-    /// [`step_in`] on their ladder for it. The bounds are the ladders' own where one
-    /// exists ([`LEVEL_CAP`], [`Material::ALL`]) and this module's where the rules have
-    /// none ([`MAX_PRESTIGE_DIAL`], [`MAX_CHARGE_DIAL`]).
+    /// **Every arm wraps**, which is what makes this menu one control repeated nine
+    /// times rather than three behaviours to remember: the two ladder rows through
+    /// [`step_index`], the material row through [`step_in`], the three counters through
+    /// [`dial`], and the toggle by flipping — which is what wrapping means on a set of
+    /// two. The bounds are the ladders' own where one exists ([`LEVEL_CAP`],
+    /// [`Material::ALL`]) and this module's where the rules have none
+    /// ([`MAX_PRESTIGE_DIAL`], [`MAX_CHARGE_DIAL`]).
     pub fn adjust(&mut self, delta: isize) {
         match self.row {
             // Any nudge flips it: a two-state row has no direction, and requiring `→`
@@ -258,16 +261,25 @@ impl DevState {
     }
 }
 
-/// Turns a plain counter by `delta`, clamped into `low..=high`.
+/// Turns a plain counter by `delta`, **wrapping** around `low..=high`.
 ///
-/// Signed arithmetic and then a clamp, for [`crate::cursor::step_index`]'s reason: a
-/// `u32` at its floor decremented directly wraps to [`u32::MAX`], which on the level
-/// row would read as "the ladder has four billion rungs" rather than as "you are at
-/// the bottom".
+/// Signed arithmetic and then back, for [`crate::cursor::step_index`]'s reason: a `u32`
+/// at its floor decremented directly wraps to [`u32::MAX`], which on the level row
+/// would read as "the ladder has four billion rungs" rather than as "you are back at
+/// the top". The wrap this function *does* perform is the deliberate one, and it is
+/// computed on an offset from `low` — [`i64::rem_euclid`] wraps around zero, and these
+/// three ladders do not all start there.
+///
+/// One totality guard: `rem_euclid` panics on a zero divisor, and this crate's lints
+/// leave no panic to spend on a `high` below its `low`. All three call sites pass a
+/// span of at least one.
 fn dial(current: u32, delta: isize, low: u32, high: u32) -> u32 {
-    let next = i64::from(current) + delta as i64;
-    let clamped = next.clamp(i64::from(low), i64::from(high));
-    u32::try_from(clamped).unwrap_or(low)
+    let span = i64::from(high) - i64::from(low) + 1;
+    if span <= 0 {
+        return low;
+    }
+    let offset = (i64::from(current) - i64::from(low) + delta as i64).rem_euclid(span);
+    u32::try_from(i64::from(low) + offset).unwrap_or(low)
 }
 
 /// The column each row's value starts at, counted from the label.
@@ -358,23 +370,27 @@ mod tests {
     }
 
     #[test]
-    fn the_cursor_clamps_at_both_ends_of_the_list() {
+    fn the_cursor_wraps_at_both_ends_of_the_list() {
         let mut dev = DevState::default();
         dev.step_row(-1);
-        assert_eq!(dev.row, ROWS[0], "the cursor walked off the top");
-
-        for _ in 0..ROWS.len() * 2 {
-            dev.step_row(1);
-        }
         assert_eq!(
             dev.row,
             DevRow::SkipTime,
-            "the cursor walked off the bottom"
+            "the top row did not wrap to the bottom"
         );
+        dev.step_row(1);
+        assert_eq!(dev.row, ROWS[0], "nor back the other way");
+
+        // A full lap lands where it started, which is what proves the wrap is the
+        // list's own length rather than a number written down here.
+        for _ in ROWS {
+            dev.step_row(1);
+        }
+        assert_eq!(dev.row, ROWS[0], "a full lap did not come back");
     }
 
     #[test]
-    fn the_amount_ladder_climbs_in_powers_of_ten_and_stops() {
+    fn the_amount_ladder_climbs_in_powers_of_ten_and_wraps() {
         let mut dev = DevState {
             row: DevRow::Amount,
             ..DevState::default()
@@ -382,18 +398,14 @@ mod tests {
 
         dev.adjust(1);
         assert_eq!(dev.amount(), 10_000);
-        for _ in 0..10 {
+        for _ in 0..2 {
             dev.adjust(1);
         }
-        assert_eq!(
-            dev.amount(),
-            1_000_000,
-            "the ladder did not stop at the top"
-        );
-        for _ in 0..10 {
-            dev.adjust(-1);
-        }
-        assert_eq!(dev.amount(), 1, "the ladder did not stop at the bottom");
+        assert_eq!(dev.amount(), 1_000_000, "the ladder did not reach the top");
+        dev.adjust(1);
+        assert_eq!(dev.amount(), 1, "the top did not wrap round to the bottom");
+        dev.adjust(-1);
+        assert_eq!(dev.amount(), 1_000_000, "nor back the other way");
     }
 
     #[test]
@@ -406,19 +418,80 @@ mod tests {
     }
 
     #[test]
-    fn the_level_dial_stops_inside_the_ladder_the_game_has() {
+    fn the_level_dial_wraps_around_the_ladder_the_game_has() {
         let mut dev = DevState {
             row: DevRow::Level,
             ..DevState::default()
         };
 
         dev.adjust(-1);
-        assert_eq!(dev.level, 1, "the dial went below the first level");
+        assert_eq!(
+            dev.level, LEVEL_CAP,
+            "the first level did not wrap to the cap"
+        );
+        dev.adjust(1);
+        assert_eq!(dev.level, 1, "nor the cap back to the first level");
 
-        for _ in 0..LEVEL_CAP + 5 {
+        // A full lap of the ladder comes back, so the wrap is over the cap and not
+        // over zero — the whole point of dialling on an offset from `low`.
+        for _ in 0..LEVEL_CAP {
             dev.adjust(1);
         }
-        assert_eq!(dev.level, LEVEL_CAP, "the dial went past the cap");
+        assert_eq!(dev.level, 1, "a full lap did not come back");
+    }
+
+    /// The last ladder, and the only row whose value is a label rather than a figure.
+    #[test]
+    fn the_skip_ladder_wraps_around_its_six_absences() {
+        let mut dev = DevState {
+            row: DevRow::SkipTime,
+            ..DevState::default()
+        };
+        assert_eq!(dev.skip_label(), "1 h");
+
+        dev.adjust(-1);
+        assert_eq!(dev.skip_label(), "10 m");
+        for _ in 0..SKIPS.len() {
+            dev.adjust(-1);
+        }
+        assert_eq!(dev.skip_label(), "10 m", "a full lap did not come back");
+
+        // And back onto the rung it opened on, as a `Duration` rather than a label —
+        // the two halves of a row that reads one and applies the other.
+        dev.adjust(1);
+        assert_eq!(dev.skip(), Duration::from_secs(3_600));
+    }
+
+    /// [`dial`]'s totality guard, reached directly because no row can reach it: all
+    /// three call sites pass a span of at least one, and `rem_euclid` on a span of zero
+    /// would panic a keypress rather than refuse it.
+    #[test]
+    fn dialling_an_empty_span_answers_its_floor_instead_of_panicking() {
+        assert_eq!(dial(7, 1, 10, 0), 10);
+    }
+
+    /// The other two counters, whose floors differ — and the floor is exactly what a
+    /// wrap computed over zero would get wrong.
+    #[test]
+    fn the_two_other_counters_wrap_around_their_own_floors() {
+        let mut dev = DevState {
+            row: DevRow::Prestige,
+            ..DevState::default()
+        };
+        assert_eq!(dev.prestige, 0);
+        dev.adjust(-1);
+        assert_eq!(dev.prestige, MAX_PRESTIGE_DIAL, "rank 0 did not wrap up");
+        dev.adjust(1);
+        assert_eq!(dev.prestige, 0, "nor the top rank back down");
+
+        // This one floors at 1, not at 0, which is the case a `% span` would land on
+        // one short.
+        dev.row = DevRow::Charges;
+        assert_eq!(dev.charges, 1);
+        dev.adjust(-1);
+        assert_eq!(dev.charges, MAX_CHARGE_DIAL, "one charge did not wrap up");
+        dev.adjust(1);
+        assert_eq!(dev.charges, 1, "nor the top back down to one");
     }
 
     #[test]
@@ -434,15 +507,19 @@ mod tests {
     }
 
     #[test]
-    fn the_material_row_walks_all_fifteen_piles() {
+    fn the_material_row_walks_all_fifteen_piles_and_comes_back() {
         let mut dev = DevState {
             row: DevRow::Material,
             ..DevState::default()
         };
-        for _ in 0..Material::ALL.len() * 2 {
+        // One lap of the table, which is what says the row reaches every pile *and*
+        // that the wrap is the table's own length.
+        for _ in 0..Material::ALL.len() - 1 {
             dev.adjust(1);
         }
         assert_eq!(dev.material, Material::ALL[Material::ALL.len() - 1]);
+        dev.adjust(1);
+        assert_eq!(dev.material, Material::ALL[0], "the last pile did not wrap");
     }
 
     #[test]

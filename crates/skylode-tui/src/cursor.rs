@@ -79,7 +79,7 @@ impl MineTrack {
 ///
 /// Built rather than stored, because it is a *product* of two closed sets and there
 /// is nothing per-run in it. Handing it to [`step_in`] is what lets the Mines sub-tab
-/// reuse the one clamping rule instead of doing index arithmetic over a pair.
+/// reuse the one stepping rule instead of doing index arithmetic over a pair.
 pub fn mine_tracks() -> Vec<(MineKind, MineTrack)> {
     MineKind::ALL
         .into_iter()
@@ -136,8 +136,8 @@ pub struct Cursors {
     /// ([`upgrade::ladder`](skylode_core::upgrade::ladder)) whose rungs are
     /// `(tier, efficiency)` pairs the core does not hand out as a type, so there is no
     /// value to point at; and the pair itself would be worse, since it can name a rung
-    /// no ladder holds (`Wooden` Efficiency 12). An index is clamped into the ladder
-    /// on every step, which is the guarantee the typed cursors get for free.
+    /// no ladder holds (`Wooden` Efficiency 12). An index is wrapped back into the
+    /// ladder on every step, which is the guarantee the typed cursors get for free.
     pub pickaxe_rung: usize,
     /// Which of the six enchant tracks the Enchants sub-tab points at.
     pub enchant: EnchantType,
@@ -209,44 +209,64 @@ impl Cursors {
     }
 }
 
-/// Steps an **index** by `delta`, clamped into a list of `len` rows.
+/// Steps an **index** by `delta`, **wrapping** around a list of `len` rows.
 ///
 /// The arithmetic half of [`step_in`], split out for the one cursor that has no value
-/// to point at ([`Cursors::pickaxe_rung`]). Sharing it is what keeps *lists clamp*
-/// from being right for the typed cursors and wrong for the index one — the failure
-/// mode being a `↑` on the first rung that wrapped to a maxed Netherite pickaxe.
+/// to point at ([`Cursors::pickaxe_rung`]). Sharing it is what keeps *every list
+/// wraps* from being right for the typed cursors and wrong for the index one.
 ///
-/// A `len` of zero answers `0`: there is no row to land on, and the callers all slice
-/// with this afterwards.
+/// **[`isize::rem_euclid`] and not `%`.** Rust's remainder keeps the sign of the
+/// dividend, so `-1 % 46` is `-1` and not `45` — a `↑` on the first row would produce
+/// a negative index rather than the last one. `rem_euclid` is the mathematical modulo,
+/// always non-negative for a positive divisor, and it is what lets one expression
+/// serve both directions instead of a branch per sign.
+///
+/// It also absorbs a `current` past the end of the list: `50` in a list of `46` reads
+/// as row `4` rather than panicking. Unreachable through the real callers, which step
+/// through here every time, and cheaper to have than to argue about.
+///
+/// A `len` of zero answers `0`: there is no row to land on, the callers all slice with
+/// this afterwards, and `rem_euclid` by zero would panic.
 pub fn step_index(len: usize, current: usize, delta: isize) -> usize {
     if len == 0 {
         return 0;
     }
-    // Signed throughout, then clamped back: `current - 1` on a `usize` at row zero
-    // would wrap to `usize::MAX`.
-    let next = (current as isize + delta).clamp(0, len as isize - 1);
+    // Signed throughout, then back: `current - 1` on a `usize` at row zero would wrap
+    // to `usize::MAX`. `saturating_add` because `delta` is caller-supplied and an
+    // overflow here would panic a keypress in a debug build.
+    let next = (current as isize)
+        .saturating_add(delta)
+        .rem_euclid(len as isize);
     usize::try_from(next).unwrap_or(0)
 }
 
-/// Steps `current` by `delta` along `list`, **stopping at the ends rather than
-/// wrapping**.
+/// Steps `current` by `delta` along `list`, **wrapping past either end**.
 ///
-/// **Lists clamp, rings wrap**, and the distinction is a design rule rather than a
-/// preference. The tab ring wraps because it is six equivalent destinations; these
-/// lists are progression orders — twelve mines under three world headers, fifteen
-/// materials grouped by world — so a `↑` on the first row that landed on the last
-/// would be a jump across the whole game.
+/// **Every list in the crate wraps, and so do the two rings.** That is one rule, not
+/// the two this used to hold: the lists clamped, on the argument that a `↑` on the
+/// first of twelve mines landing on the End mine would be a jump across the whole
+/// game. The argument does not survive contact — a cursor only *highlights*, the
+/// player sees where they land, and stopping dead at an end is a keypress that reports
+/// nothing. Every purchase still goes through its own `Enter`, so nothing a wrap can
+/// reach is anything a wrap can spend.
 ///
-/// Generic over the element because both cursors are **typed values and not
-/// indices**, and the arithmetic is identical for each: find where the value sits,
-/// move, clamp back into the list. Written once so the clamp cannot be right on one
-/// list and wrong on the other. Rust *monomorphises* this — it emits one specialised
-/// copy per element type at compile time — so sharing it costs nothing at runtime.
+/// **What still stops at its ends is everything that is not a list**: the richness dial
+/// (a cursor on a bought ceiling), the compression spinner (a quantity in `1..=pile`)
+/// and the dip modal's caret (two options, where a held key must not put `Buy it` one
+/// repeat away from `Not yet` — `docs/UI.md` §6.7). None of the three comes through
+/// here; each owns its own arithmetic, which is what keeps this function's rule
+/// unqualified.
 ///
-/// Two totality guards, both unreachable through the two real callers and both here
-/// because this crate's lints leave no `unwrap` to spend on "cannot happen":
-/// an empty `list` has nowhere to step, and a `current` the list does not hold reads
-/// as position zero rather than refusing.
+/// Generic over the element because the cursors are **typed values and not indices**,
+/// and the arithmetic is identical for each: find where the value sits, move, wrap back
+/// into the list. Written once so the wrap cannot be right on one list and wrong on the
+/// other. Rust *monomorphises* this — it emits one specialised copy per element type at
+/// compile time — so sharing it costs nothing at runtime.
+///
+/// Two totality guards, both unreachable through the real callers and both here because
+/// this crate's lints leave no `unwrap` to spend on "cannot happen": an empty `list` has
+/// nowhere to step, and a `current` the list does not hold reads as position zero rather
+/// than refusing.
 pub fn step_in<T: Copy + PartialEq>(list: &[T], current: T, delta: isize) -> T {
     if list.is_empty() {
         return current;
@@ -285,38 +305,40 @@ mod tests {
         assert_eq!(step_in(&Material::ALL, Material::Iron, -1), Material::Coal);
     }
 
-    /// The rule the tab ring does *not* follow: a list stops at its ends. Asserted on
-    /// both cursors, since the shared helper is only worth having if both get it.
+    /// The rule the tab ring was once alone in following: passing an end comes out the
+    /// other side. Asserted on both cursors, since the shared helper is only worth
+    /// having if both get it.
     #[test]
-    fn a_list_clamps_at_both_ends_rather_than_wrapping() {
+    fn a_list_wraps_at_both_ends_rather_than_stopping() {
         let materials = &Material::ALL;
-        assert_eq!(step_in(materials, Material::Stone, -1), Material::Stone);
-        assert_eq!(
-            step_in(materials, Material::Amethyst, 1),
-            Material::Amethyst
-        );
+        assert_eq!(step_in(materials, Material::Stone, -1), Material::Amethyst);
+        assert_eq!(step_in(materials, Material::Amethyst, 1), Material::Stone);
 
         let mines = &MineKind::ALL;
-        assert_eq!(step_in(mines, MineKind::Stone, -1), MineKind::Stone);
-        assert_eq!(step_in(mines, MineKind::Amethyst, 1), MineKind::Amethyst);
+        assert_eq!(step_in(mines, MineKind::Stone, -1), MineKind::Amethyst);
+        assert_eq!(step_in(mines, MineKind::Amethyst, 1), MineKind::Stone);
     }
 
-    /// The index cursor's own clamp, and the guard under it. A list with no rows is
-    /// unreachable through the ladder — it is forty-six long — but the helper is
-    /// generic over a length, and answering `0` is what keeps a caller slicing with
-    /// the result from panicking.
+    /// The index cursor's own wrap, and the two guards under it. A list with no rows is
+    /// unreachable through the ladder — it is forty-six long — but the helper is generic
+    /// over a length, and answering `0` is what keeps a caller slicing with the result
+    /// from panicking where `rem_euclid` would divide by zero.
     #[test]
-    fn stepping_an_index_clamps_and_survives_an_empty_list() {
-        assert_eq!(step_index(46, 0, -1), 0, "the first row wrapped");
-        assert_eq!(step_index(46, 45, 1), 45, "the last row wrapped");
+    fn stepping_an_index_wraps_and_survives_an_empty_list() {
+        assert_eq!(step_index(46, 0, -1), 45, "the first row did not wrap");
+        assert_eq!(step_index(46, 45, 1), 0, "the last row did not wrap");
         assert_eq!(step_index(46, 20, 1), 21);
         assert_eq!(step_index(0, 5, 1), 0);
+        // A position past the end folds back in rather than panicking — the guard the
+        // old clamp gave for free, kept deliberately.
+        assert_eq!(step_index(46, 50, 0), 4);
     }
 
-    /// The three sub-tabs are a **ring**, unlike every list on the screens they belong
-    /// to — the same distinction [`step_in`]'s own doc draws for the tab bar.
+    /// The three sub-tabs are a **ring**, like every list on the screens they belong to
+    /// — they were the exception, and [`step_in`]'s own doc no longer draws the
+    /// distinction. What this still pins is that they come back where they started.
     #[test]
-    fn the_sub_tabs_wrap_where_the_lists_clamp() {
+    fn the_sub_tabs_wrap_in_both_directions() {
         assert_eq!(UpgradeTab::Pickaxe.prev(), UpgradeTab::Mines);
         assert_eq!(UpgradeTab::Mines.next(), UpgradeTab::Pickaxe);
         for tab in UpgradeTab::ALL {
