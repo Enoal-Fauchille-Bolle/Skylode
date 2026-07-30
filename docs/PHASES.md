@@ -4,12 +4,20 @@ The dependency-ordered build plan for `skylode-core`, phase by phase. The TUI is
 out of scope here. These phases are *derived from* the design documents
 ([DESIGN.md](DESIGN.md), [MECHANICS.md](MECHANICS.md), [SYSTEMS.md](SYSTEMS.md),
 [DECISIONS.md](DECISIONS.md), [ROADMAP.md](ROADMAP.md)) by diffing them against the
-code as it stands: the static data (worlds, blocks, materials, tiers, enchant caps)
-is largely in place and tested, while **none of the dynamic mechanics exist yet** —
-no tick, no block breaking, no RNG draws, no costs, no save. This document states
-each phase's *objective* and the ordering that binds them. What ships in the MVP
-lives in [ROADMAP.md](ROADMAP.md); the *why* behind each rule lives in
-[DECISIONS.md](DECISIONS.md) — PHASES.md stays focused on order and intent.
+code. This document states each phase's *objective* and the ordering that binds
+them. What ships in the MVP lives in [ROADMAP.md](ROADMAP.md); the *why* behind
+each rule lives in [DECISIONS.md](DECISIONS.md) — PHASES.md stays focused on order
+and intent.
+
+**Status: phases 0 to 10 have shipped.** The sentence this paragraph once carried —
+*"none of the dynamic mechanics exist yet: no tick, no block breaking, no RNG
+draws, no costs, no save"* — described the diff that produced the plan, and every
+one of those now exists. What is left in core is phase 11 below, plus the last of
+phase 10's tunables: the ones no harness exercises (proc rates, offline cap, dip
+magnitude, the XP curve). Each phase's heading keeps the objective it was written
+with; where a phase's implementation forced a decision the objective did not
+anticipate, the decision is recorded under that heading rather than rewritten into
+it.
 
 Module names follow the code, which is singular and folds progression into
 `player` (`world`, `block`, `material`, `inventory`, `mine`, `mine_kind`, `pickaxe`,
@@ -238,3 +246,26 @@ Tune the numbers against the now-deterministic engine. Write simulation tests of
 form "N ticks ⇒ this level, this inventory", made possible precisely by the phase-1
 determinism, and use them to fix the final values of the tunables left open in
 [ROADMAP.md](ROADMAP.md#open-questions).
+
+## Phase 11 - The counters the Stats screen reads
+
+The one core gap the front-end found that no earlier phase predicted, and it is
+small: [UI.md](UI.md) §5.5 prints three figures nothing counts. Add them to
+`GameState`, and note that they are **two lifetimes, not one** — `blocks_broken`
+and `playtime` are totals that survive a prestige, while the run's own elapsed time
+is cleared by it, exactly like the nine fields phase 8 already resets. The `This
+run` panel beside them needs no state at all: every row is a pure predicate over
+the run (a tier reached, a mine maxed, a level crossed), which is why the design
+carries **no "ever achieved" bitset** and the save schema gains no such field.
+
+**No `SAVE_VERSION` bump, and the reason is a fact about the calendar rather than
+about the schema.** A version bump exists to protect files already written, and the
+front-end does not yet write any — the whole disk half of [phase 9](#phase-9---save-serialisation-half-only)
+is still owed. There is therefore no v1 file in existence for a migration to carry
+forward, so writing one would mean shipping a step that can never run, plus a test
+describing a situation that cannot occur. `#[serde(default)]` is refused for a
+sharper reason: a default of `0` for `blocks_broken` would be *false* of an older
+file rather than merely absent, which is the one thing the
+[`unclaimed` precedent](DECISIONS.md) was careful to establish it was not. The
+golden save moves instead, which is exactly the signal it exists to give. The first
+real bump belongs to the first schema change made *after* the game writes to disk.
