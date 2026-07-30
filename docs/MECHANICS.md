@@ -326,6 +326,17 @@ same reason: whatever shape a run is in, one free action puts it in the shape th
 player's current goal wants. A purchase may slow a run down; it must never be able
 to strand it.
 
+**A dial already at the ceiling rides the purchase up.** Buying a level while the
+dial sits on the old top moves the dial to the new top; a dial parked *below* it is
+left exactly where the player put it. This is not a weakening of "set the dial
+freely" but the shortest reading of it: a player holding the dial at the maximum has
+already said where they want it, so the extra keypress after every purchase can only
+have one answer — while a dial held low is a *choice* (a faster grid, or the optimum
+share an [Efficiency recipe](#pickaxe-progression) asks for) and a purchase may not
+overrule a choice. A fresh mine, dial and ceiling both at 0, counts as at the
+ceiling, so the first rung always carries. Moving the dial redraws the standing
+cells, exactly as sliding it by hand does.
+
 **Two flavours, deliberately.** Where the valuable cell is the *dense form of the
 same material* — nine mines: Stone, Coal, Iron, Gold, Lapis, Redstone, Emerald,
 Diamond, Ancient Debris — `Iron Ore` and `Iron Block` both drop Iron. Enriching

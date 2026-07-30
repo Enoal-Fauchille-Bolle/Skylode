@@ -390,7 +390,13 @@ above is left as drawn.
   what share of the grid is the dense block, and the arrows still move it: raising
   the richness *ceiling* and sliding the *dial* are separate actions (§8), and only
   the dial turns the purchase into dense cells, so a flat readout would have left
-  nine mines' richness track unspendable. A slider that appears on a quarter of the
+  nine mines' richness track unspendable. **Amended on that last clause**: a purchase
+  now carries a dial that was already at the ceiling (see
+  [MECHANICS.md](MECHANICS.md#mine-richness)), so the default path spends itself and
+  the track cannot be stranded by a missing control. The slider stays, for what the
+  carry deliberately does *not* do — a player who wants the grid **less** enriched has
+  no other way to say so, and the carry is precisely the rule that leaves that
+  position alone once taken. A slider that appears on a quarter of the
   screens is also one the player has to learn twice. **What varies per mine is the
   sentence under it, not the widget** — "this one has an optimum, not a maximum" on
   Obsidian, "pure gain here" on the nine, nothing on Quartz and the End where the
@@ -623,7 +629,10 @@ which is the only state a scrolled row is ever in.
 **This sub-tab buys the richness *ceiling*; the *dial* is on the Mines screen.**
 Richness is the only word in the game that appears next to a price *and* next to a
 free cursor, and this is the one place both senses are on screen at once — hence four
-lines of detail pane spent refusing the conflation.
+lines of detail pane spent refusing the conflation. The two senses stay distinct even
+though a purchase here can move the dial there: it moves it **only when the dial was
+already at the ceiling**, which is the one case where the two readings agree about
+where it belongs (see [MECHANICS.md](MECHANICS.md#mine-richness)).
 
 **The End's rows are drawn locked with the reason** (`Lv 30`), not hidden: its gate
 is a level, not a price, so the affordability mark has nothing to say.

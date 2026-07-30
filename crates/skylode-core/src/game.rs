@@ -638,14 +638,47 @@ impl GameState {
         economy::buy_mine_size(self.player.inventory_mut(), mine, &mut self.rng)
     }
 
-    /// Buys the next richness *ceiling* of `kind`; the dial stays where it is.
+    /// Buys the next richness *ceiling* of `kind`, **carrying a dial that was already
+    /// pinned to the old one** up onto the new.
     ///
     /// Addressed by [`MineKind`] and refused on an unvisited mine, exactly like
     /// [`buy_mine_size`](GameState::buy_mine_size) — the two paid tracks of a mine
     /// answer to the same rule about which mine they are about.
+    ///
+    /// **Why the dial moves at all**, when the whole richness design is "buy the
+    /// ceiling, set the dial freely below it": a ceiling the dial never reaches is ore
+    /// spent on nothing, and a player who had pushed the dial to the top has already
+    /// said where they want it. Sliding it themselves after every purchase is a second
+    /// keypress that can only have one answer — and until now the *only* code that
+    /// knew this was the balance harness, which pinned the dial by hand after each buy.
+    /// A rule two callers have to remember is a rule.
+    ///
+    /// **The condition is what keeps the dial free.** A dial parked *below* its
+    /// ceiling is a deliberate position — the substitution mines (Quartz, Obsidian,
+    /// End) trade a rarer ore for a slower grid, so "less enriched" is a legitimate
+    /// setting and one the Efficiency recipe even has an *optimum* for
+    /// (`docs/DECISIONS.md`). Pushing that dial would overrule a choice; pushing a
+    /// pinned one only continues it. Note that a fresh mine (dial 0, ceiling 0)
+    /// satisfies the condition, so the first rung always carries.
+    ///
+    /// It costs a **redraw of the standing cells**, and therefore a run of draws from
+    /// the generator: [`Mine::set_richness_setting`] owns that, and the cost is the
+    /// same one the player pays sliding the dial by hand. Buying several rungs at once
+    /// redraws once per rung, which is a determinism fact rather than a performance
+    /// one — the sequence is part of what a save replays.
     pub fn buy_mine_richness(&mut self, kind: MineKind) -> Result<(), CoreError> {
         let mine = Self::mine_mut(&mut self.mine, &mut self.visited, kind)?;
-        economy::buy_mine_richness(self.player.inventory_mut(), mine)
+        let was_pinned = mine.get_richness_setting() == mine.get_richness_level();
+        economy::buy_mine_richness(self.player.inventory_mut(), mine)?;
+        if was_pinned {
+            let ceiling = mine.get_richness_level();
+            // Infallible by construction — the only refusal is a setting *above* the
+            // ceiling, and this is the ceiling. Swallowed rather than unwrapped
+            // because the workspace lints deny `expect` here, and a `Result` that
+            // cannot be an `Err` has nothing to report.
+            let _ = mine.set_richness_setting(ceiling, &mut self.rng);
+        }
+        Ok(())
     }
 
     /// The mine `kind` names, mutably, or the refusal that it has no state yet.
@@ -1764,6 +1797,90 @@ mod tests {
             state.player().get_inventory().raw_value(Material::Stone),
             0,
             "the cost came out of the player's own inventory"
+        );
+    }
+
+    /// **A dial pinned to its ceiling rides the ceiling up.** The purchase's whole
+    /// point is a richer grid, and a player who had the dial at the top has already
+    /// said so; leaving it a rung behind would sell them a setting they then have to
+    /// go and switch on.
+    ///
+    /// Two rungs rather than one, because the first is the easy case — a fresh mine
+    /// is pinned at `0/0` — and the second is the one that proves the condition is
+    /// re-read after the dial has moved once.
+    #[test]
+    fn buying_a_richness_ceiling_carries_a_dial_that_was_pinned_to_the_old_one() {
+        let mut state = state();
+        assert_eq!(state.current_mine().get_richness_setting(), 0);
+
+        for level in 0..2 {
+            stock(
+                &mut state,
+                &economy::mine_richness_cost(MineKind::Stone, level),
+            );
+            assert!(state.buy_mine_richness(MineKind::Stone).is_ok());
+
+            assert_eq!(state.current_mine().get_richness_level(), level + 1);
+            assert_eq!(
+                state.current_mine().get_richness_setting(),
+                level + 1,
+                "the dial stayed behind its ceiling"
+            );
+        }
+    }
+
+    /// **A dial the player parked below its ceiling is left alone**, and the generator
+    /// proves it: the follow works by redrawing the standing cells, so a redraw that
+    /// did not happen is a run of draws that did not happen either.
+    ///
+    /// The position is a real one to hold. On the three substitution mines a lower
+    /// dial buys a faster grid, and Netherite's Efficiency recipe has an *optimum*
+    /// share rather than a maximal one (`docs/DECISIONS.md`) — so "less enriched" is a
+    /// choice, and a purchase may not overrule it.
+    #[test]
+    fn buying_a_richness_ceiling_leaves_a_dial_below_it_where_the_player_put_it() {
+        let mut state = state();
+        // Two rungs granted rather than bought, and the dial deliberately left at 0:
+        // this is a test of the follow's condition, not of the till.
+        assert!(state.mine.upgrade_richness_level().is_ok());
+        assert!(state.mine.upgrade_richness_level().is_ok());
+        stock(&mut state, &economy::mine_richness_cost(MineKind::Stone, 2));
+        let before = next_draws(&state);
+
+        assert!(state.buy_mine_richness(MineKind::Stone).is_ok());
+
+        assert_eq!(state.current_mine().get_richness_level(), 3);
+        assert_eq!(
+            state.current_mine().get_richness_setting(),
+            0,
+            "the purchase moved a dial the player had parked"
+        );
+        assert_eq!(next_draws(&state), before, "the grid was redrawn anyway");
+    }
+
+    /// The follow reaches the mine the *purchase* names, which the Upgrades screen
+    /// routinely points at from another mine's floor.
+    ///
+    /// Worth its own test for [`a_distant_dial_is_bounded_by_its_own_mines_ceiling`]'s
+    /// reason: an implementation that read the pinning off `self.mine` and applied it
+    /// to the addressed one would pass every test where the two mines agree.
+    #[test]
+    fn a_carried_dial_reaches_a_mine_the_player_is_not_standing_in() {
+        let mut state = dialling_from_afar();
+        // Coal: ceiling 1, and the dial pinned to it. Stone underfoot: pinned at 0.
+        assert!(state.set_mine_richness_setting(MineKind::Coal, 1).is_ok());
+        stock(&mut state, &economy::mine_richness_cost(MineKind::Coal, 1));
+
+        assert!(state.buy_mine_richness(MineKind::Coal).is_ok());
+
+        assert_eq!(
+            state.mine(MineKind::Coal).map(Mine::get_richness_setting),
+            Some(2)
+        );
+        assert_eq!(
+            state.current_mine().get_richness_setting(),
+            0,
+            "the mine underfoot followed a ceiling that was not its own"
         );
     }
 
@@ -3647,9 +3764,14 @@ mod tests {
             .any(|line| line.material == Material::Amethyst)
     }
 
-    /// Applies one bought track, and — for richness — pushes the free dial up to
-    /// the ceiling just raised, since a bought ceiling the dial never reaches is
-    /// ore spent on nothing.
+    /// Applies one bought track, and — for richness — states the reference player's
+    /// own rule: it always digs at the ceiling it has paid for.
+    ///
+    /// [`GameState::buy_mine_richness`] now carries a *pinned* dial up by itself, so
+    /// this is a no-op on every run these harnesses actually take. It is kept because
+    /// it says something the core's rule deliberately does not: this player would push
+    /// the dial to the top **whatever** it was set to, and the strategy the pacing band
+    /// is measured against should not silently change if that rule is ever narrowed.
     fn buy_track(state: &mut GameState, track: Track) -> Result<(), CoreError> {
         match track {
             Track::Efficiency => state.buy_pickaxe_efficiency(),
@@ -3659,8 +3781,8 @@ mod tests {
             Track::MineRichness => {
                 state.buy_mine_richness(state.current_mine().kind())?;
                 let ceiling = state.current_mine().get_richness_level();
-                // A no-op if the dial is already there; otherwise a deterministic
-                // redraw of the standing cells, which is the point of buying it.
+                // A no-op if the dial is already there — and it now always is, which
+                // is why this costs the generator nothing rather than a second redraw.
                 let _ = state.set_richness_setting(ceiling);
                 Ok(())
             }
