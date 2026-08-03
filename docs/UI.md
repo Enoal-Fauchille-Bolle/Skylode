@@ -234,9 +234,12 @@ The table above is closed; what follows re-uses it.
   alone. What it buys is the three seconds: a refusal and a purchase were the same
   picture, and the refusal is the one that has to be read before it expires.
 
-The **blast colour** for §5.9's proc flash is not in this table and remains open: it
-has to read as "not a material" against all 24 swatches, which is a judgement best
-made against a running grid.
+The **blast colour** for §7's proc flash is deliberately *not* in this table, and the
+split is §4.2's rather than an omission: it is pinned like a material and not remapped
+like chrome. It answers "what does an explosion look like *against the twenty-four
+swatches*", which is a question about the grid, so it lives in `palette.rs` beside them
+and is measured against them. A theme free to move it could move it onto the mine it is
+supposed to separate from.
 
 ## 5. The screens
 
@@ -1460,18 +1463,47 @@ indistinguishable from a scroll.
 
 **Decided: a two-stage flash, front-end only, ~200 ms, non-blocking.**
 
-| Stage | ~ms | What is drawn |
+| Stage | ms | What is drawn |
 | --- | --- | --- |
-| 1 | 0–100 | the affected cells, **still drawn**, swatch replaced by a single bright blast colour |
-| 2 | 100–200 | the same cells dimmed |
-| after | — | the cells are empty, as the model already says they are |
+| 1 | 0–100 | the affected cells, **still drawn**, swatch replaced by the blast colour and a solid `█` |
+| 2 | 100–200 | the same cells at half the ink: `▒` in the blast colour, on the terminal's own background |
+| after | — | the cells are empty — *unless the swing refilled the mine*, see §7.1 |
 
-> The **timings are placeholders**, and deliberately loose: ~200 ms is "long enough
-> to register, short enough not to feel like a cutscene", which is a playtest
-> number, not a derived one. The **structure** is what is decided — two stages,
-> painted-then-dimmed, front-end only. The blast colour is likewise unassigned; it
-> wants to read as "not a material" against all 24 swatches of §5.8.3, and picking
-> it against a running grid beats picking it against a contrast script.
+**Both numbers are now assigned, and the timings turned out to be derived rather than
+chosen.** The redraw rate is the simulation's 20 fps — every step raises the dirty flag,
+because the auto-miner credits on every one, so §10.1's 33 ms ceiling never binds — which
+means a stage lasts exactly `stage / 50 ms` **frames**. 100 ms is two of them, and two is
+the floor: at one frame a stage, a late pass drops the fade entirely and the animation
+becomes a single flicker. So ~100 ms stopped being a playtest guess and became a budget,
+pinned by `the_first_beat_outlasts_two_redraws` against the core's own `TICKS_PER_SECOND`
+and measured end to end through the real loop by
+`each_beat_of_the_flash_is_drawn_on_two_frames`.
+
+**The blast colour is `202` (`#ff5f00`) at 256 colours and `LightRed` at 16.** Orange is
+the one hue the material table never spends — it follows Minecraft, which takes grey,
+brown, blue, red, green, cyan, magenta, white and yellow — and it reads as *fire* rather
+than as ore, which is what "not a material" was asking for. At 16 colours the twelve mines
+already spend seven of the eight usable named colours (Black being what a *hole* looks
+like), so the blast takes the bright half of the palette, where nothing is claimed.
+
+> **It cannot clear §4.2's own `ΔE ≥ 40` gate, and no colour could.** The twelve pairs
+> span the hue circle and every lightness from `L* 15` to `L* 98`, so a twenty-fifth
+> colour has neighbours wherever it lands. The gate here is `ΔE ≥ 25`, and the difference
+> is a difference in the question: §4.2 asks whether two cells drawn *side by side at the
+> same time* can be told apart, while this asks whether a region that just **changed
+> colour for 200 ms** reads as a change. The glyph is what makes the weaker gate safe —
+> see the next paragraph. Both values stay open to a deliberate retune; what is settled is
+> that changing either now fails a test.
+
+**Each stage spends the glyph channel as well as the colour, and §4.4 is why.** A flash
+carried by hue alone would be *invisible* — not merely subtle — on a terminal that dropped
+the colour, which is the one thing that rule forbids. So the first beat is painted as
+background **and** foreground with a solid `█`, and the second hands the background back
+and keeps only the ink. That second beat is also how a text terminal spells "dimmed": by
+**coverage**, not by luminance. `Modifier::DIM` was the obvious alternative and is wrong
+twice over — §4.5 already refuses it because terminals disagree about implementing it at
+all, and it applies to the *foreground*, so a cell whose information is a background would
+not dim in the least.
 
 **Stage 1 is the whole trick: the cells are painted _before_ they are erased.**
 Painting the shape in one uniform colour for ~3 frames is what makes a 7x7 legible
@@ -1526,6 +1558,51 @@ list, not just a count. A front-end given `Nuke { blocks: 200 }` cannot draw the
 shape, and re-deriving it from the enchant level and the grid would be a second
 copy of `explosive_radius` living in the wrong crate — the same argument §5.5 makes
 for `Pickaxe::ladder`.
+
+### 7.1 Five departures the rendered flash found
+
+Recorded when the flash was wired, the last item of TUI phase 7. §7 above was written
+against a wireframe that could not draw an animation; **these five are what showed up the
+first time a real proc was painted onto a real grid at chosen instants**. The stage table
+above is amended in one row; the rest is left as written.
+
+- **The flash has to be painted _before_ the hole check, and that is the whole feature
+  rather than a detail of it.** §7 says the affected cells are "still drawn" — but by the
+  time the front-end sees the event, the tick has already broken them, so the grid holds
+  `None` at every one of those coordinates. `MineGrid` skips a hole with a `continue`, so
+  a flash consulted *after* that line would paint **nothing at all**, on every blast, and
+  the failure would look like the feature simply not working. "The cells are painted
+  before they are erased" is, in code, three lines sitting above three others.
+- **A blast that empties the mine gets its cells back before the first frame.** The refill
+  is step 5 of the *same* swing (`Mine::refill_if_empty`), so the table's `after — the
+  cells are empty` is false exactly when the blast was big enough to matter. On the
+  **opening 3×3 Stone mine this is the ordinary case, not an edge one** — it is what the
+  first real proc did. The flash **wins the cell** and paints over the standing block: the
+  player is owed the picture of what just happened, and the refill has its own
+  announcement. Same rule for the crack, which the refill can redraw *inside* the shape —
+  the target is a hundred milliseconds late rather than contradicted, and the Break gauge
+  beside the grid goes on saying it either way.
+- **The geometry argument is about large mines, and the opening one is 3×3.** Explosive's
+  smallest band is a 3×3 Chebyshev square, so on a fresh Stone mine a blast covers the
+  whole grid and clips at the edges every time. "A 7×7 reads as a square" is true and is
+  what the flash is for; it is simply not true *yet* on the first mine, where the honest
+  reading is "everything went at once". Nothing is done about it — the shape becomes
+  legible from the first size upgrade, and shrinking the blast to suit the opening mine
+  would spend the enchant's whole point on its least interesting moment.
+- **`█` is also the filled symbol of all three status gauges.** Not a collision the player
+  can see — they are rows apart — but a real one for any test that searches a frame for
+  it, which is a test that passes with the feature ripped out. So the flash is asserted by
+  **colour** wherever chrome is on screen, and by glyph only over a bare grid. The same
+  trap §5.1's own tests already document for `░`, which is the unfilled gauge and the
+  value stipple at once.
+- **The beat is decided at projection time, not at draw time — unlike the toast.** A toast
+  expires inside `render`, so an instant alone can move it; a flash is resolved into the
+  read model by `sync_view`, and the two agree only because the loop hands them one `now`.
+  Two consequences. A test wanting a beat has to project *and* paint, or it is asserting
+  against whichever instant the projection last saw. And a `View` that stops being
+  re-projected shows a **frozen** beat — harmless today, since a step raises the dirty flag
+  twenty times a second whatever the player does, but it is a note phase 8 is owed: the
+  first session state that pauses the tick must clear the flash on the way in.
 
 ---
 
