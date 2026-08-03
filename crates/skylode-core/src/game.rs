@@ -167,6 +167,54 @@ pub struct GameState {
     /// dice rather than rerolling them, which is why the save stores the generator
     /// and not the number it was built from.
     rng: Rng,
+    /// How many blocks the **player** has brought down, over every run.
+    ///
+    /// **The auto-miner's blocks are not in here, and that is the surprising half.**
+    /// [`credit_auto_mining`](GameState::credit_auto_mining) never walks the grid — it
+    /// weights the expected composition of a full mine and multiplies — so its
+    /// "blocks" are a closed-form quotient of microblocks rather than cells that
+    /// visibly fell. A counter mixing the two would answer neither question a player
+    /// asks of it. Excluded, the figure means **swings**, which is what someone
+    /// comparing it against their own memory has in mind, and it stays reachable from
+    /// [`resolve_swing`](GameState::resolve_swing) alone rather than from three call
+    /// sites on two different models.
+    ///
+    /// Two consequences that follow from that and are easy to mistake for bugs: an
+    /// **absence adds nothing** to it, exactly as an absence adds nothing to
+    /// [`playtime`](GameState); and since the auto-miner runs during active play too,
+    /// an idle session at the keyboard does not move it either.
+    ///
+    /// **A lifetime total: a prestige does not clear it.** It counts the impact block
+    /// plus every cell a blast brought down — `broken`, the count, and never `cells`,
+    /// the shape, which covers ground the swing had already cleared.
+    ///
+    /// [`u64`] and not [`u32`]: a maxed Nuke over a 20×10 grid is two hundred cells in
+    /// one tick, and twenty ticks a second of that overruns a `u32` in under a
+    /// fortnight of held keys.
+    blocks_broken: u64,
+    /// How many ticks this save has ever simulated, over every run.
+    ///
+    /// **Simulated time, not wall time**, which is what makes it deterministic and
+    /// testable: it advances in [`tick`](GameState::tick) and nowhere else, so the same
+    /// input sequence produces the same figure on any machine. Offline time is
+    /// therefore *not* playtime — an absence is credited by
+    /// [`resume`](GameState::resume) in closed form and never replayed — and that is
+    /// also the truthful reading of a number labelled "playtime".
+    ///
+    /// Counted in ticks rather than seconds because the tick is what increments: a
+    /// count of seconds would need a remainder, and a second remainder is a second
+    /// thing a save can be wrong about. The front-end divides by
+    /// [`TICKS_PER_SECOND`].
+    ///
+    /// **A lifetime total**, like [`blocks_broken`](GameState).
+    playtime: u64,
+    /// How many ticks the **current** run has simulated.
+    ///
+    /// The one counter of the three that a prestige clears, and the whole reason the
+    /// set has two lifetimes rather than one: `docs/UI.md` §5.5's `This run` row would
+    /// otherwise keep climbing across a reset and describe something the player can no
+    /// longer see.
+    run_playtime: u64,
     /// When this run was last written, for the offline accrual phase 7 credits on
     /// resume. Supplied by the caller — see the module header.
     #[serde(with = "epoch_seconds")]
@@ -237,6 +285,9 @@ impl GameState {
             auto_common_progress: 0,
             auto_value_progress: 0,
             yield_carry: Vec::new(),
+            blocks_broken: 0,
+            playtime: 0,
+            run_playtime: 0,
             rng,
             last_seen: now,
         }
@@ -309,6 +360,27 @@ impl GameState {
         &self.player
     }
 
+    /// Blocks the **player** has broken, over every run — the auto-miner's are not
+    /// counted. See [`blocks_broken`](GameState) for why that is the honest figure.
+    pub fn blocks_broken(&self) -> u64 {
+        self.blocks_broken
+    }
+
+    /// Ticks simulated over every run, which is playtime and not wall time.
+    pub fn playtime_ticks(&self) -> u64 {
+        self.playtime
+    }
+
+    /// Ticks simulated by the current run — cleared by a
+    /// [`prestige`](GameState::prestige).
+    ///
+    /// Named for the run rather than for the reset, because that is what the screen
+    /// asks: `docs/UI.md` §5.5 prints it under `This run`, beside two figures that do
+    /// **not** reset. Three counters, two lifetimes.
+    pub fn run_playtime_ticks(&self) -> u64 {
+        self.run_playtime
+    }
+
     /// Whether this run could have been produced by the rules, or the first
     /// invariant that says it could not.
     ///
@@ -379,6 +451,14 @@ impl GameState {
             if reward::reward_for_level(level).is_none() {
                 return Err("a reward is waiting for a level that grants nothing");
             }
+        }
+
+        // The one invariant the two playtime clocks have between them: they are
+        // incremented together and only the shorter one is ever reset, so a run that
+        // claims to have lasted longer than the save has ever simulated is a file no
+        // sequence of ticks could have written.
+        if self.run_playtime > self.playtime {
+            return Err("this run is older than the save it belongs to");
         }
 
         Ok(())
@@ -896,6 +976,17 @@ impl GameState {
     pub fn tick(&mut self, input: Input) -> Vec<GameEvent> {
         let mut events = Vec::new();
 
+        // **Both clocks advance whatever the key is doing.** Playtime is time at the
+        // keyboard, not time spent swinging, so an idle tick counts exactly as much as
+        // a mining one; a counter that only moved on `space_held` would be a *swing*
+        // counter with the wrong name, and `blocks_broken` beside it is already that.
+        // `saturating_add` because these are the two fields in the struct with no
+        // ceiling at all: at 20 tps a `u64` runs for twenty-nine billion years, so the
+        // saturation is unreachable and is here because the crate's lints leave no
+        // wrapping arithmetic to reach for instead.
+        self.playtime = self.playtime.saturating_add(1);
+        self.run_playtime = self.run_playtime.saturating_add(1);
+
         // Before the swing, so the power applied below is the one the player still
         // owns. `Boost::multiplier` already returns exactly 1.0 once expired, so
         // this ordering is belt and braces — but the *event* only fires here, and a
@@ -981,6 +1072,13 @@ impl GameState {
                 broken: proc.broken.len(),
             });
         }
+
+        // **The one site that counts blocks**, and it is what keeps the auto-miner out
+        // by construction rather than by a rule someone has to remember: `broken` is
+        // the impact block plus the cells each blast actually brought down, and the
+        // helper that credits the auto-miner never builds such a list because it never
+        // touches a cell.
+        self.blocks_broken = self.blocks_broken.saturating_add(broken.len() as u64);
 
         self.grant_experience(&broken, events);
         self.credit_loot(dug, &broken, events);
@@ -1277,6 +1375,11 @@ impl GameState {
         self.auto_common_progress = 0;
         self.auto_value_progress = 0;
         self.yield_carry.clear();
+        // **One of the three counters, and only one.** `blocks_broken` and `playtime`
+        // are lifetime totals that a reset must not touch — a player who has broken
+        // four hundred thousand blocks still has — while the run's own clock is
+        // describing a run that no longer exists the instant this returns.
+        self.run_playtime = 0;
         Ok(())
     }
 }
@@ -3867,6 +3970,24 @@ mod tests {
         assert!(state.validate().is_err());
     }
 
+    /// A run cannot have lasted longer than the save that holds it. The two clocks
+    /// are incremented in the same breath and only the shorter one is ever reset, so
+    /// the inequality is the whole of their relationship — and it is the one thing a
+    /// hand-edited pair can be wrong about that neither field can catch alone.
+    #[test]
+    fn a_run_older_than_the_save_it_belongs_to_is_refused() {
+        let mut state = a_run_in_progress(2024);
+        assert_eq!(state.validate(), Ok(()));
+
+        state.run_playtime = state.playtime + 1;
+        assert!(state.validate().is_err());
+
+        // Equal is legal and is in fact the common case: it is every save written
+        // before the first prestige.
+        state.run_playtime = state.playtime;
+        assert_eq!(state.validate(), Ok(()));
+    }
+
     /// A yield carry holding a whole item is the prestige path's version of the
     /// auto-miner's unpaid block: [`apply_with_carry`](crate::prestige::apply_with_carry)
     /// keeps only the remainder below [`PERMILLE`], so a carry at or above it is an
@@ -3997,6 +4118,136 @@ mod tests {
             "a refused prestige debited part of the price"
         );
         assert_eq!(next_draws(&state), draws, "a refusal moved the dice");
+    }
+
+    /// A swing counts the impact block **and** every cell a blast brought down —
+    /// `broken`, the count, never `cells`, the shape, which covers ground the swing
+    /// had already cleared.
+    #[test]
+    fn a_swing_counts_the_block_it_broke_and_every_cell_a_blast_took() {
+        // First, the swing with nothing but raw power: exactly one cell falls, so the
+        // counter and the swing are the same number and there is nothing to attribute.
+        let mut plain = state();
+        equip(&mut plain, PickaxeTier::Netherite, instamining());
+        plain.tick(MINING);
+        assert_eq!(plain.blocks_broken(), 1);
+
+        // Then with the blasts on. The expected total is read off the events rather
+        // than written down: a proc is a die roll, and pinning a number here would
+        // make the test a second golden vector on a sequence one already pins.
+        let mut blasting = state();
+        let mut enchants = instamining();
+        for _ in 0..5 {
+            assert!(
+                enchants
+                    .upgrade(EnchantType::Explosive, PickaxeTier::Netherite, World::End)
+                    .is_ok()
+            );
+        }
+        equip(&mut blasting, PickaxeTier::Netherite, enchants);
+
+        let mut expected = 0;
+        for _ in 0..40 {
+            for event in blasting.tick(MINING) {
+                if let GameEvent::SpatialProc { broken, .. } = event {
+                    expected += broken as u64;
+                }
+            }
+            expected += 1;
+        }
+
+        assert_eq!(
+            blasting.blocks_broken(),
+            expected,
+            "the counter and the events disagree about the same swings"
+        );
+    }
+
+    /// **The auto-miner is excluded, and structurally so.** It credits ore on every
+    /// tick — held key or not — by weighting the expected composition of a full mine
+    /// and multiplying, so it never walks a cell and has no list of broken blocks to
+    /// contribute. The counter therefore means *swings*, which is the figure someone
+    /// comparing it against their own memory has in mind.
+    #[test]
+    fn the_auto_miner_credits_ore_without_ever_moving_the_block_counter() {
+        let mut state = state();
+
+        for _ in 0..20_000 {
+            state.tick(IDLE);
+        }
+
+        assert!(
+            state.player().get_inventory().raw_value(Material::Stone) > 0,
+            "the fixture must actually run the auto-miner for the claim to mean anything"
+        );
+        assert_eq!(state.blocks_broken(), 0);
+    }
+
+    /// An absence adds nothing to any of the three. Offline time is credited in closed
+    /// form by [`resume`](GameState::resume) rather than replayed as ticks, and
+    /// `playtime` counts **simulated** ticks — so a week away pays ore and buys no
+    /// playtime, which is also the truthful reading of a figure with that name.
+    #[test]
+    fn an_absence_pays_ore_and_neither_clock_nor_the_block_counter() {
+        let mut state = state();
+        state.tick(MINING);
+        let (blocks, played, run) = (
+            state.blocks_broken(),
+            state.playtime_ticks(),
+            state.run_playtime_ticks(),
+        );
+
+        let report = state.resume(SystemTime::UNIX_EPOCH + Duration::from_secs(6 * 3_600));
+
+        assert!(
+            report.is_some_and(|report| report.blocks > 0),
+            "the fixture must actually credit an absence"
+        );
+        assert_eq!(state.blocks_broken(), blocks);
+        assert_eq!(state.playtime_ticks(), played);
+        assert_eq!(state.run_playtime_ticks(), run);
+    }
+
+    /// Both clocks count **time at the keyboard**, not time spent swinging: a released
+    /// key still runs the game. A counter that only moved on `space_held` would be a
+    /// swing counter with the wrong name, and `blocks_broken` beside it is already
+    /// exactly that.
+    #[test]
+    fn both_clocks_advance_on_every_tick_held_or_not() {
+        let mut state = state();
+
+        for _ in 0..7 {
+            state.tick(MINING);
+        }
+        for _ in 0..13 {
+            state.tick(IDLE);
+        }
+
+        assert_eq!(state.playtime_ticks(), 20);
+        assert_eq!(state.run_playtime_ticks(), 20);
+    }
+
+    /// **Three counters, two lifetimes**, and this is the whole of the second one: the
+    /// run's clock is describing a run that no longer exists the instant `prestige`
+    /// returns, while the lifetime totals are the player's record and survive.
+    #[test]
+    fn a_prestige_clears_the_run_clock_and_keeps_the_lifetime_totals() {
+        let mut state = state();
+        ready_to_prestige(&mut state);
+        for _ in 0..50 {
+            state.tick(MINING);
+        }
+        let (blocks, played) = (state.blocks_broken(), state.playtime_ticks());
+        assert!(
+            blocks > 0 && played > 0,
+            "the fixture must have a run to lose"
+        );
+
+        assert_eq!(state.prestige(), Ok(()));
+
+        assert_eq!(state.blocks_broken(), blocks);
+        assert_eq!(state.playtime_ticks(), played);
+        assert_eq!(state.run_playtime_ticks(), 0);
     }
 
     /// The trade, whole. Everything the run bought goes; the rank stays.

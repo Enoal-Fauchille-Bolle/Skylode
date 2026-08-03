@@ -373,7 +373,23 @@ mod tests {
                 r#""active_boost":null,"auto_common_progress":0,"auto_value_progress":0,"#,
                 r#""yield_carry":[],"rng":{"seed":[234,216,29,114,93,38,16,78,137,156,"#,
                 r#"59,248,66,206,120,46,186,211,3,218,153,151,210,194,18,2,86,172,115,"#,
-                r#"102,251,27],"stream":0,"word_pos":9},"last_seen":1000},"#,
+                r#"102,251,27],"stream":0,"word_pos":9},"#,
+                // The three counters of core phase 11, added with **no
+                // `SAVE_VERSION` bump and no `serde(default)`**, which looks like the
+                // `unclaimed` precedent above and is its opposite on both halves.
+                //
+                // No bump, because a bump protects files already written and none
+                // exist: the front-end owns the disk and has not been given it yet
+                // (TUI phase 8), so a migration step could never run and its test
+                // would describe an impossible situation.
+                //
+                // No default, because a default may stand in for an **absence** and
+                // never for a **missing fact**. `unclaimed`'s empty set was *true* of
+                // an older file — those runs paid at the tick, so nothing was waiting
+                // — whereas a `0` here would be *false*: the player broke blocks, we
+                // simply would not know how many.
+                r#""blocks_broken":0,"playtime":0,"run_playtime":0,"#,
+                r#""last_seen":1000},"#,
                 r#""config":{"palette":"dim","ascii_only":true}}"#,
             )
         );
