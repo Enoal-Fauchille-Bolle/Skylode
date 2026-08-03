@@ -257,7 +257,7 @@ mod tests {
 
         use skylode_core::{game::GameState, mine_kind::MineKind};
 
-        use crate::{cursor::Cursors, toast::Toasts};
+        use crate::{cursor::Cursors, flash::Flashes, toast::Toasts};
 
         let state = GameState::new(0x5B1_0DE, std::time::UNIX_EPOCH);
         let view = View::from_state(
@@ -265,6 +265,7 @@ mod tests {
             Cursors::new(MineKind::Stone, 0, 1),
             None,
             &Toasts::new(),
+            &Flashes::new(),
             Instant::now(),
         );
 

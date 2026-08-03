@@ -40,6 +40,7 @@ use skylode_core::{
 use crate::{
     announce,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
+    flash::{FlashStage, Flashes},
     format::{MAXED, duration_hm, roman, rung_label, shown_rung},
     palette::ColourMode,
     toast::Toasts,
@@ -1138,6 +1139,22 @@ pub struct View {
     pub grid: Vec<Vec<Option<Block>>>,
     /// The cell being dug and its progress, [`None`] before the first swing.
     pub target: Option<TargetView>,
+    /// Which cells a spatial blast is flashing this frame, and on which beat (UI.md §7).
+    ///
+    /// **The one field here that is not about the run at all**, and the only reason it
+    /// travels with the rest: it is a consequence of an event that has already happened,
+    /// resolved against a wall clock the core is forbidden. [`Flashes::resolve`] answers
+    /// it from [`App`](crate::app::App)'s own buffer, which is the same route
+    /// [`stats`](View::stats)' history takes out of [`Toasts`].
+    ///
+    /// **Already a beat and not an instant**, so that everything downstream — the
+    /// widget, and every test that draws it — is a pure function of what it is handed.
+    /// The clock is read exactly once per frame, in [`from_state`](View::from_state).
+    ///
+    /// Empty on all but a handful of frames a session, which is what makes carrying it
+    /// by value affordable: a blast is at most 200 entries, and most reprojections copy
+    /// none at all.
+    pub flash: BTreeMap<(u8, u8), FlashStage>,
     /// The Levels roadmap, its cursor, and what is waiting on it (UI.md §5.6).
     pub levels: LevelsView,
     /// The three panels of the Stats screen (UI.md §5.5).
@@ -1173,7 +1190,7 @@ impl View {
     /// breaks this function until someone decides where it comes from, where before it
     /// would have silently taken a wireframe's value into a real run.
     ///
-    /// Three parameters and not one, because three of the answers are not in the run:
+    /// Four parameters and not one, because four of the answers are not in the run:
     ///
     /// - `cursors` is where the player is *pointing*, which is front-end state by
     ///   definition — a list selection has no business reaching a save.
@@ -1183,6 +1200,17 @@ impl View {
     /// - `toasts` and `now` are the announcement log and the instant to age it against.
     ///   Same argument, twice: the run does not know what was said about it, and the
     ///   core is forbidden a clock.
+    /// - `flashes` is the third instance of that same argument, and the purest: a proc
+    ///   flash is *nothing but* an ambient clock, which is the one thing the determinism
+    ///   contract keeps outside the core. It is resolved against the same `now`, so the
+    ///   beat a cell is drawn on and the age the history prints cannot come from two
+    ///   readings of the clock that disagree.
+    ///
+    /// Four positional parameters is more than this crate likes, and the reason it is
+    /// tolerable here rather than a `struct` is that no two of them share a type: a
+    /// misordered call does not compile. That is precisely the hazard
+    /// [`Input`](skylode_core::game::Input) exists to guard against one crate down,
+    /// where every field is a `bool`.
     ///
     /// A projection this wide does real work, which is why [`App`](crate::app::App)
     /// caches the result in a field rather than calling this inside its `render`: the
@@ -1192,6 +1220,7 @@ impl View {
         cursors: Cursors,
         refused: Option<&CompressHint>,
         toasts: &Toasts,
+        flashes: &Flashes,
         now: Instant,
     ) -> Self {
         let player = state.player();
@@ -1240,6 +1269,10 @@ impl View {
                 cell,
                 ratio: mine.break_ratio(),
             }),
+            // Asked for *this* mine, so a blast cannot follow the player into the next
+            // one: the coordinates are bare `(u8, u8)` and the buffer is what refuses,
+            // rather than every site that changes mine having to remember to clear it.
+            flash: flashes.resolve(kind, now),
             mines: mines_view(state, cursors),
             inventory: inventory_view(player.get_inventory(), cursors, refused),
             upgrades: upgrades_view(state, cursors),
@@ -1321,6 +1354,11 @@ impl View {
             mine_kind: MineKind::Iron,
             grid,
             target: Some(TargetView { cell, ratio: 0.61 }),
+            // Empty, and deliberately not a fixture: a flash lasts 200 ms, so a
+            // *placeholder* one would put a blast on every screenshot this fixture draws
+            // and on none of the frames a player ever sees. The tests that care build
+            // their own map, which is also the only way to name an instant.
+            flash: BTreeMap::new(),
             levels: sample_levels(),
             stats: sample_stats(),
             prestige: sample_prestige(),
@@ -3301,6 +3339,7 @@ mod tests {
             ),
             None,
             &Toasts::new(),
+            &Flashes::new(),
             Instant::now(),
         )
     }
@@ -3851,7 +3890,14 @@ mod tests {
         let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
         cursors.pickaxe_rung = here + 1;
 
-        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
+        let view = View::from_state(
+            &state,
+            cursors,
+            None,
+            &Toasts::new(),
+            &Flashes::new(),
+            Instant::now(),
+        );
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Pickaxe(detail) => {
                 assert_eq!(detail.title, "Netherite Pickaxe");
@@ -3887,7 +3933,14 @@ mod tests {
         let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
         cursors.pickaxe_rung = here + 1;
 
-        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
+        let view = View::from_state(
+            &state,
+            cursors,
+            None,
+            &Toasts::new(),
+            &Flashes::new(),
+            Instant::now(),
+        );
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Pickaxe(detail) => {
                 let dip = match detail.dip.as_ref() {
@@ -3949,7 +4002,14 @@ mod tests {
         );
         cursors.pickaxe_rung = iron_jump;
 
-        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
+        let view = View::from_state(
+            &state,
+            cursors,
+            None,
+            &Toasts::new(),
+            &Flashes::new(),
+            Instant::now(),
+        );
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Pickaxe(detail) => {
                 assert!(detail.chain.is_empty(), "an owned rung buys nothing");
@@ -3995,7 +4055,14 @@ mod tests {
         for rung in 0..upgrade::ladder().len() {
             let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
             cursors.pickaxe_rung = rung;
-            let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
+            let view = View::from_state(
+                &state,
+                cursors,
+                None,
+                &Toasts::new(),
+                &Flashes::new(),
+                Instant::now(),
+            );
             match &view.upgrades.active_subtab().detail {
                 UpgradeDetail::Pickaxe(detail) => assert_eq!(
                     detail.owned.is_some(),
@@ -4029,7 +4096,14 @@ mod tests {
         let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
         cursors.pickaxe_rung = rung;
 
-        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
+        let view = View::from_state(
+            &state,
+            cursors,
+            None,
+            &Toasts::new(),
+            &Flashes::new(),
+            Instant::now(),
+        );
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Pickaxe(detail) => {
                 let owned = match detail.owned.as_ref() {
@@ -4172,7 +4246,14 @@ mod tests {
         for kind in cursor::enchant_tracks() {
             let mut cursors = upgrading(&state, UpgradeTab::Enchants);
             cursors.enchant = kind;
-            let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
+            let view = View::from_state(
+                &state,
+                cursors,
+                None,
+                &Toasts::new(),
+                &Flashes::new(),
+                Instant::now(),
+            );
             match &view.upgrades.active_subtab().detail {
                 UpgradeDetail::Enchant(detail) => {
                     assert_eq!(detail.kind, kind);
@@ -4290,7 +4371,14 @@ mod tests {
         // left to sell them. Efficiency 3 is the Overworld cap a fresh run lives under.
         let state = veteran(&[(r#""enchants":{}"#, r#""enchants":{"Fortune":3}"#)]);
         let cursors = upgrading(&state, UpgradeTab::Enchants);
-        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
+        let view = View::from_state(
+            &state,
+            cursors,
+            None,
+            &Toasts::new(),
+            &Flashes::new(),
+            Instant::now(),
+        );
 
         let fortune = view
             .upgrades
@@ -4344,7 +4432,14 @@ mod tests {
         let mut cursors = upgrading(&state, UpgradeTab::Mines);
         cursors.mine_track = (MineKind::Coal, MineTrack::Size);
 
-        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
+        let view = View::from_state(
+            &state,
+            cursors,
+            None,
+            &Toasts::new(),
+            &Flashes::new(),
+            Instant::now(),
+        );
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Mine(detail) => {
                 assert_eq!(detail.blocked, Some(TrackBlock::NotEntered));
@@ -4369,7 +4464,14 @@ mod tests {
         for track in MineTrack::ALL {
             let mut cursors = upgrading(&state, UpgradeTab::Mines);
             cursors.mine_track = (MineKind::Stone, track);
-            let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
+            let view = View::from_state(
+                &state,
+                cursors,
+                None,
+                &Toasts::new(),
+                &Flashes::new(),
+                Instant::now(),
+            );
             match &view.upgrades.active_subtab().detail {
                 UpgradeDetail::Mine(detail) => {
                     assert_eq!(detail.at_next, TrackOutcome::Maxed, "{track:?}");

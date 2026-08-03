@@ -215,6 +215,59 @@ const PALETTE: [MinePalette; 12] = [
     },
 ];
 
+/// The colour a spatial blast is painted in at 256 colours (`docs/UI.md` §7).
+///
+/// **`#ff5f00`, and orange is the one hue the material table never takes.** The twelve
+/// pairs above follow Minecraft, which spends grey, brown, blue, red, green, cyan,
+/// magenta, white and yellow — pure orange is the gap, and it reads as *fire* rather
+/// than as ore, which is the whole of §7's *"not a material"*. `GoldOre`'s `#af5f00` is
+/// the same hue three steps darker and is the nearest thing to it in the table.
+///
+/// **It cannot clear §4.2's own `ΔE ≥ 40` gate, and nothing could.** The palette
+/// deliberately spans the hue circle and every lightness from `L* 15` to `L* 98`, so
+/// wherever a twenty-fifth colour lands, some material is near it — white is 6 from
+/// Quartz's `#eeeeee`, magenta is close to Crying Obsidian. The gate this answers to is
+/// therefore `ΔE ≥ 25` (`the_blast_separates_from_every_material`), and the difference
+/// is a difference in the question: §4.2's 40 measures *two static cells side by side*,
+/// while a blast is a **region changing colour for 200 ms**, which is a far easier
+/// discrimination. The glyph is what makes the lower gate safe — see [`blast`].
+///
+/// Chosen by eye against a running grid rather than by the script that filtered it,
+/// which is what §7 asks for. It stays open to a deliberate retune; what is settled is
+/// that changing it now fails a test.
+pub const BLAST: Color = Color::Indexed(202);
+
+/// The same, at 16 colours: **bright red**, ANSI 9.
+///
+/// The twelve mines already spend seven of the eight usable named colours — Black being
+/// what a *hole* looks like — so the fallback column leaves no ordinary colour free. The
+/// bright half of the palette does: `LightRed` is claimed by no mine, and its one
+/// neighbour is the `Red` that Redstone and Quartz take. Named and not indexed, for the
+/// reason the whole fallback column is named: at 16 colours the terminal's theme is
+/// meant to be the authority.
+pub const BLAST_ANSI16: Color = Color::LightRed;
+
+/// The blast colour for `mode` — [`BLAST`] or [`BLAST_ANSI16`].
+///
+/// **One colour, and the glyph carries the shape.** §4.4's rule is that colour never
+/// carries an answer alone, and a flash painted in colour alone would break it: on a
+/// terminal that dropped the hue, or for a player who cannot separate orange from the
+/// gold cell under it, the blast would be *invisible* rather than merely subtle. So the
+/// widget spends the glyph channel too — a solid `█` on the first beat and a half-ink
+/// `▒` on the second — which is also what lets this answer to a gentler contrast gate
+/// than the material swatches do.
+///
+/// **One colour and not three.** §7 specifies *a single bright blast colour*: Explosive,
+/// Jackhammer and Nuke differ in shape, and the shape is what the flash exists to show.
+/// A colour per enchant would be a second vocabulary to learn for a fact the geometry
+/// already states.
+pub fn blast(mode: ColourMode) -> Color {
+    match mode {
+        ColourMode::Ansi256 => BLAST,
+        ColourMode::Ansi16 => BLAST_ANSI16,
+    }
+}
+
 /// Which of a mine's two blocks a cell holds.
 ///
 /// A role and not a `Block`, because that is all the palette can answer: the
@@ -509,6 +562,65 @@ mod tests {
             let value = swatch(row.mine, CellRole::Value, ColourMode::Ansi256);
             assert_ne!(common.bg, value.bg, "{:?} drew one colour twice", row.mine);
         }
+    }
+
+    /// The blast reads as "not a material" — measured, against all twenty-four.
+    ///
+    /// **The gate is 25 and not §4.2's 40, and the number is the argument.** Nothing
+    /// could clear 40 here: the twelve pairs span the hue circle and every lightness
+    /// from 15 to 98, so a twenty-fifth colour has neighbours wherever it lands. What
+    /// separates this question from that one is that §4.2 asks whether two cells drawn
+    /// *at the same time, next to each other* can be told apart, while this asks whether
+    /// a region that just **changed colour for 200 ms** reads as a change — a far easier
+    /// discrimination, and one the `█`/`▒` glyphs answer even where the hue does not.
+    ///
+    /// It walks the table rather than a list retyped here, so a re-palette that moved a
+    /// material next to the blast fails this instead of shipping an invisible flash.
+    #[test]
+    fn the_blast_separates_from_every_material() {
+        let blast = lab(BLAST);
+        for row in PALETTE {
+            for (role, swatch) in [("common", row.common), ("value", row.value)] {
+                let difference = delta_e(blast, lab(swatch.bg));
+                assert!(
+                    difference >= 25.0,
+                    "the blast is only ΔE {difference:.1} from {:?}'s {role} swatch",
+                    row.mine
+                );
+            }
+        }
+    }
+
+    /// At 16 colours the blast has to be a colour no mine took, and not the one a hole
+    /// is drawn as.
+    ///
+    /// The seven fallbacks spend nearly the whole ordinary palette, so this is the
+    /// assertion that would fail first if a thirteenth mine were added — which is the
+    /// point of walking the table instead of asserting `LightRed != Red` and calling it
+    /// done.
+    #[test]
+    fn the_sixteen_colour_blast_is_a_colour_no_mine_claims() {
+        assert_ne!(
+            BLAST_ANSI16,
+            Color::Black,
+            "the blast is painted in what a broken cell looks like"
+        );
+        for row in PALETTE {
+            assert_ne!(
+                BLAST_ANSI16, row.fallback.bg,
+                "{:?} is painted in the blast colour at 16",
+                row.mine
+            );
+        }
+    }
+
+    #[test]
+    fn each_mode_gets_its_own_blast_colour() {
+        assert_eq!(blast(ColourMode::Ansi256), BLAST);
+        assert_eq!(blast(ColourMode::Ansi16), BLAST_ANSI16);
+        // The two modes must not answer alike: an `Indexed` at 16 colours is exactly the
+        // pinning the fallback exists to undo.
+        assert_ne!(blast(ColourMode::Ansi256), blast(ColourMode::Ansi16));
     }
 
     #[test]

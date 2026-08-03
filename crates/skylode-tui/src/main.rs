@@ -19,6 +19,7 @@ mod app;
 mod config;
 mod cursor;
 mod event;
+mod flash;
 mod format;
 mod keymap;
 mod overlay;

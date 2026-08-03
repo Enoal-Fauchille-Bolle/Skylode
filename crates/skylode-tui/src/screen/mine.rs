@@ -205,7 +205,12 @@ fn grid_panel(frame: &mut Frame, area: Rect, view: &View) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut grid = MineGrid::new(view.mine_kind, &view.grid).mode(view.colour_mode);
+    // The flash is chained unconditionally and the target is not, and the asymmetry is
+    // the two widgets' own shapes: an empty map draws nothing, whereas "no target" has
+    // to be the *absence* of the call so a break ratio cannot exist without a cell.
+    let mut grid = MineGrid::new(view.mine_kind, &view.grid)
+        .mode(view.colour_mode)
+        .flash(&view.flash);
     // Chained conditionally rather than passed as an `Option`: the widget models
     // "nothing is being dug" as the absence of the call, so that a break ratio
     // cannot exist without a cell for it to be about — the same shape
@@ -425,7 +430,7 @@ mod tests {
     use skylode_core::{mine_kind::MineKind, tunables::LEVEL_CAP};
 
     use super::*;
-    use crate::view::TargetView;
+    use crate::{flash::FlashStage, view::TargetView};
 
     /// Renders the Mine screen alone into an 80×24 buffer.
     ///
@@ -890,6 +895,45 @@ mod tests {
             assert_eq!(first("█"), Some(theme::ACCENT), "{name}'s filled half");
             assert_eq!(first("░"), Some(theme::MUTED), "{name}'s unfilled half");
         }
+    }
+
+    /// **A Nuke covers the whole grid, and the panel around it does not move.**
+    ///
+    /// The largest blast in the game is every cell of a maxed 20×10 mine, which is also
+    /// the widest thing the 42-column panel ever holds — so this is where a flash that
+    /// painted one column too far would show. It is the same invariant
+    /// `the_grid_panel_is_forty_two_columns_wide` states, asked of the one frame that
+    /// could break it.
+    #[test]
+    fn a_blast_over_the_whole_grid_leaves_the_panel_where_it_was() {
+        let sample = View::sample();
+        let flash = sample
+            .grid
+            .iter()
+            .enumerate()
+            .flat_map(|(y, row)| {
+                (0..row.len()).map(move |x| ((x as u8, y as u8), FlashStage::Bright))
+            })
+            .collect();
+        let view = View {
+            flash,
+            ..View::sample()
+        };
+        let buffer = render_view(&view, 80, 24);
+
+        // The box is still a box, and the right column still opens where it did.
+        assert_eq!(sym(&buffer, 0, 3), "╭");
+        assert_eq!(sym(&buffer, 41, 3), "╮", "the blast widened the panel");
+        assert_eq!(sym(&buffer, 42, 3), "╭");
+
+        // Every one of the two hundred cells is flashing, and nothing outside them is:
+        // the Pickaxe panel beside the grid keeps its own words.
+        let blast = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| buffer[(x, y)].bg == crate::palette::BLAST)
+            .count();
+        assert_eq!(blast, 20 * 10 * usize::from(crate::widget::CELL_WIDTH));
+        assert!(whole_frame(&buffer).contains("Diamond Pickaxe"));
     }
 
     #[test]

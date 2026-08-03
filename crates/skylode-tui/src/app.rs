@@ -20,7 +20,7 @@ use skylode_core::{
     economy::{self, Affordability, Shortfall},
     enchant::EnchantType,
     error::CoreError,
-    game::{GameState, Input},
+    game::{GameEvent, GameState, Input},
     material::{Item, Material},
     mine::Mine,
     mine_kind::MineKind,
@@ -35,6 +35,7 @@ use crate::{
     config::Config,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     event::{Event, Events},
+    flash::Flashes,
     format::{denominations, grouped, multiplier, prestige_rank, roman, rung_label, shown_rung},
     keymap,
     overlay::{
@@ -172,6 +173,19 @@ pub struct App {
     pub modal: Option<Modal>,
     /// Live announcements, drawn over everything.
     pub toasts: Toasts,
+    /// Which cells a spatial blast has claimed, and when (UI.md §7).
+    ///
+    /// **The toast's sibling, and deliberately uncoupled from it.** Both are fed by the
+    /// same [`GameEvent::SpatialProc`], and neither waits for the other: the toast says
+    /// *what* (`Nuke — 200 blocks`) for three seconds, this says *where* for two hundred
+    /// milliseconds, and the two windows have nothing to say to each other.
+    ///
+    /// It lives here for the reason the toasts do — it is a consequence of a past event
+    /// rather than a fact about the run, so no `GameState` could answer it and no save
+    /// should carry it.
+    ///
+    /// [`GameEvent::SpatialProc`]: skylode_core::game::GameEvent::SpatialProc
+    pub flash: Flashes,
     /// The run itself — the rules, and every number the screens report.
     ///
     /// **`App` owns it rather than borrowing it**, because the run has no other
@@ -286,12 +300,16 @@ impl App {
         // A session opens having announced nothing, so the log the first projection
         // reads is empty by construction rather than by an argument spelled `None`.
         let toasts = Toasts::new();
-        let view = View::from_state(&state, cursors, None, &toasts, now);
+        // Nothing has fired yet, so the buffer is about no mine at all — which is the
+        // state its `Default` already spells, rather than one this line has to choose.
+        let flash = Flashes::new();
+        let view = View::from_state(&state, cursors, None, &toasts, &flash, now);
         Self {
             should_quit: false,
             screen: Screen::Mine,
             modal: None,
             toasts,
+            flash,
             state,
             view,
             cursors,
@@ -332,16 +350,17 @@ impl App {
     /// the player touches anything or not.
     ///
     /// **`now` is the frame's instant, and it must be the same one the frame is drawn
-    /// at.** The history's ages are computed here and its toast is expired in
-    /// [`render`](App::render); a second reading of the clock between the two would let
-    /// a log say `0s` about an announcement the very same frame had already stopped
-    /// showing.
+    /// at.** The history's ages are computed here, the proc flash's beat is resolved
+    /// here, and the toast is expired in [`render`](App::render); a second reading of the
+    /// clock between them would let a log say `0s` about an announcement the very same
+    /// frame had already stopped showing, or draw a blast one beat behind its own toast.
     fn sync_view(&mut self, now: Instant) {
         self.view = View::from_state(
             &self.state,
             self.cursors,
             self.refused.as_ref(),
             &self.toasts,
+            &self.flash,
             now,
         );
     }
@@ -1823,6 +1842,23 @@ impl App {
             // is measured against that same `now`. Reading the clock twice inside one
             // `advance` is how a toast gets pruned in the same breath it is raised.
             self.toasts.push_at(text, tone, TOAST_TTL, now);
+
+            // **The same event, consumed twice and independently** (UI.md §7). The toast
+            // above says *what* fired; this says *where*, and neither waits for the
+            // other — three seconds and two hundred milliseconds have nothing to say to
+            // each other. `cells` and not `broken`: the shape deliberately covers ground
+            // the swing had already cleared, and a blast the player watches has to look
+            // like a blast rather than like the four cells that happened to be left
+            // standing.
+            //
+            // The mine is read from the run rather than carried on the event, because
+            // the event is about an enchant and not about a grid — and the only mine a
+            // proc can fire in is the one the player is standing in, which
+            // `current_mine()` answers totally.
+            if let GameEvent::SpatialProc { cells, .. } = event {
+                self.flash
+                    .push(self.state.current_mine().kind(), cells, now);
+            }
         }
 
         // A step that ran changed something by construction — the auto-miner credits
@@ -2016,10 +2052,12 @@ mod tests {
         backend::TestBackend,
         buffer::Buffer,
         crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+        style::Color,
     };
     use skylode_core::{game::Input, pickaxe::PickaxeTier, save};
 
     use super::*;
+    use crate::palette;
 
     /// The seed every test session starts from.
     ///
@@ -2066,7 +2104,12 @@ mod tests {
 
     /// Both axes at once. The two helpers above each fix one of them, because a call
     /// site that had to name a size *and* an instant would say neither clearly.
-    fn render_to_sized_buffer_at(app: &App, width: u16, height: u16, now: Instant) -> Buffer {
+    pub(super) fn render_to_sized_buffer_at(
+        app: &App,
+        width: u16,
+        height: u16,
+        now: Instant,
+    ) -> Buffer {
         let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
             Ok(terminal) => terminal,
             Err(infallible) => match infallible {},
@@ -2364,6 +2407,189 @@ mod tests {
     /// `due + SIM_PERIOD * n` from the first.
     fn step_due(app: &App) -> Instant {
         app.next_tick
+    }
+
+    /// A frame drawn the way [`App::run`] draws one: **project, then paint, on the same
+    /// instant**.
+    ///
+    /// [`render_at`] alone is not enough for anything time-varying inside the grid,
+    /// because the [`View`] it paints is a *cache*: a toast expires in
+    /// [`render`](App::render) and can therefore be moved by the instant alone, but a
+    /// proc flash is resolved to its beat back in [`sync_view`](App::sync_view). The two
+    /// halves of "what time is it" live in two functions and agree only because the loop
+    /// hands them one `now` — so a test that wants a beat has to do the same, or it is
+    /// asserting against whichever instant the projection last happened to see.
+    fn render_frame_at(app: &mut App, now: Instant) -> Buffer {
+        app.sync_view(now);
+        render_at(app, now)
+    }
+
+    /// A session kitted out until a spatial proc is reachable by mining.
+    ///
+    /// **Through the front-end's own doors, and that is the point.** `Enchants::upgrade`
+    /// is `pub(crate)`, so this crate cannot enchant a pickaxe directly — what it *can*
+    /// do is what a player does: turn free upgrades on in the dev menu and buy the track.
+    /// So the proc this reaches is one the rules produced, from the seeded generator, on
+    /// a run that was played to rather than patched into place.
+    ///
+    /// The pickaxe ladder comes first because Explosive is priced past what the opening
+    /// Stone mine drops even for free — and because a Netherite instamine is what makes
+    /// two thousand swings fit in a test.
+    fn blasting() -> App {
+        let mut app = session().with_dev(true);
+        if let Some(dev) = app.dev.as_mut() {
+            dev.free_upgrades = true;
+        }
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = UpgradeTab::Pickaxe;
+        app.update(Action::BuyMax);
+        app.cursors.upgrade_tab = UpgradeTab::Enchants;
+        app.cursors.enchant = EnchantType::Explosive;
+        app.update(Action::BuyMax);
+        app.screen = Screen::Mine;
+        app.toasts = Toasts::new();
+        app
+    }
+
+    /// Mines until a blast fires, and hands back the instant the step that fired it ran.
+    ///
+    /// Returns the instant rather than the event, because the instant is what every
+    /// assertion about a beat is measured from — and it is the *step's* instant, which is
+    /// exactly what `Flashes` was stamped with.
+    fn mine_until_a_blast(app: &mut App, start: Instant) -> Instant {
+        app.update(Action::MinePressed);
+        for step in 1..2_000u32 {
+            let now = start + SIM_PERIOD * step;
+            app.advance(now);
+            if !app
+                .flash
+                .resolve(app.state.current_mine().kind(), now)
+                .is_empty()
+            {
+                return now;
+            }
+        }
+        unreachable!("a maxed Explosive never fired in 2 000 steps")
+    }
+
+    /// How many cells of `buffer` are on each beat, as `(bright, fading)`.
+    ///
+    /// **Found by colour and not by glyph, and that is not a preference.** `█` is also
+    /// the filled symbol of all three status gauges, so a frame-wide search for it
+    /// returns a hit on *every* frame whether or not anything is flashing — a test
+    /// written that way passes with the feature ripped out. The same trap `screen::mine`
+    /// already documents for `░`, which is the unfilled gauge and the value stipple at
+    /// once. The blast colour appears nowhere else on the screen, so it is the honest
+    /// discriminator here; the glyphs are pinned in `widget`'s own tests, over a grid
+    /// with no chrome in it.
+    fn beats_on(buffer: &Buffer) -> (usize, usize) {
+        let cells =
+            || (0..buffer.area.height).flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)));
+        let bright = cells()
+            .filter(|&(x, y)| buffer[(x, y)].bg == palette::BLAST)
+            .count();
+        let fading = cells()
+            .filter(|&(x, y)| {
+                buffer[(x, y)].fg == palette::BLAST && buffer[(x, y)].bg == Color::Reset
+            })
+            .count();
+        (bright, fading)
+    }
+
+    /// **The wire, end to end**: a real proc puts a real blast on a real frame.
+    ///
+    /// Asserted on the buffer and not on the `View`'s own field, because everything
+    /// between the event and the paint is what this is about — the push in
+    /// [`advance`](App::advance), the resolve in [`sync_view`](App::sync_view), the
+    /// projection, and the widget.
+    #[test]
+    fn a_spatial_proc_paints_a_blast_on_the_next_frame() {
+        let mut app = blasting();
+        let fired = mine_until_a_blast(&mut app, Instant::now());
+
+        let buffer = render_frame_at(&mut app, fired);
+        let (bright, fading) = beats_on(&buffer);
+        assert!(bright > 0, "no blast reached the frame");
+        assert_eq!(fading, 0, "the first frame was already fading");
+        // Both channels arrived, which is what makes the shape survive a terminal that
+        // dropped the hue.
+        assert!(
+            (0..buffer.area.height)
+                .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+                .any(|(x, y)| buffer[(x, y)].bg == palette::BLAST
+                    && buffer[(x, y)].symbol() == "█"),
+            "the blast arrived as a colour with no glyph"
+        );
+
+        // And the toast said its half of it, from the same event and independently.
+        // Read off the **log** and not off the frame: the step that fired the blast can
+        // refill the mine in the same breath, and the overlay only ever shows the newest
+        // announcement — so a frame search would be asking which of two toasts won a
+        // race this test is not about.
+        assert!(
+            app.toasts
+                .log(fired)
+                .any(|(_, text)| text.contains("blocks")),
+            "the flash fired without its announcement"
+        );
+    }
+
+    /// **Each beat is drawn twice, and the number is the whole justification for
+    /// 100 ms.**
+    ///
+    /// The redraw rate is the simulation's — every step raises `dirty`, because the
+    /// auto-miner credits on every one — so the frames a flash is alive for land at
+    /// `fired + n × SIM_PERIOD`. This walks exactly those instants rather than instants
+    /// of its own choosing, which is what makes it a claim about the loop instead of a
+    /// claim about arithmetic. Two frames per beat is the floor: at one, a late pass
+    /// could drop a beat entirely and the fade would never be seen.
+    #[test]
+    fn each_beat_of_the_flash_is_drawn_on_two_frames() {
+        let mut app = blasting();
+        let fired = mine_until_a_blast(&mut app, Instant::now());
+
+        let mut beats = Vec::new();
+        for frame in 0..5u32 {
+            let buffer = render_frame_at(&mut app, fired + SIM_PERIOD * frame);
+            beats.push(match beats_on(&buffer) {
+                (0, 0) => "gone",
+                (0, _) => "fading",
+                (_, 0) => "bright",
+                (_, _) => "both",
+            });
+        }
+
+        assert_eq!(beats, ["bright", "bright", "fading", "fading", "gone"]);
+    }
+
+    /// A blast does not follow the player into the next mine, and the buffer is what
+    /// refuses rather than the several call sites that change one.
+    ///
+    /// Walked through `Enter` on the Mines screen — the door a player uses — so what is
+    /// under test is the whole path and not `Flashes::resolve` a second time.
+    #[test]
+    fn a_blast_does_not_follow_the_player_into_the_next_mine() {
+        let mut app = blasting();
+        let fired = mine_until_a_blast(&mut app, Instant::now());
+        assert!(
+            !render_frame_at(&mut app, fired).content.is_empty() && !app.view.flash.is_empty(),
+            "nothing was flashing to begin with"
+        );
+
+        app.screen = Screen::Mines;
+        app.cursors.mine = MineKind::Coal;
+        app.update(Action::Confirm);
+        assert_eq!(
+            app.state.current_mine().kind(),
+            MineKind::Coal,
+            "the walk was refused, so this proves nothing"
+        );
+
+        render_frame_at(&mut app, fired);
+        assert!(
+            app.view.flash.is_empty(),
+            "a Stone blast is being painted onto the Coal mine"
+        );
     }
 
     #[test]

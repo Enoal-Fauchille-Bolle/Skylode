@@ -6,10 +6,20 @@
 //!
 //! Today that is one widget: [`MineGrid`], the most repeated element in the game.
 
-use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Widget};
+use std::collections::BTreeMap;
+
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Style},
+    widgets::Widget,
+};
 use skylode_core::{block::Block, mine_kind::MineKind};
 
-use crate::palette::{self, CellRole, ColourMode, Swatch};
+use crate::{
+    flash::FlashStage,
+    palette::{self, CellRole, ColourMode, Swatch},
+};
 
 /// How many columns one cell occupies. Two, everywhere, in both colour modes —
 /// which is what lets a 20-wide mine fit the fixed 42-column panel (UI.md §5.1).
@@ -29,6 +39,37 @@ const STIPPLE: &str = "░";
 /// carries **no glyph at all**: `#` is unclaimed, so ink accumulating on a bare
 /// swatch reads the way that document wrote it down.
 const CRACKS: [&str; 3] = ["·", ":", "#"];
+
+/// The first beat of a proc flash: a **solid** block, in the blast colour, on the blast
+/// colour (UI.md §7).
+///
+/// The glyph is not decoration on top of the background — it is what makes the flash
+/// survive §4.4's rule that colour never carries an answer alone. Painted as background
+/// *and* foreground, the cell reads as one solid lozenge on a colour terminal and still
+/// fills completely on one that dropped the hue, where a background-only blast would be
+/// invisible rather than merely subtle.
+const BLAST_FULL: &str = "█";
+
+/// The second beat: **half the ink**, on the terminal's own background.
+///
+/// This is how a text terminal spells "dimmed" — by coverage, not by luminance. The two
+/// alternatives were both worse: a second, darker background costs a second named colour
+/// at 16, where the twelve mines already spend seven of the eight; and `Modifier::DIM` is
+/// rejected twice over — [`theme`](crate::theme) already refuses it because terminals
+/// disagree about implementing it at all, and it applies to the *foreground*, so a cell
+/// whose information is a background would not dim in the least.
+///
+/// `▒` and not `░`: the lighter shade is already the value cell's stipple and the
+/// unfilled half of every gauge, and a flash must not be readable as either.
+const BLAST_FADE: &str = "▒";
+
+/// A flash with nothing in it, for [`MineGrid::new`] to borrow.
+///
+/// The widget holds the map by reference to stay [`Copy`] and to avoid cloning up to two
+/// hundred entries per redraw, so "no flash" needs an actual map somewhere to point at.
+/// [`BTreeMap::new`] is a `const fn`, which is what lets that somewhere be a `static`
+/// rather than a field the caller has to supply.
+static NO_FLASH: BTreeMap<(u8, u8), FlashStage> = BTreeMap::new();
 
 /// The glyph for a target that is `ratio` of the way through.
 ///
@@ -79,6 +120,12 @@ pub struct MineGrid<'a> {
     target: Option<((usize, usize), f32)>,
     /// How many colours to ask the terminal for.
     mode: ColourMode,
+    /// Which cells a spatial blast has claimed this frame, and how bright (UI.md §7).
+    ///
+    /// **Already resolved to a beat**, not to an instant: the widget is handed what to
+    /// draw, and the wall clock stays in [`Flashes::resolve`](crate::flash::Flashes) one
+    /// level up. A `MineGrid` that read a clock could not be golden-tested at all.
+    flash: &'a BTreeMap<(u8, u8), FlashStage>,
 }
 
 impl<'a> MineGrid<'a> {
@@ -93,6 +140,7 @@ impl<'a> MineGrid<'a> {
             grid,
             target: None,
             mode: ColourMode::default(),
+            flash: &NO_FLASH,
         }
     }
 
@@ -111,6 +159,33 @@ impl<'a> MineGrid<'a> {
     pub fn mode(mut self, mode: ColourMode) -> Self {
         self.mode = mode;
         self
+    }
+
+    /// Paints `flash`'s cells as a spatial blast instead of as grid cells (UI.md §7).
+    ///
+    /// Takes the map by reference, and the map is the whole interface: *last blast wins
+    /// per cell* was already decided by whoever built it, so there is nothing here to
+    /// composite and no order to resolve. §7 asks for exactly that — *"no queue, no
+    /// compositing rules"*.
+    #[must_use]
+    pub fn flash(mut self, flash: &'a BTreeMap<(u8, u8), FlashStage>) -> Self {
+        self.flash = flash;
+        self
+    }
+
+    /// The style and glyph a flashed cell takes on `beat`.
+    ///
+    /// **Both channels on both beats**, which is the redundancy of §4.4 rather than a
+    /// flourish: the shape has to survive a terminal that dropped the hue, and a `bg`
+    /// alone would not. `Color::Reset` is named explicitly on the fade rather than left
+    /// out — the cell *is* a hole by now, and stating it means the beat does not depend
+    /// on the frame buffer having been cleared first.
+    fn blast(&self, beat: FlashStage) -> (Style, &'static str) {
+        let colour = palette::blast(self.mode);
+        match beat {
+            FlashStage::Bright => (Style::default().bg(colour).fg(colour), BLAST_FULL),
+            FlashStage::Fading => (Style::default().bg(Color::Reset).fg(colour), BLAST_FADE),
+        }
     }
 
     /// The swatch and the glyph one standing block should be drawn with.
@@ -168,18 +243,42 @@ impl Widget for MineGrid<'_> {
             }
 
             for (column_index, cell) in row.iter().enumerate() {
-                // A hole is the *absence* of a swatch — the terminal's own
-                // background, which is the maximum contrast available against
-                // every intact cell and needs no glyph of its own (UI.md §4.1).
-                // Leaving the buffer untouched is how "absence" is spelled.
-                let Some(block) = cell else { continue };
+                // **The flash is asked before the hole check, and that is the whole
+                // trick.** By the time this widget sees a blast, the tick has already
+                // broken every cell in it — so a lookup made *after* the `continue`
+                // below would find nothing to paint and the flash would never draw at
+                // all. "The cells are painted before they are erased" (UI.md §7) is, in
+                // code, exactly these three lines sitting above the next three.
+                //
+                // The coordinates are narrowed rather than cast: the core quotes a cell
+                // as `(u8, u8)`, so a grid wider than 255 could hold no flashed cell by
+                // construction, and a truncating `as` would instead fold column 256 onto
+                // column 0 and paint a blast in the wrong place.
+                let beat = u8::try_from(column_index)
+                    .ok()
+                    .zip(u8::try_from(row_index).ok())
+                    .and_then(|coordinates| self.flash.get(&coordinates));
 
-                let is_target = target == Some((column_index, row_index));
-                let (swatch, glyph) = self.paint(*block, is_target, ratio);
+                let (style, glyph) = match beat {
+                    Some(&beat) => {
+                        let (style, glyph) = self.blast(beat);
+                        (style, Some(glyph))
+                    }
+                    None => {
+                        // A hole is the *absence* of a swatch — the terminal's own
+                        // background, which is the maximum contrast available against
+                        // every intact cell and needs no glyph of its own (UI.md §4.1).
+                        // Leaving the buffer untouched is how "absence" is spelled.
+                        let Some(block) = cell else { continue };
 
-                let style = match glyph {
-                    Some(_) => Style::default().bg(swatch.bg).fg(swatch.ink),
-                    None => Style::default().bg(swatch.bg),
+                        let is_target = target == Some((column_index, row_index));
+                        let (swatch, glyph) = self.paint(*block, is_target, ratio);
+                        let style = match glyph {
+                            Some(_) => Style::default().bg(swatch.bg).fg(swatch.ink),
+                            None => Style::default().bg(swatch.bg),
+                        };
+                        (style, glyph)
+                    }
                 };
 
                 let x = left.saturating_add(column_index as u16 * CELL_WIDTH);
@@ -353,6 +452,167 @@ mod tests {
 
         let outside = &buffer[(1, 0)];
         assert_eq!(outside.bg, Color::Reset, "the widget overran its own area");
+    }
+
+    /// The blast colour, spelled out here rather than read from [`palette::blast`], for
+    /// [`IRON_COMMON_BG`]'s reason: a test fetching its expectations from the code under
+    /// test passes whatever that code says.
+    const BLAST_BG: Color = Color::Indexed(202);
+
+    /// A flash over the cells named, all on the same beat.
+    fn flashing(beat: FlashStage, cells: &[(u8, u8)]) -> BTreeMap<(u8, u8), FlashStage> {
+        cells.iter().map(|&cell| (cell, beat)).collect()
+    }
+
+    /// **The check the whole feature turns on.** By the time a flash is drawn the tick
+    /// has already broken those cells, so the shape is painted over *holes* — and a
+    /// widget that asked the flash after its `continue` would draw nothing at all.
+    ///
+    /// `(3, 0)` is a hole in the fixture, which is what makes this the real case rather
+    /// than a contrived one.
+    #[test]
+    fn a_blast_is_painted_over_the_holes_it_has_just_made() {
+        let grid = fixture();
+        assert_eq!(grid[0][3], HOLE, "the fixture stopped having a hole here");
+        let flash = flashing(FlashStage::Bright, &[(3, 0)]);
+
+        let buffer = render(MineGrid::new(MineKind::Iron, &grid).flash(&flash), 8, 3);
+
+        for column in 6..8 {
+            let cell = &buffer[(column, 0)];
+            assert_eq!(cell.bg, BLAST_BG, "column {column} was left as a hole");
+            assert_eq!(cell.symbol(), BLAST_FULL);
+        }
+    }
+
+    /// The two beats are two different pictures, and the difference is not the hue.
+    ///
+    /// Beat one owns both channels — a solid block on the blast colour — so it survives
+    /// a terminal that dropped the colour entirely. Beat two hands the background back
+    /// and keeps only the ink, which is how a text terminal spells "half as much of it".
+    #[test]
+    fn the_two_beats_differ_in_coverage_and_not_only_in_colour() {
+        let grid = fixture();
+
+        let bright = flashing(FlashStage::Bright, &[(0, 0)]);
+        let buffer = render(MineGrid::new(MineKind::Iron, &grid).flash(&bright), 8, 3);
+        let cell = &buffer[(0, 0)];
+        assert_eq!((cell.bg, cell.fg), (BLAST_BG, BLAST_BG));
+        assert_eq!(cell.symbol(), BLAST_FULL);
+
+        let fading = flashing(FlashStage::Fading, &[(0, 0)]);
+        let buffer = render(MineGrid::new(MineKind::Iron, &grid).flash(&fading), 8, 3);
+        let cell = &buffer[(0, 0)];
+        assert_eq!(
+            (cell.bg, cell.fg),
+            (Color::Reset, BLAST_BG),
+            "the fade kept a background"
+        );
+        assert_eq!(cell.symbol(), BLAST_FADE);
+    }
+
+    /// **A flash outranks a block standing under it**, and this is not a corner case: a
+    /// blast that empties the grid is refilled by the *same* swing
+    /// (`Mine::refill_if_empty`), so on a small mine the cells are whole again before
+    /// the first frame of the flash is drawn. Recorded as a departure in `docs/UI.md`
+    /// §7.1 — §7's table says the cells are empty afterwards, and there they are not.
+    ///
+    /// The flash wins because the shape is the reward: what the player is owed is the
+    /// picture of what just happened, and the refill has its own announcement.
+    #[test]
+    fn a_flash_outranks_a_block_that_is_standing_again_under_it() {
+        let grid = fixture();
+        assert_eq!(grid[0][0], COMMON, "the fixture stopped standing here");
+        let flash = flashing(FlashStage::Bright, &[(0, 0)]);
+
+        let buffer = render(MineGrid::new(MineKind::Iron, &grid).flash(&flash), 8, 3);
+
+        assert_eq!(
+            buffer[(0, 0)].bg,
+            BLAST_BG,
+            "the swatch outranked the blast"
+        );
+    }
+
+    /// It outranks the crack too — reachable by the same refill, where the new target is
+    /// drawn from cells the blast is still flashing.
+    ///
+    /// The crack is a hundred milliseconds late rather than contradicted, which is the
+    /// right way round: a blast is news and a break percentage is a gauge, and the gauge
+    /// beside the grid goes on saying it either way.
+    #[test]
+    fn a_flash_outranks_the_crack_on_the_target_under_it() {
+        let grid = fixture();
+        let flash = flashing(FlashStage::Bright, &[(1, 1)]);
+
+        let buffer = render(
+            MineGrid::new(MineKind::Iron, &grid)
+                .target((1, 1), 0.61)
+                .flash(&flash),
+            8,
+            3,
+        );
+
+        assert_eq!(buffer[(2, 1)].symbol(), BLAST_FULL, "the crack survived");
+    }
+
+    /// Two blasts inside one window put **both beats on one frame**, per cell.
+    ///
+    /// This is the only picture that separates "last blast wins per cell" from "the
+    /// newest blast wins": a design that kept one flash at a time would draw this frame
+    /// in a single beat and pass every other test here.
+    #[test]
+    fn one_frame_can_carry_both_beats_at_once() {
+        let grid = fixture();
+        let mut flash = flashing(FlashStage::Fading, &[(0, 0), (1, 0)]);
+        flash.extend(flashing(FlashStage::Bright, &[(2, 0)]));
+
+        let buffer = render(MineGrid::new(MineKind::Iron, &grid).flash(&flash), 8, 3);
+
+        assert_eq!(buffer[(0, 0)].symbol(), BLAST_FADE);
+        assert_eq!(buffer[(2, 0)].symbol(), BLAST_FADE);
+        assert_eq!(buffer[(4, 0)].symbol(), BLAST_FULL);
+    }
+
+    /// At 16 colours the blast takes the one bright colour no mine claims, and the
+    /// glyphs do not change at all — one rendering model with a channel switched off,
+    /// which is the same claim §4.3 makes for the grid itself.
+    #[test]
+    fn the_blast_takes_a_named_colour_at_sixteen() {
+        let grid = fixture();
+        let flash = flashing(FlashStage::Bright, &[(0, 0)]);
+
+        let buffer = render(
+            MineGrid::new(MineKind::Iron, &grid)
+                .mode(ColourMode::Ansi16)
+                .flash(&flash),
+            8,
+            3,
+        );
+
+        let cell = &buffer[(0, 0)];
+        assert_eq!(cell.bg, Color::LightRed);
+        assert_eq!(cell.symbol(), BLAST_FULL);
+        // And it is not the colour the mine itself is wearing, which is the whole
+        // requirement at 16: Iron falls back to yellow.
+        assert_ne!(cell.bg, buffer[(6, 2)].bg);
+    }
+
+    /// A flashed cell the grid does not have is never consulted, so a mine that shrank
+    /// under a live flash cannot paint outside itself.
+    ///
+    /// Total by construction rather than by a guard: the widget walks the *grid* and
+    /// looks the flash up, so an entry with no cell to belong to has nothing to be found
+    /// by.
+    #[test]
+    fn a_flash_outside_the_grid_paints_nothing() {
+        let grid = fixture();
+        let flash = flashing(FlashStage::Bright, &[(19, 9)]);
+
+        let buffer = render(MineGrid::new(MineKind::Iron, &grid).flash(&flash), 8, 3);
+
+        let plain = render(MineGrid::new(MineKind::Iron, &grid), 8, 3);
+        assert_eq!(buffer, plain, "a flash off the grid changed the frame");
     }
 
     #[test]
