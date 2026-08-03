@@ -9,12 +9,15 @@ them. What ships in the MVP lives in [ROADMAP.md](ROADMAP.md); the *why* behind
 each rule lives in [DECISIONS.md](DECISIONS.md) — PHASES.md stays focused on order
 and intent.
 
-**Status: phases 0 to 10 have shipped.** The sentence this paragraph once carried —
+**Status: phases 0 to 11 have shipped.** The sentence this paragraph once carried —
 *"none of the dynamic mechanics exist yet: no tick, no block breaking, no RNG
 draws, no costs, no save"* — described the diff that produced the plan, and every
-one of those now exists. What is left in core is phase 11 below, plus the last of
-phase 10's tunables: the ones no harness exercises (proc rates, offline cap, dip
-magnitude, the XP curve). Each phase's heading keeps the objective it was written
+one of those now exists. What is left in core is the last of phase 10's tunables —
+the ones no harness exercises (proc rates, offline cap, dip magnitude, the XP curve)
+— and the *deepening* of `GameState::validate` that phase 11 listed and deliberately
+left: the cross-field plausibility checks that reconcile an inventory and a level
+against the new counters. Those want balance bounds nothing has measured yet, and a
+`validate` tightened on a guess refuses honest runs. Each phase's heading keeps the objective it was written
 with; where a phase's implementation forced a decision the objective did not
 anticipate, the decision is recorded under that heading rather than rewritten into
 it.
@@ -279,3 +282,12 @@ file rather than merely absent, which is the one thing the
 [`unclaimed` precedent](DECISIONS.md) was careful to establish it was not. The
 golden save moves instead, which is exactly the signal it exists to give. The first
 real bump belongs to the first schema change made *after* the game writes to disk.
+
+**What shipped, and the one thing that did not.** The three counters, their two
+lifetimes, the exclusion of the auto-miner and the golden save are done, and
+`validate` gained the single invariant the pair offers for free — a run cannot have
+lasted longer than the save that holds it. The **cross-field plausibility work is
+deliberately deferred**: reconciling an inventory or a level against `blocks_broken`
+needs bounds on what a swing can be worth, and every one of those is a phase-10
+tunable nothing has measured. A `validate` tightened against a guess refuses honest
+saves, which is a worse failure than the tampering it would catch.

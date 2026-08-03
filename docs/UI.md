@@ -584,8 +584,8 @@ fixed illustration.
 | Sub-tab      | Rows                                                  | Fits 19?                       |
 | ------------ | ----------------------------------------------------- | ------------------------------ |
 | **Pickaxe**  | one ladder, 5 tiers × Eff 0..5 + Netherite to 15 ≈ 46 | scrolls (`Scrollbar`, `░`/`█`) |
-| **Enchants** | one row per enchant — 6 tracks, each at its frontier  | **fits**, 13 spare (§5.5.1)    |
-| **Mines**    | 12 mines × 2 tracks = 24 frontiers                    | scrolls, 18 + header (§5.5.2)  |
+| **Enchants** | one row per enchant — 6 tracks, each at its frontier  | **fits**, 13 spare (§5.4.1)    |
+| **Mines**    | 12 mines × 2 tracks = 24 frontiers                    | scrolls, 18 + header (§5.4.2)  |
 
 #### 5.4.1 Enchants
 
@@ -829,8 +829,24 @@ which is honest because that is what the panel now claims to be. A panel called
 "Milestones" that un-ticks is broken; one called "This run" that un-ticks is working.
 **The save schema therefore carries no "ever achieved" bitset.**
 
+The eight, in the order drawn, with the predicate each is: **break your first block**
+(any experience, or a level above 1 — the auto-miner grants no XP, so this asks "has
+this run swung at anything" and a prestige clears it); **reach the Nether** and **reach
+the End** (the mining level against each world's threshold); **Diamond pickaxe** and
+**Netherite pickaxe** (the tier); **instamine Obsidian** (base mining power against
+Obsidian's hardness, with no boost and no prestige multiplier on it — a threshold that
+lapsed with a ten-minute charge would be reporting the boost); **max out a mine** (any
+mine at both ceilings, an unvisited one counting as level 0); and **reach the level
+cap**. The `▸` goes on the **first row still open in list order** — the rows are not
+monotone, so "the next one you will clear" would need an ordering the game does not
+define.
+
 **The history is the toast log, verbatim** — one buffer, two renderings, the toast
-being its tail with a 3 s window.
+being its tail with a 3 s window. Nothing is dropped for being old: expiry is a question
+the *drawing* asks, so a toast leaving the screen and the log keeping it are the same
+buffer answering twice. It is capped at **500 entries**, oldest first, and **lives only
+for the session** — the wording belongs to the front-end, and a log frozen into the save
+would go stale the day an announcement is reworded.
 
 **Core reads, and this one changes a signature.** Nothing in core emits events, and a
 front-end that diffs state between frames is guessing: it would miss two procs in one
@@ -846,8 +862,9 @@ fn tick(&mut self, input: Input) -> Vec<Event>   // phase 7
 
 #### 5.5.1 Three departures on the prestige rows
 
-Recorded when the prestige flow was wired; the three counters and the two right-hand
-panels are still fixture, and the frame above is left as drawn.
+Recorded when the prestige flow was wired, while the three counters and the two
+right-hand panels were still fixture. §5.5.2 below carries the five found when those
+were wired in turn. The frame above is left as drawn.
 
 - **`Cost` and `Held` are quoted in two denominations, not as a flat total.** A
   prestige is paid through the same till as every other purchase, so its price is a
@@ -868,6 +885,49 @@ panels are still fixture, and the frame above is left as drawn.
   kept, `0 Compressed + 20 000`, because the line exists to be compared against a price
   quoted in both. Those two rows also keep a **one-column** right margin where the
   counters keep three: at twenty-one columns of figure they do not fit at the wider one.
+
+#### 5.5.2 Five departures the rendered screen found
+
+Recorded when the three panels were wired to the run. §5.5.1 above was written while the
+counters and the two right-hand panels were still fixture; **these five are what showed
+up the first time the boxes were drawn with what the game actually says**, and four of
+them are about the History. The frame above is left as drawn.
+
+- **The real announcements do not fit, and the frame hides it by abbreviating.** §5.5
+  writes `+80 A. Debris`; nothing in the code produces that. The sentence
+  `announce::of` words is `Level 23 — +115 Quartz, +80 Ancient Debris — claim on 6` —
+  **fifty-five columns against the forty-six the box has at 80**. Ratatui clips flush at
+  the border, where a cut word and a word that merely ends there are the same picture,
+  so the lines are **truncated with an `…`** and keep one column of margin. The `…` is
+  the whole point: it is what separates "there is more" from "that is all it said".
+- **The stamp is an age, not a clock.** The frame draws `20:14`. The buffer holds
+  `Instant`s — monotonic, and by construction ignorant of what time of day it is — and
+  Rust's standard library cannot render a **local** time without being told the zone. The
+  three ways out were a date/time dependency, UTC (wrong for the player, and it would
+  read as a bug), or a relative age. The column shows `2m`, `14m`, `3h`, `1d`: no
+  dependency, no timezone, and _"a quarter of an hour ago"_ is the better answer in a
+  log anyway.
+- **The selected row is drawn, which the frame does not show.** Forced by making the
+  scroll a list cursor (§9): without a mark, `↑↓` moves the cursor _inside_ the visible
+  box for a screenful of presses before the box has to move, and the screen reports
+  nothing. It takes the **accent colour and no glyph** — the `▸` every other list uses
+  would spend a column the box cannot spare, and would put an act-on-me mark in front of
+  sentences nothing is bought from.
+- **Three of the frame's history lines can never appear.** `Entered the Obsidian Mine`
+  and `Richness dial: Obsidian 46% → 64%` raise no announcement at all: entering a mine
+  toasts only its refusal, and the dial is deliberately silent (§9 — reaching the end of
+  a slider is not a player error). They were invented for the wireframe. **Nothing was
+  added to make them true**: announcing the most repeated gesture in the game would bury
+  the announcements that carry news.
+- **`Max out a mine` loses the `✓` inside its detail.** The frame draws
+  `Stone 20x10 R9  ✓` on a row it leaves _un_-ticked — but `20x10 R9` **is** a maxed
+  mine, so the sub-mark and the row's own mark contradict each other. The detail now
+  names the frontrunner (`Iron 12x7 R3`) and the row's mark is the only verdict.
+
+**One thing the frame gets right and is worth stating**, since counting it would suggest
+otherwise: the `This run` panel is ten rows of box, so **exactly eight** goals fit. The
+list is a fixed eight and there is no room for a ninth without taking a row from the
+History below it.
 
 ### 5.6 Levels
 
@@ -1690,10 +1750,20 @@ _dial_), so the lateral axis is free for the sub-tab binding to own.
 
 **Every `↑↓` in both tables wraps.** Past the last row is the first, past the first is
 the last — the mines, the materials, the three Upgrades sub-tabs' rows, the Levels
-roadmap and the Settings fields alike, on the same rule the tab ring follows. A cursor
-only _highlights_: every purchase, claim and entry still costs its own `Enter`, so a lap
-of a list spends nothing. Reaching an end and stopping dead, by contrast, is a keypress
-that reports nothing.
+roadmap, the Stats history and the Settings fields alike, on the same rule the tab ring
+follows. A cursor only _highlights_: every purchase, claim and entry still costs its own
+`Enter`, so a lap of a list spends nothing. Reaching an end and stopping dead, by
+contrast, is a keypress that reports nothing.
+
+**The Stats history is a list, and joining that rule decided its shape.** §5.5 calls its
+`↑↓` a _scroll_, which suggests a viewport offset — and an offset cannot wrap, because
+its bound is `entries - box height` and the reducer that answers a keypress has no
+geometry. It would also go dead for a screenful of presses at the bottom, where the
+offset is clamped and the frame stops moving. So the history carries a **row cursor**
+instead, exactly as the Levels roadmap does: the cursor wraps, `window` slides the box
+behind it, and there is no second scroll position to disagree with the first. The cost
+is one departure from the frame, recorded in §5.5.2 — the selected row has to be drawn,
+or the first presses move a cursor inside the box and nothing on screen changes.
 
 **Three controls stop at their ends, and none of them is a list.** The richness dial is
 a cursor on a bought ceiling, and rolling from the ceiling to 0 would jump the bar the
