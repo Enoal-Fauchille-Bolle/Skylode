@@ -376,7 +376,7 @@ impl App {
             // flags due, so the opening pass always draws.
             if self.dirty && now >= self.next_frame {
                 self.sync_view();
-                terminal.draw(|frame| self.render(frame))?;
+                terminal.draw(|frame| self.render(frame, now))?;
                 self.dirty = false;
                 self.next_frame = now + FRAME_PERIOD;
             }
@@ -1798,7 +1798,6 @@ impl App {
             self.toasts.push_at(text, tone, TOAST_TTL, now);
         }
 
-        self.toasts.prune(now);
         // A step that ran changed something by construction — the auto-miner credits
         // on every one — so this is `steps > 0` rather than a test of the events,
         // which most steps produce none of.
@@ -1809,7 +1808,7 @@ impl App {
     ///
     /// Order is the layering: overlays draw last precisely so they cover the
     /// screen rather than being covered by it.
-    fn render(&self, frame: &mut Frame) {
+    fn render(&self, frame: &mut Frame, now: Instant) {
         let area = frame.area();
 
         // The terminal-too-small filter, in front of everything (UI-EN.md §6.2).
@@ -1845,7 +1844,7 @@ impl App {
         // Overlays, outermost last. A modal draws over the whole frame, including
         // the toasts — it captured the input that would dismiss them, so it owns the
         // surface until it closes.
-        self.toasts.render(frame, area);
+        self.toasts.render(frame, area, now);
         // Borrowed rather than copied: `render` takes `&self` and the confirm carries
         // a `String` it only ever reads.
         if let Some(modal) = &self.modal {
@@ -2026,14 +2025,26 @@ mod tests {
         render_to_sized_buffer(app, 80, 24)
     }
 
+    /// The same, at an instant of the test's choosing — for the one thing on a frame
+    /// that depends on what time it is, which is whether a toast is still showing.
+    fn render_at(app: &App, now: Instant) -> Buffer {
+        render_to_sized_buffer_at(app, 80, 24, now)
+    }
+
     /// The same, at an arbitrary size — for the too-small filter, whose whole job
     /// is what happens below 80×24.
     fn render_to_sized_buffer(app: &App, width: u16, height: u16) -> Buffer {
+        render_to_sized_buffer_at(app, width, height, Instant::now())
+    }
+
+    /// Both axes at once. The two helpers above each fix one of them, because a call
+    /// site that had to name a size *and* an instant would say neither clearly.
+    fn render_to_sized_buffer_at(app: &App, width: u16, height: u16, now: Instant) -> Buffer {
         let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
             Ok(terminal) => terminal,
             Err(infallible) => match infallible {},
         };
-        if let Err(infallible) = terminal.draw(|frame| app.render(frame)) {
+        if let Err(infallible) = terminal.draw(|frame| app.render(frame, now)) {
             match infallible {}
         }
         terminal.backend().buffer().clone()
@@ -2288,21 +2299,28 @@ mod tests {
         assert!(frame.contains("Mine refilled"), "{frame}");
     }
 
+    /// A toast leaves the **screen** once its moment has passed, and stays in the log.
+    ///
+    /// **Expiry moved out of `advance` and into the frame.** A step used to delete the
+    /// entry, which is what left the Stats history with nothing to read; the buffer now
+    /// keeps everything and the drawing asks whether an announcement is still inside
+    /// its window. So this is a test about two renderings of one buffer, and the
+    /// instant is the test's to choose on both.
     #[test]
-    fn a_step_expires_a_toast_once_its_moment_has_passed() {
-        // **`advance` is called, not stepped around**, and now it can be: the instant
-        // is an argument, so both halves — the toast that survives and the toast that
-        // does not — are the test's to choose rather than the machine's.
+    fn a_toast_leaves_the_screen_once_its_moment_has_passed_and_stays_in_the_log() {
         let start = Instant::now();
         let mut app = session();
         app.toasts
             .push_at("Excavator!".to_owned(), Tone::Success, TOAST_TTL, start);
 
-        app.advance(start + SIM_PERIOD);
-        assert_eq!(app.toasts.len(), 1, "a step ate a live toast");
+        let live = whole_frame(&render_at(&app, start + SIM_PERIOD));
+        assert!(live.contains("Excavator!"), "{live}");
 
-        app.advance(start + TOAST_TTL + Duration::from_millis(1));
-        assert_eq!(app.toasts.len(), 0, "the toast outlived its TTL");
+        let later = start + TOAST_TTL + Duration::from_millis(1);
+        let expired = whole_frame(&render_at(&app, later));
+        assert!(!expired.contains("Excavator!"), "{expired}");
+
+        assert_eq!(app.toasts.len(), 1, "the log forgot what it had announced");
     }
 
     /// When the app's **next** simulation step falls due.
