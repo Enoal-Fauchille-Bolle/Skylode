@@ -1,20 +1,25 @@
 //! The read model the screens render from.
 //!
 //! Screens never reach into game state directly — they render a **flat snapshot**.
-//! The core now has `GameState` and `tick()`, but nothing is wired to them yet
-//! (TUI phase 3), so [`View::sample`] hand-fills the numbers drawn in UI.md §5.
-//! When the wiring lands, `GameState` produces this same struct and **nothing
-//! under `screen/` changes**. That indirection is the whole reason UI work could
-//! start before the rules existed.
+//! [`View::from_state`] builds the whole of it from a `GameState`, and **nothing under
+//! `screen/` had to change** as each phase wired another panel — which is the whole
+//! reason UI work could start before the rules existed.
+//!
+//! **The fixture that stood in for the run while that was happening is now
+//! `#[cfg(test)]`.** `from_state` used to end in `..Self::sample()`, Rust's functional
+//! update syntax filling the unwired fields from a hand-transcribed wireframe; that one
+//! line was the literal list of what the phase still owed, and it went when the Stats
+//! panels landed. The compiler is exhaustive over this struct again, so a field added
+//! here breaks `from_state` until someone decides where it comes from.
 //!
 //! Keep it plain data: no methods that decide anything, no `Option`s standing in
 //! for rules. A computation that belongs to the game belongs to the core.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, rc::Rc, time::Instant};
 
 use skylode_core::{
     block::Block,
-    economy::{self, Affordability, Cost, CostLine, Shortfall},
+    economy::{self, Affordability, Cost, CostLine},
     enchant::EnchantType,
     game::GameState,
     inventory::Inventory,
@@ -35,8 +40,9 @@ use skylode_core::{
 use crate::{
     announce,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
-    format::{MAXED, roman, rung_label, shown_rung},
+    format::{MAXED, duration_hm, roman, rung_label, shown_rung},
     palette::ColourMode,
+    toast::Toasts,
 };
 
 /// What a readout with nothing to report prints.
@@ -895,35 +901,65 @@ pub struct PrestigeView {
     pub level: u32,
 }
 
+/// One line of the Stats history panel (UI.md §5.5).
+///
+/// **A value and a shared sentence, not a formatted row.** The age is whole seconds
+/// and the screen turns it into `2m`; formatting it here would spend an allocation per
+/// entry on every reprojection — twenty a second while mining — for rows a terminal
+/// mostly cannot show. That is [`PrestigeView`]'s *values, not sentences* rule applied
+/// to the one field in the read model that is copied five hundred at a time.
+///
+/// The text is an [`Rc<str>`](std::rc::Rc) for the same arithmetic: it is cloned out
+/// of [`Toasts`] on every reprojection, and cloning a
+/// reference-counted pointer bumps a counter where cloning a [`String`] would copy the
+/// sentence.
+#[derive(Clone, Debug)]
+pub struct HistoryEntry {
+    /// How long ago it was announced, in whole seconds.
+    pub age_secs: u64,
+    /// What was announced, in [`announce`]'s words and nobody else's.
+    pub text: Rc<str>,
+}
+
 /// The three panels of the Stats screen (UI.md §5.5).
 ///
-/// **Placeholder data, minus the prestige figures**, which moved to
-/// [`PrestigeView`] when the preview modal needed to quote them without being able to
-/// disagree with the panel. What is left here is the lifetime counters, the run
-/// milestones and the history — the tick's and the save's to fill (the counters are
-/// core phase 11). The worlds table and the level cap are *not* here either: the
-/// screen derives them from `World` and `LEVEL_CAP`, which already answer them.
-/// `blocks_broken` is a `u32` for now because `format::grouped` takes one and the
-/// fixture fits; the lifetime type is settled when `GameState` fills this in.
+/// **Every field is now the run's**, which is what took the last `..Self::sample()`
+/// out of [`View::from_state`]. The prestige figures moved to [`PrestigeView`] when
+/// the preview modal needed to quote them without being able to disagree with the
+/// panel; the worlds table and the level cap are not here either, because the screen
+/// derives them from `World` and `LEVEL_CAP`, which already answer them.
 #[derive(Clone, Debug)]
 pub struct StatsView {
-    /// Lifetime blocks broken — survives prestige.
-    pub blocks_broken: u32,
-    /// Lifetime playtime, pre-formatted: `14h 22m`.
+    /// Blocks the **player** has broken — the auto-miner's are excluded, so the figure
+    /// means *swings*. A lifetime total that survives a prestige.
+    ///
+    /// A [`u64`] because the core counts it in one: a maxed Nuke is two hundred cells a
+    /// tick, and a `u32` would not survive a fortnight of them.
+    pub blocks_broken: u64,
+    /// Lifetime playtime, pre-formatted: `14h 22m`. Survives a prestige.
+    ///
+    /// Pre-formatted where [`blocks_broken`](StatsView::blocks_broken) is not, and the
+    /// asymmetry is deliberate: a count has one rendering and a span has several, so
+    /// choosing between `14h 22m` and `1d 2h` is a decision, and it is
+    /// [`duration_hm`]'s. Making the screen redo it would
+    /// let this row and the one below it disagree about which units they are in.
     pub playtime: String,
-    /// Time in the current run, pre-formatted: `3h 07m` — resets with a prestige.
+    /// Time in the current run, pre-formatted: `3h 07m` — cleared by a prestige.
     pub this_run: String,
     /// The run-progress rows of the "This run" panel.
     pub milestones: Vec<Milestone>,
-    /// The event history, the toast log verbatim: `20:14  Excavator!  +1 …`.
+    /// The announcement log, **newest first** — the toast buffer, verbatim.
     ///
-    /// The whole log, newest first — the panel shows as much of it as its box has
-    /// rows, which on a tall terminal is a good deal more than the ten UI.md §5.7
+    /// The whole log, not the visible window: the panel shows as much of it as its box
+    /// has rows, which on a tall terminal is a good deal more than the ten UI.md §5.5
     /// had room to draw.
-    pub history: Vec<String>,
-    /// The topmost drawn history line. Zero in the fixture: a log read newest-first
-    /// is one nobody scrolls *up* in.
-    pub history_offset: usize,
+    pub history: Vec<HistoryEntry>,
+    /// Which entry the player has scrolled to, counted from the newest.
+    ///
+    /// The panel has **no stored offset** — [`window`](crate::screen::window) derives
+    /// the visible slice from this cursor, exactly as the Levels roadmap does. A second
+    /// scroll position would be a second thing to keep in step with the first.
+    pub selected: usize,
 }
 
 /// The Pickaxe panel of the Mine screen (UI.md §5.1).
@@ -1121,33 +1157,43 @@ pub struct View {
 }
 
 impl View {
-    /// Everything TUI phase 3 can derive from a real run; the rest is still
-    /// [`sample`](View::sample)'s fixture.
+    /// The whole read model, derived from a real run.
     ///
     /// **This is the wire the whole `View` indirection existed for.** The Mine
     /// screen's every figure now comes from `GameState`, and nothing under
     /// `screen/` changed to make that true — which is what the module header
     /// promised while the rules were still being written.
     ///
-    /// The `..Self::sample()` at the bottom is not laziness, it is the **progress
-    /// marker**. Rust's *functional update syntax* — `Self { a, b, ..other }`, "these
-    /// fields explicitly, the remainder taken from `other`" — makes that one line the
-    /// literal list of what phase 7 still owes: the Stats panels and the Levels
-    /// roadmap. Each
-    /// phase lifts its own fields above the `..`, and when the last one goes, the line
-    /// goes with it and the compiler resumes checking that every field is accounted
-    /// for. A comment would have said the same and never failed.
+    /// **The `..Self::sample()` is gone, and its absence is the guarantee.** It was the
+    /// progress marker: Rust's *functional update syntax* — `Self { a, b, ..other }`,
+    /// "these fields explicitly, the remainder taken from `other`" — made that one line
+    /// the literal list of what the phase still owed, and each phase lifted its own
+    /// fields above it. The Stats panels were the last, so the line went with them and
+    /// **the compiler is exhaustive over [`View`] again**: a field added here now
+    /// breaks this function until someone decides where it comes from, where before it
+    /// would have silently taken a wireframe's value into a real run.
     ///
-    /// It does mean a redraw builds the whole fixture and throws most of it away.
-    /// That is why [`App`](crate::app::App) caches the result in a field rather than
-    /// projecting inside its `render`: the cost is paid when the state changes, not
-    /// thirty times a second.
-    /// `refused` is the front-end's memory of the last compress-first refusal
-    /// ([`App::refused`](crate::app::App::refused)), and it is a *parameter* rather
-    /// than something read off the run because the run does not know it happened: a
-    /// refusal changes no game state, which is precisely what makes it the front-end's
-    /// to remember.
-    pub fn from_state(state: &GameState, cursors: Cursors, refused: Option<&CompressHint>) -> Self {
+    /// Three parameters and not one, because three of the answers are not in the run:
+    ///
+    /// - `cursors` is where the player is *pointing*, which is front-end state by
+    ///   definition — a list selection has no business reaching a save.
+    /// - `refused` is the last compress-first refusal
+    ///   ([`App::refused`](crate::app::App::refused)). A refusal changes no game state,
+    ///   which is precisely what makes it the front-end's to remember.
+    /// - `toasts` and `now` are the announcement log and the instant to age it against.
+    ///   Same argument, twice: the run does not know what was said about it, and the
+    ///   core is forbidden a clock.
+    ///
+    /// A projection this wide does real work, which is why [`App`](crate::app::App)
+    /// caches the result in a field rather than calling this inside its `render`: the
+    /// cost is paid when the state changes, not thirty times a second.
+    pub fn from_state(
+        state: &GameState,
+        cursors: Cursors,
+        refused: Option<&CompressHint>,
+        toasts: &Toasts,
+        now: Instant,
+    ) -> Self {
         let player = state.player();
         let pickaxe = player.get_pickaxe();
         let enchants = pickaxe.enchants();
@@ -1199,19 +1245,20 @@ impl View {
             upgrades: upgrades_view(state, cursors),
             levels: levels_view(state, cursors),
             prestige: prestige_view(player),
-
-            // **One field left.** `stats` is the last screen still drawn from the
-            // fixture, and this `..` is the literal list of what phase 7 still owes;
-            // it disappears when that screen is wired. What remains behind it is
-            // narrower than it was — the panel's prestige half now comes from
-            // `prestige` above, and only the three counters, the run milestones and
-            // the history are still fixture.
-            ..Self::sample()
+            stats: stats_view(state, cursors, toasts, now),
+            colour_mode: ColourMode::default(),
         }
     }
 
     /// The placeholder save drawn throughout UI.md §5: level 23, Diamond
     /// pickaxe, standing in the Iron Mine.
+    ///
+    /// **`#[cfg(test)]`, and that is what wiring the last screen bought.** This
+    /// fixture used to be *production* code: [`from_state`](View::from_state) ended in
+    /// `..Self::sample()`, so every real projection built the whole wireframe and threw
+    /// most of it away, and the several hundred lines of it shipped in the binary. With
+    /// the last field wired there is no caller left outside the tests, so it compiles
+    /// out entirely — the fixture is now what it always claimed to be.
     ///
     /// Every figure is transcribed from a wireframe rather than invented, **with one
     /// deliberate exception: the grid**. `docs/UI.md` §5.1 counts a 12×7 mine, which
@@ -1226,6 +1273,7 @@ impl View {
     /// *same* Iron Mine, on three screens the player can reach in two keystrokes.
     /// `the_three_fixtures_agree_on_the_standing_mine` is what stops them drifting
     /// apart the next time the grid is swapped.
+    #[cfg(test)]
     pub fn sample() -> Self {
         // **The one line that switches grid fixture.** Swap in
         // `sample_grid_small_5x5` or `sample_grid_wireframe_12x7` to see the same
@@ -2082,8 +2130,8 @@ fn enchant_effect(kind: EnchantType, level: u8) -> Vec<String> {
 /// same rule `pickaxe_summary` and `boost_view` already follow. Only two of the six
 /// tracks reach outside themselves at all — Jackhammer's stripe is the mine's width,
 /// Haste's multiplier is worth whatever *this* pickaxe's tier and Efficiency make it —
-/// and a signature naming the run would make [`View::sample`] unable to call this
-/// without one.
+/// and a signature naming the run would make the test fixture unable to call this
+/// without building one.
 fn enchant_at_next(
     kind: EnchantType,
     level: u8,
@@ -2226,17 +2274,21 @@ fn mine_note(kind: MineKind) -> Vec<String> {
     lines.iter().map(|line| (*line).to_owned()).collect()
 }
 
+#[cfg(test)]
 /// The rung the fixture's player stands on — dotted `●` in the list.
 const CURRENT_RUNG: &str = "Diamond Eff IV";
 
+#[cfg(test)]
 /// The rung the fixture's cursor sits on — the tier jump the detail pane warns about.
 const SELECTED_RUNG: &str = "Netherite Pickaxe";
 
+#[cfg(test)]
 /// The topmost drawn rung at 80×24, which is what makes the counted frame the
 /// counted frame: `window(46, 30, 27, 19)` is `27..46`, and row 27 is
 /// `Diamond Eff III`, exactly as UI-EN.md §5.5 drew it.
 const PICKAXE_OFFSET: usize = 27;
 
+#[cfg(test)]
 /// The whole pickaxe roadmap — six tiers, each with its Efficiency levels.
 ///
 /// **Generated, not transcribed, and that is a change of kind.** The old fixture
@@ -2291,6 +2343,7 @@ fn pickaxe_ladder() -> Vec<UpgradeRow> {
         .collect()
 }
 
+#[cfg(test)]
 /// The three Upgrades sub-tabs as `docs/UI.md` §5.4 draws them, for the frame tests.
 ///
 /// **A fixture and no longer the screen's data**: [`upgrades_view`] projects all three
@@ -2402,6 +2455,7 @@ fn sample_upgrades() -> UpgradesView {
     }
 }
 
+#[cfg(test)]
 /// The mine width the fixture's Jackhammer row is quoted against.
 ///
 /// The §5.4 frame's player stands in a `12x7` mine, which is the number
@@ -2409,6 +2463,7 @@ fn sample_upgrades() -> UpgradesView {
 /// the width rather than the run it comes from.
 const SAMPLE_MINE_WIDTH: u8 = 12;
 
+#[cfg(test)]
 /// A fixture price: `(item, needed, held)` per line, verdicted the way
 /// [`price_lines`] verdicts a real one.
 ///
@@ -2431,6 +2486,7 @@ fn sample_price(lines: &[(Item, u32, u32)]) -> Vec<PriceLine> {
         .collect()
 }
 
+#[cfg(test)]
 /// The six enchant rows the §5.4.1 frame draws, at the levels it draws them.
 fn sample_enchant_rows() -> Vec<UpgradeRow> {
     let rows: &[(EnchantType, u8, u8, Mark)] = &[
@@ -2455,6 +2511,7 @@ fn sample_enchant_rows() -> Vec<UpgradeRow> {
         .collect()
 }
 
+#[cfg(test)]
 /// The twenty-four mine-track rows of the §5.4.2 frame.
 fn sample_mine_rows() -> Vec<UpgradeRow> {
     // `(mine, size next, size mark, richness next, richness mark)` — **two marks per
@@ -2532,6 +2589,7 @@ fn sample_mine_rows() -> Vec<UpgradeRow> {
         .collect()
 }
 
+#[cfg(test)]
 /// The Mines list and detail pane drawn in UI.md §5.2, from the frame.
 ///
 /// Obsidian is selected — a two-material mine, so the detail pane shows the
@@ -2595,6 +2653,7 @@ fn sample_mines() -> MinesView {
     }
 }
 
+#[cfg(test)]
 /// The Inventory table and compress panel drawn in UI.md §5.3, from the frame.
 ///
 /// The counts are fixture data; the compress panel's derived numbers (value,
@@ -2649,21 +2708,31 @@ fn sample_inventory() -> InventoryView {
     }
 }
 
-/// The Stats panels drawn in UI.md §5.5, transcribed from the frame.
+#[cfg(test)]
+/// The Stats panels at the run UI.md §5.5 is drawn at: level 23, mid-climb, rank II.
 ///
-/// Placeholder throughout: the prestige numbers, the lifetime counters, the run
-/// milestones and the history are the tick's and the save's to fill (phase 7).
-/// Kept together so the three panels can be read against the one wireframe.
+/// **The history is no longer transcribed from the frame, and that is a correction
+/// rather than a liberty.** §5.5 draws invented, abbreviated lines (`+80 A. Debris`,
+/// `Explosive — 9 blocks cleared`) that nothing in the code produces; the sentences
+/// below are the ones [`announce::of`](crate::announce::of) and the purchase paths
+/// actually word. Two of the frame's lines are gone entirely — entering a mine and
+/// moving the richness dial raise no announcement at all — and the rest are longer
+/// than the frame made them look, which is what the panel now has to survive.
+/// `docs/UI.md` §5.5.2.
 fn sample_stats() -> StatsView {
-    // `(done, current, text, detail)` for each "This run" row.
+    // `(done, current, text, detail)` for each "This run" row, at level 23 with a
+    // Diamond pickaxe: the three cleared goals, the one in progress, and four ahead.
     let milestones = [
         (true, false, "Break your first block", ""),
         (true, false, "Reach the Nether", "Lv 15"),
         (true, false, "Diamond pickaxe", ""),
         (false, true, "Reach the End", "Lv 30    23/30"),
         (false, false, "Netherite pickaxe", ""),
-        (false, false, "Instamine Obsidian", ""),
-        (false, false, "Max out a mine", "Stone 20x10 R9  ✓"),
+        (false, false, "Instamine Obsidian", "25 / 50"),
+        // **No `✓` in the detail**, against the frame, which draws one on a row it
+        // leaves un-ticked — and `20x10 R9` *is* a maxed mine, so the two contradict
+        // each other. The row's own mark is the only one that answers.
+        (false, false, "Max out a mine", "Iron 12x7 R3"),
         (false, false, "Reach mining level 50", "23/50"),
     ]
     .into_iter()
@@ -2675,37 +2744,50 @@ fn sample_stats() -> StatsView {
     })
     .collect();
 
+    // `(age in seconds, the sentence)`, newest first — the shape `Toasts::log` hands
+    // over. The ages climb so the column shows all three of its units.
     let history = [
-        "20:14  Excavator!  +1 Compressed Iron",
-        "20:13  Explosive — 9 blocks cleared",
-        "20:13  Mine refilled",
-        "20:11  Level 23 — +115 Quartz, +80 A. Debris",
-        "20:09  Compress first: need 6 Compressed Iron",
-        "20:04  Jackhammer — 8 blocks",
-        "20:02  Welcome back — 6h away, +12 480 Iron",
-        "19:58  Bought Diamond Pickaxe Efficiency IV",
-        "19:51  Richness dial: Obsidian 46% → 64%",
-        "19:44  Mine refilled",
+        (95, "Excavator!  +1 Compressed Iron"),
+        (170, "Explosive — 9 blocks"),
+        (200, "Mine refilled"),
+        (
+            860,
+            "Level 23 — +115 Quartz, +80 Ancient Debris — claim on 6",
+        ),
+        (1_020, "Not enough Iron: 6 Compressed short"),
+        (1_400, "Jackhammer — 8 blocks"),
+        (2_300, "Bought Diamond Pickaxe Efficiency IV"),
+        (3_100, "Redstone boost ended"),
+        (4_700, "Claimed Lv 22 — +110 Quartz, +77 Ancient Debris"),
+        (5_200, "Mine refilled"),
         // Past the ten rows the counted frame had room for. They change nothing at
-        // 80×24 — the window still starts at zero and still ends after ten — and are
-        // what a taller Stats panel now has to show.
-        "19:39  Nuke — 21 blocks cleared",
-        "19:36  Mine refilled",
-        "19:30  Level 22 — +110 Quartz, +77 A. Debris",
-        "19:28  Bought Obsidian richness level 6",
-        "19:22  Excavator!  +1 Compressed Obsidian",
-        "19:15  Explosive — 9 blocks cleared",
-        "19:11  Mine refilled",
-        "19:04  Entered the Obsidian Mine",
-        "18:57  Bought Ancient Debris size 8x5",
-        "18:49  Level 21 — +105 Quartz, +73 A. Debris",
-        "18:42  Jackhammer — 8 blocks",
-        "18:35  Mine refilled",
-        "18:20  Prestige II — ×1.20 on everything",
-        "18:19  Reached 6 540 Amethyst",
+        // 80×24 — the window still starts at zero and still ends after eleven — and
+        // are what a taller Stats panel now has to show.
+        (6_000, "Nuke — 21 blocks"),
+        (6_400, "Mine refilled"),
+        (
+            7_100,
+            "Level 22 — +110 Quartz, +77 Ancient Debris — claim on 6",
+        ),
+        (7_900, "Bought Fortune III"),
+        (8_800, "Excavator!  +1 Compressed Obsidian"),
+        (9_600, "Explosive — 9 blocks"),
+        (10_400, "Mine refilled"),
+        (11_900, "Bought Netherite Pickaxe"),
+        (13_100, "Claimed Lv 21 — +105 Quartz, +73 Ancient Debris"),
+        (14_000, "Jackhammer — 8 blocks"),
+        (15_500, "Mine refilled"),
+        (
+            61_000,
+            "Level 21 — +105 Quartz, +73 Ancient Debris — claim on 6",
+        ),
+        (95_000, "Mine refilled"),
     ]
     .into_iter()
-    .map(str::to_owned)
+    .map(|(age_secs, text)| HistoryEntry {
+        age_secs,
+        text: Rc::from(text),
+    })
     .collect();
 
     StatsView {
@@ -2714,10 +2796,11 @@ fn sample_stats() -> StatsView {
         this_run: "3h 07m".to_owned(),
         milestones,
         history,
-        history_offset: 0,
+        selected: 0,
     }
 }
 
+#[cfg(test)]
 /// The prestige trade the §6.8 frame is drawn at: rank II, unaffordable, mid-climb.
 ///
 /// Transcribed rather than invented, and it agrees with the §5.5 frame beside it
@@ -2738,7 +2821,7 @@ fn sample_prestige() -> PrestigeView {
         held_raw: 0,
         // The frame's own `✗`: the player holds nothing, so the ore is missing
         // outright rather than being held in the wrong denomination.
-        verdict: Affordability::Insufficient(vec![Shortfall {
+        verdict: Affordability::Insufficient(vec![skylode_core::economy::Shortfall {
             item: Item::Raw(Material::Amethyst),
             needed: cost,
             held: 0,
@@ -2751,6 +2834,153 @@ fn sample_prestige() -> PrestigeView {
         other_enchants: 5,
         level: 23,
     }
+}
+
+/// The Stats screen's three panels, drawn from the run and the announcement log.
+///
+/// **`now` and the log are parameters rather than something read off `state`**, for
+/// the reason [`View::from_state`]'s `refused` is one: the run does not know what was
+/// announced. An announcement changes no game state — that is exactly what makes it
+/// the front-end's to keep — and an age needs a clock the core is forbidden.
+fn stats_view(state: &GameState, cursors: Cursors, toasts: &Toasts, now: Instant) -> StatsView {
+    StatsView {
+        blocks_broken: state.blocks_broken(),
+        playtime: duration_hm(state.playtime_ticks()),
+        this_run: duration_hm(state.run_playtime_ticks()),
+        milestones: milestones(state),
+        history: toasts
+            .log(now)
+            .map(|(age_secs, text)| HistoryEntry { age_secs, text })
+            .collect(),
+        selected: cursors.history,
+    }
+}
+
+/// The eight rows of the `This run` panel (UI.md §5.5).
+///
+/// **Run progress, not achievements, and every row is a pure predicate.** Nothing here
+/// is stored: the save carries no "ever achieved" bitset, so the panel resets with a
+/// prestige — which is honest, because that is what it claims to be. A panel called
+/// *Milestones* that un-ticks would be broken; one called *This run* that un-ticks is
+/// working.
+///
+/// **`current` is the first row that is not done**, in list order and not in order of
+/// difficulty. The rows are not monotone — a Netherite pickaxe is reachable before the
+/// End is — so "the next one you will clear" would need an ordering nothing in the
+/// game defines, where "the first one still open" needs only the list the panel draws.
+fn milestones(state: &GameState) -> Vec<Milestone> {
+    let player = state.player();
+    let level = player.get_level();
+    let tier = player.get_pickaxe().get_tier();
+    let power = player.get_pickaxe().mining_power();
+    let obsidian = Block::Obsidian.hardness();
+    let maxed = most_advanced_mine(state);
+
+    // `(done, text, detail)`. The detail is the row's evidence, and it is written for
+    // the row rather than derived from a rule: the frame shows a distance on the two
+    // numeric goals, a threshold on the two world ones, and the frontrunner on the mine
+    // one — three different kinds of answer to three different kinds of question.
+    let rows: [(bool, String, String); 8] = [
+        // **The one row with no counter behind it.** `blocks_broken` is a *lifetime*
+        // total, so it would stay ticked across a prestige and make a panel headed
+        // `This run` state a fact about a run that ended. Experience answers it
+        // instead, and answers it exactly: the auto-miner grants none — a contract the
+        // core states — so any XP at all means this run has swung at something, and a
+        // prestige clears it. The `level > 1` half is for the instant after a level-up,
+        // where the counter is back at zero and a great deal has been broken.
+        (
+            level > 1 || player.get_experience() > 0,
+            "Break your first block".to_owned(),
+            String::new(),
+        ),
+        world_row(World::Nether, level),
+        (
+            tier >= PickaxeTier::Diamond,
+            "Diamond pickaxe".to_owned(),
+            String::new(),
+        ),
+        world_row(World::End, level),
+        (
+            tier >= PickaxeTier::Netherite,
+            "Netherite pickaxe".to_owned(),
+            String::new(),
+        ),
+        // **Base power, with no boost and no prestige on it.** An instamine that lasts
+        // as long as a ten-minute charge is not a threshold the run has crossed, and a
+        // row that ticked and un-ticked with a timer would be reporting the boost.
+        (
+            power >= obsidian,
+            "Instamine Obsidian".to_owned(),
+            format!("{power:.0} / {obsidian:.0}"),
+        ),
+        (
+            maxed.as_ref().is_some_and(|&(_, _, both)| both),
+            "Max out a mine".to_owned(),
+            maxed.map(|(label, _, _)| label).unwrap_or_default(),
+        ),
+        (
+            level >= LEVEL_CAP,
+            format!("Reach mining level {LEVEL_CAP}"),
+            format!("{level}/{LEVEL_CAP}"),
+        ),
+    ];
+
+    // The `▸` goes on the first row still open. `position` answers `None` when every
+    // row is done, and then no row is current — which is the right reading of a
+    // finished panel rather than a mark stranded on the last line.
+    let current = rows.iter().position(|(done, _, _)| !done);
+    rows.into_iter()
+        .enumerate()
+        .map(|(index, (done, text, detail))| Milestone {
+            done,
+            current: current == Some(index),
+            text,
+            // A done row keeps its threshold and drops its distance: `23/30` on a goal
+            // already cleared is a number counting towards something that has happened.
+            detail: if done && detail.contains('/') {
+                String::new()
+            } else {
+                detail
+            },
+        })
+        .collect()
+}
+
+/// One of the two world rows: the threshold it opens at, and how far off it is.
+fn world_row(world: World, level: u32) -> (bool, String, String) {
+    let unlock = world.unlock_level();
+    (
+        world.is_unlocked_at(level),
+        format!("Reach the {}", world.name()),
+        format!("Lv {unlock}    {level}/{unlock}"),
+    )
+}
+
+/// The mine this run has taken furthest, its label, and whether it is maxed on **both**
+/// tracks.
+///
+/// **An unvisited mine has no state and counts as level 0**, which falls out of the
+/// lazy creation rather than being special-cased: [`GameState::mine`] answers [`None`]
+/// for a mine never entered, and a mine never entered has bought nothing.
+///
+/// "Furthest" is the sum of the two levels, ties going to whichever
+/// [`MineKind::ALL`] lists first. A sum rather than a lexicographic order because the
+/// two tracks are bought against each other — a player who put everything into size is
+/// as far along as one who split it — and because the row is evidence, not a ranking.
+fn most_advanced_mine(state: &GameState) -> Option<(String, u32, bool)> {
+    MineKind::ALL
+        .into_iter()
+        .filter_map(|kind| state.mine(kind).map(|mine| (kind, mine)))
+        .map(|(kind, mine)| {
+            let (width, height) = mine.get_size();
+            let richness = mine.get_richness_level();
+            (
+                format!("{} {width}x{height} R{richness}", kind.name()),
+                mine.get_size_level() + richness,
+                mine.is_size_maxed() && mine.is_richness_maxed(),
+            )
+        })
+        .max_by_key(|&(_, reach, _)| reach)
 }
 
 /// Everything §6.8 and §5.5 say about the prestige trade, read off the run.
@@ -2807,12 +3037,14 @@ fn prestige_view(player: &Player) -> PrestigeView {
     }
 }
 
+#[cfg(test)]
 /// The topmost drawn level at 80×24 — index 12, which is level 13.
 ///
 /// That is the row UI.md §5.6 starts its window on, and `window(50, 22, 12, 19)` is
 /// `12..31`: levels 13..=31, the counted frame exactly.
 const LEVELS_OFFSET: usize = 12;
 
+#[cfg(test)]
 /// The **whole** Levels roadmap, `1..=LEVEL_CAP`.
 ///
 /// It used to be the window UI.md §5.6 drew — levels 13..=31 — because the view
@@ -2859,9 +3091,11 @@ fn sample_levels() -> LevelsView {
     }
 }
 
+#[cfg(test)]
 /// The fixture's uncollected levels — see [`sample_levels`] for why these three.
 const SAMPLE_WAITING: [u32; 3] = [13, 21, 23];
 
+#[cfg(test)]
 /// A stand-in reward line for a level the wireframe never drew.
 ///
 /// Keyed off the world the level opens into, so the materials at least name things
@@ -2876,6 +3110,7 @@ fn filler_grants(level: u32) -> String {
     format!("+{} {common}, +{} {value}", level * 10, level * 3)
 }
 
+#[cfg(test)]
 /// The nineteen rows UI.md §5.6 counted, as `(level, grants, xp)`.
 ///
 /// Levels 15 and 30 grant a world and no loot, which is why their lines look
@@ -2949,6 +3184,7 @@ const X: Option<Block> = None;
 /// crack drawn on an ore cell would make the label contradict the picture.
 type GridFixture = (Vec<Vec<Option<Block>>>, (u8, u8));
 
+#[cfg(test)]
 /// A **full-size** 20×10 mine — the reserve at capacity.
 ///
 /// This is the live fixture, and it is not the one the wireframes drew. UI.md §5.1
@@ -3064,6 +3300,8 @@ mod tests {
                 state.player().get_level(),
             ),
             None,
+            &Toasts::new(),
+            Instant::now(),
         )
     }
 
@@ -3613,7 +3851,7 @@ mod tests {
         let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
         cursors.pickaxe_rung = here + 1;
 
-        let view = View::from_state(&state, cursors, None);
+        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Pickaxe(detail) => {
                 assert_eq!(detail.title, "Netherite Pickaxe");
@@ -3649,7 +3887,7 @@ mod tests {
         let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
         cursors.pickaxe_rung = here + 1;
 
-        let view = View::from_state(&state, cursors, None);
+        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Pickaxe(detail) => {
                 let dip = match detail.dip.as_ref() {
@@ -3711,7 +3949,7 @@ mod tests {
         );
         cursors.pickaxe_rung = iron_jump;
 
-        let view = View::from_state(&state, cursors, None);
+        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Pickaxe(detail) => {
                 assert!(detail.chain.is_empty(), "an owned rung buys nothing");
@@ -3757,7 +3995,7 @@ mod tests {
         for rung in 0..upgrade::ladder().len() {
             let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
             cursors.pickaxe_rung = rung;
-            let view = View::from_state(&state, cursors, None);
+            let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
             match &view.upgrades.active_subtab().detail {
                 UpgradeDetail::Pickaxe(detail) => assert_eq!(
                     detail.owned.is_some(),
@@ -3791,7 +4029,7 @@ mod tests {
         let mut cursors = upgrading(&state, UpgradeTab::Pickaxe);
         cursors.pickaxe_rung = rung;
 
-        let view = View::from_state(&state, cursors, None);
+        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Pickaxe(detail) => {
                 let owned = match detail.owned.as_ref() {
@@ -3934,7 +4172,7 @@ mod tests {
         for kind in cursor::enchant_tracks() {
             let mut cursors = upgrading(&state, UpgradeTab::Enchants);
             cursors.enchant = kind;
-            let view = View::from_state(&state, cursors, None);
+            let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
             match &view.upgrades.active_subtab().detail {
                 UpgradeDetail::Enchant(detail) => {
                     assert_eq!(detail.kind, kind);
@@ -4052,7 +4290,7 @@ mod tests {
         // left to sell them. Efficiency 3 is the Overworld cap a fresh run lives under.
         let state = veteran(&[(r#""enchants":{}"#, r#""enchants":{"Fortune":3}"#)]);
         let cursors = upgrading(&state, UpgradeTab::Enchants);
-        let view = View::from_state(&state, cursors, None);
+        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
 
         let fortune = view
             .upgrades
@@ -4106,7 +4344,7 @@ mod tests {
         let mut cursors = upgrading(&state, UpgradeTab::Mines);
         cursors.mine_track = (MineKind::Coal, MineTrack::Size);
 
-        let view = View::from_state(&state, cursors, None);
+        let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
         match &view.upgrades.active_subtab().detail {
             UpgradeDetail::Mine(detail) => {
                 assert_eq!(detail.blocked, Some(TrackBlock::NotEntered));
@@ -4131,7 +4369,7 @@ mod tests {
         for track in MineTrack::ALL {
             let mut cursors = upgrading(&state, UpgradeTab::Mines);
             cursors.mine_track = (MineKind::Stone, track);
-            let view = View::from_state(&state, cursors, None);
+            let view = View::from_state(&state, cursors, None, &Toasts::new(), Instant::now());
             match &view.upgrades.active_subtab().detail {
                 UpgradeDetail::Mine(detail) => {
                     assert_eq!(detail.at_next, TrackOutcome::Maxed, "{track:?}");

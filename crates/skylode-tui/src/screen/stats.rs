@@ -23,7 +23,10 @@ use skylode_core::{tunables::LEVEL_CAP, world::World};
 
 use crate::{
     action::Action,
-    format::{denominations, grouped, holding, justified, multiplier, prestige_rank, xp_progress},
+    format::{
+        age, denominations, grouped_u64, holding, justified, multiplier, prestige_rank, truncate,
+        xp_progress,
+    },
     screen::{panel, window},
     theme,
     view::View,
@@ -49,6 +52,15 @@ const RIGHT_COLUMN_WEIGHT: u16 = 50;
 /// alternative was quoting the purse as a single total, which is the lie
 /// [`holding`] exists to refuse.
 const PRICE_MARGIN: usize = 1;
+
+/// The column [`history`] keeps clear on the right, so a truncated line's `…` does not
+/// sit against the border.
+///
+/// One and not [`RIGHT_MARGIN`]'s three: these lines are prose and the box is already
+/// too narrow for what the game says into it, so every column spent on air is a word
+/// the player does not get. It matches [`PRICE_MARGIN`] for the same reason — both are
+/// rows where the content, not the alignment, is what the margin is competing with.
+const HISTORY_MARGIN: usize = 1;
 
 /// Draws the three panels and the footer.
 pub fn render(frame: &mut Frame, area: Rect, view: &View) {
@@ -144,7 +156,7 @@ fn progression(frame: &mut Frame, area: Rect, view: &View) {
         width,
     ));
     lines.push(Line::from(""));
-    lines.push(stat("Blocks broken", &grouped(s.blocks_broken), width));
+    lines.push(stat("Blocks broken", &grouped_u64(s.blocks_broken), width));
     lines.push(stat("Playtime", &s.playtime, width));
     lines.push(stat("This run", &s.this_run, width));
 
@@ -181,25 +193,52 @@ fn this_run(frame: &mut Frame, area: Rect, view: &View) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// The History panel: the event log, one line each, the toast log verbatim.
+/// The History panel: every announcement this session made, newest first.
+///
+/// **Three departures from the §5.5 frame, all found by rendering it** (`docs/UI.md`
+/// §5.5.2). The stamp is an age and not a clock; the lines are truncated because the
+/// real sentences do not fit; and the selected row is drawn, which the frame does not
+/// show and which the scroll needs — without it the first presses of `↑↓` move a
+/// cursor inside the window and nothing on the screen changes.
 fn history(frame: &mut Frame, area: Rect, view: &View) {
     let block = panel(" History ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // The log is newest-first and has no selection of its own, so the cursor is
-    // pinned to its head: the window then only ever slides when the *player* scrolls
-    // it, never to chase a selection that does not exist.
+    // **No stored offset, exactly as the Levels roadmap has none.** `window` derives
+    // the visible slice from the cursor and a zero offset, which keeps the scroll
+    // minimal — the box only moves when the selection would otherwise leave it — and
+    // leaves one scroll position rather than two that could disagree.
     let history = &view.stats.history;
-    let range = window(
-        history.len(),
-        view.stats.history_offset,
-        view.stats.history_offset,
-        usize::from(inner.height),
-    );
+    let selected = view.stats.selected;
+    let range = window(history.len(), selected, 0, usize::from(inner.height));
+    // The window's own start, so the drawn rows can be numbered back into the log and
+    // the selected one found. Recomputed from the range rather than carried, because
+    // `window` is what settled it and a second copy would be the disagreement the
+    // missing offset exists to prevent.
+    let top = range.start;
+
+    let width = (inner.width as usize).saturating_sub(HISTORY_MARGIN);
     let lines: Vec<Line> = history[range]
         .iter()
-        .map(|entry| Line::from(format!(" {entry}")))
+        .enumerate()
+        .map(|(row, entry)| {
+            // The age column is padded to a fixed width rather than flush-right,
+            // because the sentence beside it is what the eye scans down: a ragged
+            // left edge on the text would cost more than the ragged one on `1m`/`23h`.
+            let line = format!(" {:<5}{}", age(entry.age_secs), entry.text);
+            let line = Line::from(truncate(&line, width));
+            if top + row == selected {
+                // **Colour and no glyph.** Every other list in the game marks its
+                // cursor with `▸`, and here that would spend a column of a box already
+                // too narrow for what it prints — and put a mark in front of sentences
+                // that read as a log rather than as rows to act on. Nothing is bought
+                // from this list, so the cursor only has to say *where you are*.
+                line.style(Style::default().fg(theme::ACCENT))
+            } else {
+                line
+            }
+        })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -248,16 +287,21 @@ mod tests {
 
     use super::*;
 
-    /// Renders the Stats screen alone into an 80×24 buffer.
+    /// Renders the Stats screen alone into an 80×24 buffer, at the sample run.
     fn render_screen() -> Buffer {
-        let view = View::sample();
+        render_view(&View::sample())
+    }
+
+    /// The same, at a view the caller has adjusted — for the scroll, which is the one
+    /// thing on this screen that a fixture cannot show both ends of.
+    fn render_view(view: &View) -> Buffer {
         let mut terminal = match Terminal::new(TestBackend::new(80, 24)) {
             Ok(terminal) => terminal,
             Err(infallible) => match infallible {},
         };
         if let Err(infallible) = terminal.draw(|frame| {
             let area = frame.area();
-            render(frame, area, &view);
+            render(frame, area, view);
         }) {
             match infallible {}
         }
@@ -354,14 +398,43 @@ mod tests {
         assert!(!netherite.contains('▸'), "{netherite:?}");
     }
 
+    /// The history prints the announcement in [`announce`](crate::announce)'s own
+    /// words, newest first, behind a column saying how long ago it was said.
+    ///
+    /// **The stamp is an age and not a clock**, against the frame's `20:14`: the buffer
+    /// holds [`Instant`](std::time::Instant)s, which are monotonic and know nothing
+    /// about a time of day, and `std` cannot render a *local* one without being told
+    /// the zone. An age needs neither, and "two minutes ago" is the better answer in a
+    /// log anyway. `docs/UI.md` §5.5.2.
     #[test]
-    fn history_is_the_event_log_verbatim() {
+    fn history_prints_the_announcement_behind_its_age() {
         let frame = whole_frame(&render_screen());
         assert!(
-            frame.contains("20:14  Excavator!  +1 Compressed Iron"),
+            frame.contains("1m   Excavator!  +1 Compressed Iron"),
             "{frame}"
         );
-        assert!(frame.contains("Welcome back — 6h away"), "{frame}");
+        // The oldest entries in the fixture are hours and a day back, so the column
+        // shows more than one unit.
+        assert!(frame.contains("Explosive — 9 blocks"), "{frame}");
+    }
+
+    /// The window is derived from the cursor and there is no second scroll position:
+    /// moving the selection past the bottom of the box slides the box, and the newest
+    /// entry leaves the top.
+    #[test]
+    fn scrolling_the_history_slides_the_window_off_its_newest_entry() {
+        let mut view = View::sample();
+        let top = whole_frame(&render_view(&view));
+        assert!(top.contains("Excavator!  +1 Compressed Iron"), "{top}");
+
+        // Past the eleven rows the box has at 80×24.
+        view.stats.selected = view.stats.history.len() - 1;
+        let bottom = whole_frame(&render_view(&view));
+        assert!(
+            !bottom.contains("Excavator!  +1 Compressed Iron"),
+            "the window never moved: {bottom}"
+        );
+        assert!(bottom.contains("Mine refilled"), "{bottom}");
     }
 
     #[test]
@@ -373,6 +446,65 @@ mod tests {
         assert!(last.contains("↑↓  scroll history"), "{last:?}");
         assert!(last.contains("p  prestige"), "{last:?}");
         assert!(last.contains("?  help"), "{last:?}");
+    }
+
+    /// A sentence too long for the box is cut and marked, not clipped silently.
+    ///
+    /// **The frame under-counts what the game says.** §5.5 draws `+80 A. Debris`, an
+    /// abbreviation nothing produces; the real line is fifty-five columns against
+    /// forty-six of box. Ratatui would clip it flush against the border, where a cut
+    /// word and a word that merely ends there look identical — the `…` is what
+    /// separates them. `docs/UI.md` §5.5.2.
+    #[test]
+    fn a_sentence_too_long_for_the_box_is_cut_and_says_so() {
+        let frame = whole_frame(&render_screen());
+        let row = row_with(&frame, "Level 23 —");
+        assert!(
+            row.contains('…'),
+            "the line was clipped in silence: {row:?}"
+        );
+        // And the cut leaves the border alone, unlike a raw clip.
+        assert!(row.trim_end().ends_with('│'), "{row:?}");
+        assert!(
+            !row.contains("…│"),
+            "the cut sits against the border: {row:?}"
+        );
+    }
+
+    /// The selected row is drawn, and drawn **with colour and no glyph**: the box has
+    /// no column to spare for a `▸`, and nothing in this list is bought, so the cursor
+    /// only has to say where the player is.
+    ///
+    /// Without it the scroll would be invisible for the first screenful of presses —
+    /// the cursor moves inside the window before the window has to move.
+    #[test]
+    fn the_selected_history_row_is_the_one_that_takes_the_accent() {
+        let mut view = View::sample();
+        view.stats.selected = 2;
+        let buffer = render_view(&view);
+
+        // The third row of the History box, whose inner area starts below the
+        // `This run` panel and its own border.
+        let accented: Vec<String> = (0..buffer.area.height)
+            .filter_map(|y| {
+                let row: String = (30..80).map(|x| buffer[(x, y)].symbol()).collect();
+                let coloured = (31..79).all(|x| {
+                    let cell = &buffer[(x, y)];
+                    cell.symbol() == " " || cell.fg == theme::ACCENT
+                });
+                coloured.then_some(row)
+            })
+            .collect();
+
+        assert!(
+            accented.iter().any(|row| row.contains("Mine refilled")),
+            "the third entry was not marked: {accented:?}"
+        );
+        assert_eq!(
+            accented.len(),
+            1,
+            "more than one row claimed the cursor: {accented:?}"
+        );
     }
 
     /// The foreground of the first cell drawn with `glyph`. See the same helper on

@@ -125,13 +125,6 @@ impl Tone {
 struct Toast {
     text: Rc<str>,
     tone: Tone,
-    /// Read only by [`log`](Toasts::log), which is why the attribute is here rather
-    /// than only on that method: silencing a dead method does not make the field it
-    /// would have read look alive.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "awaiting the Stats history panel")
-    )]
     at: Instant,
     expires_at: Instant,
 }
@@ -222,10 +215,6 @@ impl Toasts {
     /// `now` is a parameter for the reason every clock in this crate is one: an age
     /// computed from an instant read inside would be untestable, and the caller
     /// already holds the instant its frame belongs to.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "awaiting the Stats history panel")
-    )]
     pub fn log(&self, now: Instant) -> impl Iterator<Item = (u64, Rc<str>)> + '_ {
         self.items.iter().rev().map(move |toast| {
             (

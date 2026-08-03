@@ -11,7 +11,14 @@
 //! grouping and the alignment cannot drift between the XP gauge and the inventory
 //! table.
 
-use skylode_core::{pickaxe::PickaxeTier, tunables::RAW_PER_COMPRESSED};
+use skylode_core::{
+    pickaxe::PickaxeTier,
+    tunables::{RAW_PER_COMPRESSED, TICKS_PER_SECOND},
+};
+
+/// The glyph a truncated line ends on, and the one column [`truncate`] must keep for
+/// it.
+const ELLIPSIS: char = '…';
 
 /// Groups `n` into space-separated thousands: `1240` becomes `"1 240"`.
 ///
@@ -47,6 +54,80 @@ pub fn grouped_u64(n: u64) -> String {
         out.push(ch);
     }
     out.chars().rev().collect()
+}
+
+/// A span of simulated ticks as `14h 22m`, or `22m` under the hour.
+///
+/// **Ticks in, because ticks are what the core counts.** Playtime advances inside
+/// `tick` and is stored as a count of them, which is what makes it deterministic; the
+/// division belongs here rather than in the core, where a remainder would become a
+/// second thing a save can be wrong about.
+///
+/// **Hours never roll over into days**, unlike the offline summary's *"6d 4h away"*.
+/// The two answer different questions: an absence is a span the player waited out and
+/// reads best in its largest unit, while playtime is an achievement being totalled —
+/// `47h 10m` is the figure someone is proud of, and `1d 23h` reads as a timer.
+///
+/// Seconds are dropped rather than rounded. A figure that ticks over while being read
+/// invites the eye to the one digit that matters least.
+pub fn duration_hm(ticks: u64) -> String {
+    let minutes = ticks / TICKS_PER_SECOND / 60;
+    let (hours, minutes) = (minutes / 60, minutes % 60);
+    if hours == 0 {
+        return format!("{minutes}m");
+    }
+    // Two digits on the minutes only when there are hours in front of them, so a
+    // column of figures lines up (`14h 22m`, `3h 07m`) without `07m` ever standing
+    // alone and reading as a stopwatch.
+    format!("{hours}h {minutes:02}m")
+}
+
+/// How long ago something was said, in the shortest honest unit: `12s`, `4m`, `3h`.
+///
+/// **One unit and never two**, which is where this parts company with
+/// [`duration_hm`]: it is a column in a log of one-line entries, and every column
+/// spent on precision is a column taken from the sentence. `3h` is all the answer a
+/// reader of a history wants, and the row below it is already older.
+///
+/// Days are the last step and do not roll further. The buffer is a session's, and a
+/// session long enough to need weeks has already lost its oldest entries to
+/// [`HISTORY_CAP`](crate::toast::HISTORY_CAP).
+pub fn age(seconds: u64) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    match seconds {
+        s if s < MINUTE => format!("{s}s"),
+        s if s < HOUR => format!("{}m", s / MINUTE),
+        s if s < DAY => format!("{}h", s / HOUR),
+        s => format!("{}d", s / DAY),
+    }
+}
+
+/// `text` cut to `width` columns, ending on an `…` when anything was dropped.
+///
+/// **The frames under-count what the game actually says.** `docs/UI.md` §5.5 draws its
+/// history with invented, abbreviated lines (`+80 A. Debris`); the real sentence
+/// [`announce::of`](crate::announce::of) produces is `Level 23 — +115 Quartz, +80
+/// Ancient Debris — claim on 6`, which is fifty-five columns against the forty-seven a
+/// 80-column terminal leaves. Left alone, ratatui clips it flush against the border,
+/// so a cut word and a word that merely ends there look identical.
+///
+/// The `…` is what separates them, and it costs a column: a line that just fits keeps
+/// all `width` columns, and one that does not keeps `width - 1` and the glyph.
+///
+/// Columns are counted in `chars` for [`justified`]'s reason — the sentences carry
+/// `—`, `×` and `…`, each one column wide and several bytes long.
+pub fn truncate(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(width - 1).collect();
+    out.push(ELLIPSIS);
+    out
 }
 
 /// A line of exactly `width` columns with `left` at the start and `right` flush to
@@ -403,5 +484,71 @@ mod tests {
         assert_eq!(multiplier(1_000), "×1.00");
         assert_eq!(multiplier(1_200), "×1.20");
         assert_eq!(multiplier(2_500), "×2.50");
+    }
+
+    /// Hours never roll into days, and the minutes take a leading zero only when
+    /// there are hours in front of them to line up under.
+    #[test]
+    fn a_span_of_ticks_reads_as_hours_and_minutes() {
+        let minutes = |n: u64| n * 60 * TICKS_PER_SECOND;
+
+        assert_eq!(duration_hm(minutes(22)), "22m");
+        assert_eq!(duration_hm(minutes(14 * 60 + 22)), "14h 22m");
+        assert_eq!(duration_hm(minutes(3 * 60 + 7)), "3h 07m");
+        // Two days of play is `47h`, not `1d 23h`: this figure is a total someone is
+        // proud of, not a countdown.
+        assert_eq!(duration_hm(minutes(47 * 60 + 10)), "47h 10m");
+        assert_eq!(duration_hm(0), "0m");
+    }
+
+    /// Seconds are dropped rather than rounded, so a part-minute reads as the minute
+    /// it is inside.
+    #[test]
+    fn a_span_of_ticks_drops_its_seconds() {
+        assert_eq!(duration_hm(TICKS_PER_SECOND * 59), "0m");
+        assert_eq!(duration_hm(TICKS_PER_SECOND * 61), "1m");
+    }
+
+    /// One unit and never two: the history's stamp column exists to be glanced at,
+    /// and every column it spends is one the sentence does not get.
+    #[test]
+    fn an_age_reads_in_the_largest_unit_that_fits_and_only_that_one() {
+        assert_eq!(age(0), "0s");
+        assert_eq!(age(59), "59s");
+        assert_eq!(age(60), "1m");
+        assert_eq!(age(90), "1m");
+        assert_eq!(age(59 * 60), "59m");
+        assert_eq!(age(3_600), "1h");
+        assert_eq!(age(23 * 3_600), "23h");
+        assert_eq!(age(24 * 3_600), "1d");
+        assert_eq!(age(9 * 24 * 3_600), "9d");
+    }
+
+    /// A line that fits keeps every column; one that does not gives a column back to
+    /// the `…`, so a cut sentence cannot be mistaken for one that merely ends there.
+    #[test]
+    fn a_line_too_long_for_its_box_ends_on_an_ellipsis() {
+        assert_eq!(truncate("Mine refilled", 20), "Mine refilled");
+        assert_eq!(truncate("Mine refilled", 13), "Mine refilled");
+        assert_eq!(truncate("Mine refilled", 12), "Mine refill…");
+        assert_eq!(truncate("Mine refilled", 8), "Mine re…");
+        // The result is exactly `width` columns, `…` included — the glyph replaces a
+        // column rather than being appended past the box.
+        assert_eq!(truncate("Mine refilled", 12).chars().count(), 12);
+        assert_eq!(truncate("Mine refilled", 1), "…");
+        assert_eq!(truncate("Mine refilled", 0), "");
+    }
+
+    /// Counted in columns and not bytes, like every other helper here: the real
+    /// sentences carry `—` and `×`, which are one column and three bytes.
+    #[test]
+    fn truncating_counts_columns_and_not_bytes() {
+        let line = "Explosive — 9 blocks";
+        assert_eq!(line.chars().count(), 20);
+        assert_eq!(truncate(line, 20), line);
+        assert_eq!(truncate(line, 12), "Explosive —…");
+        // The cut never lands inside a multi-byte glyph, which a byte slice would do
+        // and would panic on.
+        assert_eq!(truncate(line, 11).chars().count(), 11);
     }
 }

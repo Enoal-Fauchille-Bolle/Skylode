@@ -279,16 +279,19 @@ impl App {
         // on the rung they are standing on, which is the same question asked of the
         // other axis of progression.
         let cursors = Self::cursors_for(&state);
-        let view = View::from_state(&state, cursors, None);
         // Both clocks start due, so the first pass through the loop draws and the
         // first step falls in one period rather than one period from whenever the
         // session happened to be built.
         let now = Instant::now();
+        // A session opens having announced nothing, so the log the first projection
+        // reads is empty by construction rather than by an argument spelled `None`.
+        let toasts = Toasts::new();
+        let view = View::from_state(&state, cursors, None, &toasts, now);
         Self {
             should_quit: false,
             screen: Screen::Mine,
             modal: None,
-            toasts: Toasts::new(),
+            toasts,
             state,
             view,
             cursors,
@@ -327,8 +330,20 @@ impl App {
     /// asks the terminal for nothing does not project a snapshot nobody reads. Which
     /// is what keeps this affordable now that a 20 tps tick changes the run whether
     /// the player touches anything or not.
-    fn sync_view(&mut self) {
-        self.view = View::from_state(&self.state, self.cursors, self.refused.as_ref());
+    ///
+    /// **`now` is the frame's instant, and it must be the same one the frame is drawn
+    /// at.** The history's ages are computed here and its toast is expired in
+    /// [`render`](App::render); a second reading of the clock between the two would let
+    /// a log say `0s` about an announcement the very same frame had already stopped
+    /// showing.
+    fn sync_view(&mut self, now: Instant) {
+        self.view = View::from_state(
+            &self.state,
+            self.cursors,
+            self.refused.as_ref(),
+            &self.toasts,
+            now,
+        );
     }
 
     /// Draws, then blocks for the next event, until asked to quit.
@@ -375,7 +390,7 @@ impl App {
             // stands rather than appearing on the first keypress. `new` starts both
             // flags due, so the opening pass always draws.
             if self.dirty && now >= self.next_frame {
-                self.sync_view();
+                self.sync_view(now);
                 terminal.draw(|frame| self.render(frame, now))?;
                 self.dirty = false;
                 self.next_frame = now + FRAME_PERIOD;
@@ -3048,7 +3063,7 @@ mod tests {
     fn a_stacked_dialog_is_drawn_over_the_screen_it_was_opened_from() {
         let (mut app, _) = mining_session();
         app.update(Action::Compress);
-        app.sync_view();
+        app.sync_view(Instant::now());
 
         let frame = whole_frame(&render_to_buffer(&app));
 
@@ -3139,7 +3154,7 @@ mod tests {
     #[test]
     fn a_fresh_runs_mines_screen_lists_all_twelve_and_shuts_the_right_ones() {
         let mut app = browsing_mines();
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
 
         // Every mine is listed, visited or not.
@@ -3168,7 +3183,7 @@ mod tests {
         // Eleven mines have never been entered, so the pane for a mine other than
         // the standing one has no block count to give.
         app.update(Action::CursorDown);
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("never entered"), "{frame}");
     }
@@ -3368,7 +3383,7 @@ mod tests {
         app.cursors.upgrade_tab = UpgradeTab::Pickaxe;
         app.cursors.pickaxe_rung =
             upgrade::position(&upgrade::ladder(), app.state.player().get_pickaxe()) + 1;
-        app.sync_view();
+        app.sync_view(Instant::now());
         app
     }
 
@@ -3463,7 +3478,7 @@ mod tests {
         // to confirm a trade they were never shown.
         let mut app = at_the_jump();
         app.update(Action::Confirm);
-        app.sync_view();
+        app.sync_view(Instant::now());
 
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(
@@ -3488,7 +3503,7 @@ mod tests {
             app.state.player().get_level() >= 3,
             "the fixture never crossed a level"
         );
-        app.sync_view();
+        app.sync_view(Instant::now());
         app
     }
 
@@ -3529,7 +3544,7 @@ mod tests {
         assert!(!app.state.is_unclaimed(2));
         // The toast names the level and quotes what landed, which is the same phrase
         // the roadmap's own row prints — one wording, two renderings.
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Claimed Lv 2"), "{frame}");
     }
@@ -3563,7 +3578,7 @@ mod tests {
         // are six the player reads none of, which is the same argument the refusal
         // wording makes for naming only the first shortfall.
         assert_eq!(app.toasts.len(), 1, "the sweep announced level by level");
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(
             frame.contains(&format!("Claimed {waiting} levels")),
@@ -3593,7 +3608,7 @@ mod tests {
         }
 
         app.update(Action::ClaimAll);
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Claimed Lv"), "{frame}");
         assert!(
@@ -3604,7 +3619,7 @@ mod tests {
         // And again, against a ladder with nothing on it.
         app.toasts = Toasts::new();
         app.update(Action::ClaimAll);
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Nothing waiting"), "{frame}");
     }
@@ -3778,14 +3793,14 @@ mod tests {
         // Stone is `Material::ALL`'s first row, so a fresh Inventory cursor is already
         // on the pile the refusal is about.
         app.cursors.material = Material::Stone;
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Wooden Eff I wants"), "{frame}");
 
         // Move to any other pile and the note goes with it: a price in Stone printed
         // beside the Coal row would attach a number to the wrong thing.
         app.cursors.material = Material::Coal;
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(!frame.contains("wants"), "{frame}");
     }
@@ -3852,7 +3867,7 @@ mod tests {
         // `render` draws the cached projection, and the walk moved a cursor rather
         // than the run — so the reprojection `run` does before each draw has to be
         // asked for by hand here.
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Fortune I wants"), "{frame}");
     }
@@ -4281,7 +4296,7 @@ mod tests {
         let mut app = session();
         app.screen = Screen::Stats;
         app.update(Action::OpenPrestige);
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("You lose"), "{frame}");
 
@@ -4303,7 +4318,7 @@ mod tests {
         app.update(Action::Confirm);
 
         assert_eq!(app.modal, Some(Modal::PrestigePreview));
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Compress first"), "{frame}");
     }
@@ -4324,7 +4339,7 @@ mod tests {
             None => unreachable!("a compress-first prestige must be remembered"),
         }
         // And the box advertises the key, since a modal leaves no footer to read.
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("press  c  to go"), "{frame}");
 
@@ -4339,7 +4354,7 @@ mod tests {
         assert_eq!(app.modal, None);
         assert_eq!(app.screen, Screen::Inventory);
         assert_eq!(app.cursors.material, Material::Amethyst);
-        app.sync_view();
+        app.sync_view(Instant::now());
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Prestige I"), "{frame}");
     }
@@ -4471,7 +4486,7 @@ mod tests {
         assert!(app.refused.is_none());
 
         let frame = {
-            app.sync_view();
+            app.sync_view(Instant::now());
             whole_frame(&render_to_buffer(&app))
         };
         assert!(frame.contains("Prestige I — ×1.10"), "{frame}");
@@ -4559,7 +4574,7 @@ mod tests {
         app.update(Action::OpenPrestige);
         app.update(Action::Confirm);
         app.update(Action::TypeChar('P'));
-        app.sync_view();
+        app.sync_view(Instant::now());
 
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Type  PRESTIGE  to confirm:"), "{frame}");
@@ -4571,10 +4586,10 @@ mod tests {
     #[test]
     fn the_box_and_the_panel_behind_it_quote_one_price() {
         let mut app = ready_to_prestige();
-        app.sync_view();
+        app.sync_view(Instant::now());
         let panel = whole_frame(&render_to_buffer(&app));
         app.update(Action::OpenPrestige);
-        app.sync_view();
+        app.sync_view(Instant::now());
         let box_frame = whole_frame(&render_to_buffer(&app));
 
         let price = denominations(app.view.prestige.cost);

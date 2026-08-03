@@ -253,12 +253,20 @@ mod tests {
     /// place the sparse map can actually bite.
     #[test]
     fn a_run_that_holds_nothing_still_lists_all_fifteen_materials() {
+        use std::time::Instant;
+
         use skylode_core::{game::GameState, mine_kind::MineKind};
 
-        use crate::cursor::Cursors;
+        use crate::{cursor::Cursors, toast::Toasts};
 
         let state = GameState::new(0x5B1_0DE, std::time::UNIX_EPOCH);
-        let view = View::from_state(&state, Cursors::new(MineKind::Stone, 0, 1), None);
+        let view = View::from_state(
+            &state,
+            Cursors::new(MineKind::Stone, 0, 1),
+            None,
+            &Toasts::new(),
+            Instant::now(),
+        );
 
         assert_eq!(view.inventory.rows.len(), 15);
         for row in &view.inventory.rows {
