@@ -159,18 +159,11 @@ impl Toasts {
     /// is left to count is the record. The question "what is on screen" has exactly
     /// one caller — [`render`](Toasts::render) — and it needs an instant to answer.
     ///
-    /// Only tests read it. It is kept rather than deleted because *how many
-    /// announcements did this action raise* is the assertion a dozen of them are
-    /// about, and the `cfg_attr` says so out loud instead of letting a silent `allow`
-    /// hide it. The Stats panel reads [`log`](Toasts::log) instead, which is why this
-    /// no longer names a screen it is waiting for.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only tests count announcements; the panel reads `log`"
-        )
-    )]
+    /// **It is what bounds the history cursor**, which is the caller that matters:
+    /// `↑↓` on the Stats screen steps an index that has to wrap somewhere, and the
+    /// buffer is the only thing that knows how many rows there are — the reducer has
+    /// no view and no geometry. A dozen tests read it besides, for *how many
+    /// announcements did this action raise*.
     pub fn len(&self) -> usize {
         self.items.len()
     }

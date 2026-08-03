@@ -1579,9 +1579,9 @@ impl App {
     /// knowing what it will move, because the keymap has no access to the run; which
     /// cursor that is lands where the state is, and that is here.
     ///
-    /// Both arms delegate to [`cursor::step_in`], so the *lists clamp, rings wrap*
-    /// rule has one implementation rather than one per screen. A screen with no list
-    /// does nothing, which is why this is a `match` with a catch-all rather than a
+    /// Every arm delegates to [`cursor::step_in`] or [`cursor::step_index`], so *every
+    /// list wraps* has one implementation rather than one per screen. A screen with no
+    /// list does nothing, which is why this is a `match` with a catch-all rather than a
     /// chain of `if`s that each has to remember to be exclusive.
     fn step_list_cursor(&mut self, delta: isize) {
         match self.screen {
@@ -1612,14 +1612,26 @@ impl App {
                         cursor::step_in(&cursor::mine_tracks(), self.cursors.mine_track, delta);
                 }
             },
-            // The ladder is `1..=LEVEL_CAP`, contiguous and one-based, so the clamp is
+            // The ladder is `1..=LEVEL_CAP`, contiguous and one-based, so the step is
             // over indices and the level is that index plus one. Routed through
-            // `step_index` rather than done here with a `+ delta`, so *lists clamp* has
-            // one implementation on this screen too — the failure mode being a `↑` on
-            // level 1 that wrapped the roadmap to the cap.
+            // `step_index` rather than done here with a `+ delta`, so the wrap has one
+            // implementation on this screen too rather than a second `%` that could
+            // disagree with it about which end comes after the last row.
             Screen::Levels => {
                 let index = cursor::step_index(LEVEL_CAP as usize, self.level_index(), delta);
                 self.cursors.level = index.saturating_add(1) as u32;
+            }
+            // **The history is a list, so it wraps**, on `docs/UI.md` §9's own test:
+            // what stops at its ends is the dial, the spinner and the dip caret, and
+            // none of those is a list. Its length is read off the buffer rather than
+            // carried, because the buffer is the only thing that knows — the reducer
+            // has no view and no geometry.
+            //
+            // An empty log answers `0` from `step_index` and the panel draws nothing,
+            // so the first announcement of a session finds the cursor already on it.
+            Screen::Stats => {
+                self.cursors.history =
+                    cursor::step_index(self.toasts.len(), self.cursors.history, delta);
             }
             _ => {}
         }
@@ -3648,6 +3660,78 @@ mod tests {
 
         app.update(Action::JumpToCurrent);
         assert_eq!(app.cursors.level, here);
+    }
+
+    /// The history is a **list**, so `↑↓` wraps it — `docs/UI.md` §9's test being
+    /// *list or quantity*, and a log of sentences is not a quantity.
+    ///
+    /// The cursor is a rank counted from the newest, so `0` is the top of the panel and
+    /// stepping *down* walks backwards in time.
+    #[test]
+    fn the_history_cursor_wraps_at_both_ends() {
+        let mut app = session();
+        app.screen = Screen::Stats;
+        for index in 0..4 {
+            app.toasts
+                .push(format!("entry {index}"), Tone::Neutral, TOAST_TTL);
+        }
+
+        assert_eq!(app.cursors.history, 0, "the session opened part-way down");
+
+        app.update(Action::CursorUp);
+        assert_eq!(
+            app.cursors.history, 3,
+            "the newest entry did not wrap to the oldest"
+        );
+        app.update(Action::CursorDown);
+        assert_eq!(app.cursors.history, 0, "nor the oldest back to the newest");
+
+        // A full lap is the log's own length.
+        for _ in 0..4 {
+            app.update(Action::CursorDown);
+        }
+        assert_eq!(app.cursors.history, 0, "a full lap did not come back");
+    }
+
+    /// A log with nothing in it has no row to land on, and a `↑` on it must not be the
+    /// keypress that takes the process down: `step_index` answers `0` for an empty
+    /// list rather than dividing by zero.
+    #[test]
+    fn scrolling_a_history_that_has_announced_nothing_is_harmless() {
+        let mut app = session();
+        app.screen = Screen::Stats;
+        assert!(app.toasts.is_empty(), "the fixture must start silent");
+
+        app.update(Action::CursorUp);
+        app.update(Action::CursorDown);
+
+        assert_eq!(app.cursors.history, 0);
+    }
+
+    /// The gesture belongs to the screen that owns the list. `↑↓` on Stats must not
+    /// move the Mines or Levels cursor, and `↑↓` elsewhere must not move this one —
+    /// which is the whole reason [`App::step_list_cursor`] chooses on the screen
+    /// rather than the keymap doing it.
+    #[test]
+    fn the_history_cursor_only_moves_on_the_screen_that_owns_it() {
+        let mut app = session();
+        for index in 0..4 {
+            app.toasts
+                .push(format!("entry {index}"), Tone::Neutral, TOAST_TTL);
+        }
+
+        for screen in Screen::ALL {
+            app.screen = screen;
+            app.cursors.history = 0;
+            app.update(Action::CursorDown);
+
+            let moved = app.cursors.history != 0;
+            assert_eq!(
+                moved,
+                screen == Screen::Stats,
+                "{screen:?} answered for a list it does not own"
+            );
+        }
     }
 
     // --- The compress-first loop (UI.md §8.4) ---

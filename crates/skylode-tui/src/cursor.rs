@@ -131,8 +131,8 @@ pub struct Cursors {
     pub upgrade_tab: UpgradeTab,
     /// Which rung of the pickaxe roadmap the Pickaxe sub-tab points at.
     ///
-    /// **The one index-shaped cursor in the crate, and it is not an inconsistency.**
-    /// The other three point at values of closed sets — a [`MineKind`], a
+    /// **One of the two index-shaped cursors here, and neither is an inconsistency.**
+    /// The typed ones point at values of closed sets — a [`MineKind`], a
     /// [`Material`], an [`EnchantType`] — so they cannot name a row that is not
     /// there. The ladder is a *generated* list
     /// ([`upgrade::ladder`](skylode_core::upgrade::ladder)) whose rungs are
@@ -140,6 +140,10 @@ pub struct Cursors {
     /// value to point at; and the pair itself would be worse, since it can name a rung
     /// no ladder holds (`Wooden` Efficiency 12). An index is wrapped back into the
     /// ladder on every step, which is the guarantee the typed cursors get for free.
+    ///
+    /// [`history`](Cursors::history) is the other, on the same test and for a sharper
+    /// version of the same reason: a log entry is a sentence, so there is not even a
+    /// generated set to name it in.
     pub pickaxe_rung: usize,
     /// Which of the six enchant tracks the Enchants sub-tab points at.
     pub enchant: EnchantType,
@@ -157,6 +161,24 @@ pub struct Cursors {
     /// am I"*, so opening anywhere else would point the roadmap at a rung the player
     /// is not on. `Home` is what puts it back after scrolling.
     pub level: u32,
+    /// How far back in the Stats history the player has scrolled: `0` is the newest
+    /// announcement, `1` the one before it.
+    ///
+    /// **A rank counted from the newest, and the direction is load-bearing.** The log
+    /// grows at its head and is capped at its tail
+    /// ([`HISTORY_CAP`](crate::toast::HISTORY_CAP)), so counting from the *oldest*
+    /// would slide the cursor across the content every time the cap bit. Counted this
+    /// way, dropping the oldest entry cannot move what the player is pointing at.
+    ///
+    /// The known cost of the same choice: a **new** announcement arriving while the
+    /// player is scrolled back pushes the entries down under the cursor by one. Pinning
+    /// an entry instead would mean giving each one an identity the buffer does not
+    /// otherwise need, which is real machinery for a panel nobody reads mid-blast.
+    ///
+    /// Invented rather than seeded, like [`material`](Cursors::material): the run does
+    /// not answer *"which announcement am I looking at"*, and the newest is the honest
+    /// place to open rather than an invented one.
+    pub history: usize,
 }
 
 impl Cursors {
@@ -207,6 +229,10 @@ impl Cursors {
             // The third seeded cursor, for `mine`'s reason: the run knows what level
             // the player is, so the roadmap opens on their own rung.
             level,
+            // The newest announcement, which is where a log opens: `0` is a position
+            // in the list and not an absence, so an empty log and a fresh one point
+            // at the same place.
+            history: 0,
         }
     }
 }
