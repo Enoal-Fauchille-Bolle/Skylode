@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
-    widgets::Tabs,
+    widgets::{Clear, Paragraph, Tabs},
 };
 use skylode_core::{
     economy::{self, Affordability, Shortfall},
@@ -50,17 +50,6 @@ use crate::{
 use crate::format::grouped_u64;
 #[cfg(debug_assertions)]
 use crate::overlay::dev::{self, DevRow, DevState};
-/// The dev menu's own imports, kept in a statement of their own.
-///
-/// A `#[cfg]` cannot be attached to one name inside a braced `use` tree, so gating these
-/// means a second `use` rather than four lines in the blocks above. Gating them is not
-/// tidiness: [`Paragraph`] and [`grouped_u64`](crate::format::grouped_u64) are reached
-/// from dev code alone, so left in the main block they are two `unused_imports` warnings
-/// in a release build — which `clippy -D warnings` never sees, because it builds the dev
-/// profile. This is the one seam where that blind spot bites, and it is why
-/// `cargo check --release` is on the verification list in `docs/DEV-MENU.md`.
-#[cfg(debug_assertions)]
-use ratatui::widgets::Paragraph;
 
 /// The widest the interface is ever drawn, whatever the terminal offers.
 ///
@@ -182,6 +171,25 @@ pub struct App {
     pub modal: Option<Modal>,
     /// Live announcements, drawn over everything.
     pub toasts: Toasts,
+    /// Why the last autosave failed, while it is still failing.
+    ///
+    /// **A state, and that is the whole reason it is not a toast.** A toast announces
+    /// that something *happened* and is owed three seconds; a disk that will not take
+    /// a write is true continuously until it stops being true, and announcing it once
+    /// left the player playing a run that was no longer being kept, with nothing on
+    /// screen saying so. So the transition is still announced — [`Toasts`] gets its
+    /// one timestamped line, which is what the Stats history reads — and the
+    /// *condition* lives here, where it can be **cleared** when saving recovers.
+    ///
+    /// That split is what keeps [`Toasts`]' invariant intact. Nothing is ever removed
+    /// from that buffer — *one buffer, two renderings* depends on it, and a `prune` is
+    /// exactly the bug its rewrite fixed — so a sticky toast could never be retracted
+    /// without taking its own history entry with it.
+    ///
+    /// [`Session::autosave`](crate::session::Session) is the only writer.
+    ///
+    /// [`Toasts`]: crate::toast::Toasts
+    pub save_error: Option<String>,
     /// Which cells a spatial blast has claimed, and when (UI.md §7).
     ///
     /// **The toast's sibling, and deliberately uncoupled from it.** Both are fed by the
@@ -308,6 +316,7 @@ impl App {
             screen: Screen::Mine,
             modal: None,
             toasts,
+            save_error: None,
             flash,
             state,
             view,
@@ -1846,6 +1855,7 @@ impl App {
 
         self.render_tabs(frame, tabs_area);
         self.screen.render(frame, body_area, &self.view);
+        self.render_save_banner(frame, area, now);
 
         // Overlays, outermost last. A modal draws over the whole frame, including
         // the toasts — it captured the input that would dismiss them, so it owns the
@@ -1935,6 +1945,50 @@ impl App {
         frame.render_widget(tabs, area);
         #[cfg(debug_assertions)]
         self.render_dev_marker(frame, area);
+    }
+
+    /// Draws the standing save-failure banner, one row above the footer.
+    ///
+    /// **It yields the slot to a toast rather than competing for it**, which is the
+    /// behaviour the whole design turns on: `Mine refilled` covers the banner for its
+    /// three seconds and the banner is back the moment that expires. Nothing schedules
+    /// that return — the banner is a *state* asked at draw time, so it reappears simply
+    /// by still being true. [`Toasts::showing`] is the one question it asks, and it is
+    /// the same search `Toasts::render` makes, so the two cannot disagree about whether
+    /// the slot is taken.
+    ///
+    /// **One row and not the toast's three.** The toast box is drawn over the screen
+    /// with `Clear`, so a permanent one would keep three rows of the mine grid hidden
+    /// for as long as the disk stayed broken — a fix that costs the player the thing
+    /// they are looking at. A single row above the footer costs a third of that.
+    ///
+    /// **[`theme::REFUSED`], and the sentence still carries the answer alone** — the
+    /// argument `Tone::Refusal` already makes for the toast: `docs/UI.md` §4.4 says a
+    /// hue doubles a glyph, and where there is no glyph it doubles the wording instead.
+    /// Remove every colour and *"Save failing: …"* says exactly the same thing.
+    ///
+    /// [`Toasts::showing`]: crate::toast::Toasts::showing
+    fn render_save_banner(&self, frame: &mut Frame, area: Rect, now: Instant) {
+        let Some(error) = &self.save_error else {
+            return;
+        };
+        if self.toasts.showing(now) {
+            return;
+        }
+        // Two rows up from the bottom edge: the last row is the screen's own footer,
+        // and the banner is the row above it — the bottom of the toast's own slot.
+        let row = Rect {
+            x: area.x,
+            y: area.y + area.height.saturating_sub(2),
+            width: area.width,
+            height: 1.min(area.height),
+        };
+        frame.render_widget(Clear, row);
+        frame.render_widget(
+            Paragraph::new(format!(" Save failing: {error}"))
+                .style(Style::default().fg(theme::REFUSED)),
+            row,
+        );
     }
 
     /// Stamps [`dev::MARKER`] at the right end of the tab row, coloured by the mode.
@@ -2080,6 +2134,60 @@ mod tests {
             .map(|y| row(buffer, y))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// **The standing banner, and the displace-and-return it exists for.**
+    ///
+    /// Three states in one test, because the claim is about a *sequence* and each state
+    /// only means something against the one before it: a banner that never yielded
+    /// would pass a "banner is drawn" test, and one that never came back would pass a
+    /// "toast wins" test. The middle assertion is the one with no other home.
+    #[test]
+    fn a_standing_save_failure_yields_the_slot_to_a_toast_and_takes_it_back() {
+        let start = Instant::now();
+        let mut app = session();
+        app.save_error = Some("permission denied".to_owned());
+
+        // 1. Nothing else is announcing, so the banner has the row above the footer.
+        let alone = whole_frame(&render_at(&app, start));
+        assert!(
+            alone.contains("Save failing: permission denied"),
+            "the standing failure was not drawn: {alone}"
+        );
+
+        // 2. A toast arrives and takes the slot. Its three seconds outrank a condition
+        //    that will still be true afterwards.
+        app.toasts
+            .push_at("Mine refilled".to_owned(), Tone::Neutral, TOAST_TTL, start);
+        let covered = whole_frame(&render_at(&app, start));
+        assert!(covered.contains("Mine refilled"), "{covered}");
+        assert!(
+            !covered.contains("Save failing"),
+            "the banner drew over a live toast: {covered}"
+        );
+
+        // 3. The toast expires and the banner is back — with nothing having scheduled
+        //    its return. It reappears by still being true, which is what makes it a
+        //    state rather than a second announcement.
+        let after = whole_frame(&render_at(
+            &app,
+            start + TOAST_TTL + Duration::from_millis(1),
+        ));
+        assert!(
+            after.contains("Save failing: permission denied"),
+            "the banner did not come back: {after}"
+        );
+    }
+
+    /// The other half: a session that saves fine draws nothing at all.
+    ///
+    /// Worth its own test because the banner is drawn on every frame of every screen —
+    /// a condition that leaked would cost a row of the mine grid permanently.
+    #[test]
+    fn a_healthy_session_draws_no_banner_and_keeps_the_row() {
+        let app = session();
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(!frame.contains("Save failing"), "{frame}");
     }
 
     /// The `(left, right)` columns of the first full-width bordered box drawn.

@@ -303,10 +303,19 @@ pub fn render(frame: &mut Frame, area: Rect, dev: &DevState) {
         lines.push(format!(" {mark} {label:<width$}{value}"));
     }
     lines.push(String::new());
-    lines.push(" ↑↓ row   ←→ value   Enter apply   Esc close".to_owned());
 
     let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
-    super::modal(frame, area, 52, 14, " Dev menu ", &borrowed);
+    // The height is fixed at 14, which already counted the hint row when it was the
+    // last entry in `lines` — so moving it out changes its colour and nothing else.
+    super::modal_with_hint(
+        frame,
+        area,
+        52,
+        14,
+        " Dev menu ",
+        &borrowed,
+        Some(" ↑↓ row   ←→ value   Enter apply   Esc close"),
+    );
 }
 
 /// The columns the marker is drawn into, at the right end of the tab row.

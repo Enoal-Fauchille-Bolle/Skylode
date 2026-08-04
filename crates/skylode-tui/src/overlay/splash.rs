@@ -11,7 +11,8 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::Style,
-    widgets::{Block, BorderType, Borders, Padding, Paragraph},
+    text::Line,
+    widgets::{Block, Padding, Paragraph},
 };
 
 use super::centered_rect;
@@ -126,19 +127,26 @@ pub fn render(frame: &mut Frame, area: Rect, splash: &Splash) {
             format!("{caret}{}", label(*row))
         })
         .collect();
-    let menu_box = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain);
+    // `square("")` and not a hand-rolled `Block`: the same square, muted border every
+    // other box in the boot-and-modal class takes. The border it replaces was drawn in
+    // the terminal's default foreground, which made the title the one screen where a
+    // box competed with its own contents.
     let menu_height = u16::try_from(rows.len()).unwrap_or(0).saturating_add(2);
     frame.render_widget(
-        Paragraph::new(menu.join("\n")).block(menu_box),
+        // Through `theme::marked`, like every list row in the crate: the caret is a
+        // mark, so it takes ACCENT without this module naming a colour. The `▸` in the
+        // confirmation box below already did — it goes through `modal` — so the title
+        // used to draw two carets in two different colours on the same screen.
+        Paragraph::new(
+            menu.iter()
+                .map(|row| theme::marked(row))
+                .collect::<Vec<_>>(),
+        )
+        .block(super::square("")),
         centered_rect(menu_band, 30, menu_height),
     );
 
-    frame.render_widget(
-        Paragraph::new(summary(splash)).alignment(Alignment::Center),
-        summary_area,
-    );
+    summary(frame, summary_area, splash);
 
     // The version sits bottom-right, above the key hints on the last row. It has a
     // row of its own rather than riding the slack: rendered into the fill, it
@@ -147,10 +155,17 @@ pub fn render(frame: &mut Frame, area: Rect, splash: &Splash) {
     frame.render_widget(
         Paragraph::new(VERSION)
             .alignment(Alignment::Right)
+            .style(Style::default().fg(theme::MUTED))
             .block(Block::default().padding(Padding::right(2))),
         version_area,
     );
-    frame.render_widget(Paragraph::new(footer(splash)), footer_area);
+    // Muted, like every other footer in the crate — see `screen::mine::footer`, which
+    // spells out the argument: a key hint is the least urgent thing on screen, and the
+    // de-emphasised hue is what lets the rows above it be read without competition.
+    frame.render_widget(
+        Paragraph::new(footer(splash)).style(Style::default().fg(theme::MUTED)),
+        footer_area,
+    );
 
     // Last, so it covers the menu it is asking about. A modal clears its own rect, so
     // the title underneath costs nothing and is still readable around it.
@@ -224,22 +239,50 @@ fn confirmation(frame: &mut Frame, area: Rect, splash: &Splash, cursor: usize) {
 ///
 /// The age is [`age`]'s `1h`, not the wireframe's `1 hour` — one vocabulary for every
 /// elapsed time in the crate, the same one the Stats history prints.
-fn summary(splash: &Splash) -> String {
-    if let Some(resume) = splash.resume() {
-        let played = resume.idle().map_or_else(String::new, |idle| {
-            format!("\nlast played {} ago", age(idle.as_secs()))
-        });
-        return format!("Lv {}  ·  {}{played}", resume.level(), resume.pickaxe());
-    }
-    if !splash.persists() {
-        return "Skylode could not find a place to save.\nNothing from this session will be kept."
-            .to_owned();
-    }
-    String::new()
+///
+/// **The headline is drawn plainly and the age is muted**, which is the hierarchy
+/// [`theme::marked_row`] already applies to every row with a label and a value: the
+/// figures the player came for keep the foreground, the context around them steps
+/// back. Here the figures are the level and the pickaxe — the two the confirmation
+/// box quotes back when a `New game` would cost them — and *when* the run was last
+/// touched is what surrounds them.
+///
+/// **The "nowhere to save" warning takes no colour at all**, and that is `docs/UI.md`
+/// §4.4 rather than an omission: colour doubles a glyph and never replaces one, and
+/// this sentence has no glyph to double. Drawing it in [`theme::REFUSED`] would make
+/// it the one place in the interface where a hue carries a meaning on its own — and
+/// the sentence already says the whole thing without help.
+fn summary(frame: &mut Frame, area: Rect, splash: &Splash) {
+    let muted = Style::default().fg(theme::MUTED);
+    let lines: Vec<Line<'static>> = if let Some(resume) = splash.resume() {
+        let mut lines = vec![Line::from(format!(
+            "Lv {}  ·  {}",
+            resume.level(),
+            resume.pickaxe()
+        ))];
+        if let Some(idle) = resume.idle() {
+            lines.push(Line::styled(
+                format!("last played {} ago", age(idle.as_secs())),
+                muted,
+            ));
+        }
+        lines
+    } else if splash.persists() {
+        Vec::new()
+    } else {
+        vec![
+            Line::from("Skylode could not find a place to save."),
+            Line::from("Nothing from this session will be kept."),
+        ]
+    };
+
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
 }
 
 #[cfg(test)]
 mod tests {
+    use ratatui::style::Color;
+
     use super::*;
 
     #[test]
@@ -330,6 +373,50 @@ mod tests {
         assert!(
             rows.get(47).is_some_and(|line| line.contains("q  quit")),
             "the footer did not stay on the last row: {frame}"
+        );
+    }
+
+    /// **The title drawn to the same rules as the six screens behind it.**
+    ///
+    /// Every claim in one draw, because they are one claim: the chrome is a system, and
+    /// a test per constant would let three of them pass while the fourth drifted. The
+    /// caret is the load-bearing one — before this, the `▸` in the confirmation box
+    /// (which goes through `modal`, so through `theme::marked`) was accented while the
+    /// `▸` in the menu one row above it was not, on the same screen.
+    #[test]
+    fn the_title_takes_the_same_chrome_colours_as_every_other_screen() {
+        let splash = Splash::sample(true, true);
+        let buffer = crate::overlay::render_to_buffer(80, 24, |frame, area| {
+            render(frame, area, &splash);
+        });
+        let colour_of = |needle| crate::overlay::colour_of(&buffer, needle);
+
+        assert_eq!(colour_of("▸"), Some(theme::ACCENT), "the caret");
+        assert_eq!(colour_of("┌"), Some(theme::MUTED), "the menu box border");
+        assert_eq!(colour_of("↑"), Some(theme::MUTED), "the footer");
+        assert_eq!(colour_of("█"), Some(theme::ACCENT), "the wordmark");
+
+        // The summary's hierarchy: the two figures the player came for keep the
+        // foreground, the age behind them steps back. The probes are letters no
+        // earlier row carries — `D` from `Diamond Pickaxe`, `y` from `last played`.
+        // Not `g`: `New game` sits three rows above and would answer first.
+        assert_eq!(colour_of("D"), Some(Color::Reset), "the headline");
+        assert_eq!(colour_of("y"), Some(theme::MUTED), "the age");
+    }
+
+    /// §4.4 held where it is easiest to break: a warning with no glyph takes no hue.
+    #[test]
+    fn the_nowhere_to_save_warning_carries_its_meaning_in_words_and_not_in_a_colour() {
+        let splash = Splash::sample(false, false);
+        let buffer = crate::overlay::render_to_buffer(80, 24, |frame, area| {
+            render(frame, area, &splash);
+        });
+        // `k` appears first in `Skylode could not find…`, which is the warning's own
+        // first line — the footer below it has none before that point.
+        assert_eq!(
+            crate::overlay::colour_of(&buffer, "k"),
+            Some(Color::Reset),
+            "the warning took a hue, making colour load-bearing for the first time"
         );
     }
 

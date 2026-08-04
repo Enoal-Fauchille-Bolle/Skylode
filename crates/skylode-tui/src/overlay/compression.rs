@@ -102,7 +102,7 @@ pub fn render(
         )
     };
 
-    super::modal(
+    super::modal_with_hint(
         frame,
         area,
         48,
@@ -118,8 +118,10 @@ pub fn render(
             &amount("Costs", spent),
             &amount("Leaves", held.saturating_sub(spent)),
             "",
-            &format!(" a  all ({max})   Enter  do it"),
         ],
+        // The height is fixed at 11, which already counted this row when it was the
+        // last entry above — so moving it out changes its colour and nothing else.
+        Some(&format!(" a  all ({max})   Enter  do it")),
     );
 }
 

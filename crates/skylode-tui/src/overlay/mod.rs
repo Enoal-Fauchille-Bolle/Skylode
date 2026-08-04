@@ -39,7 +39,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
 };
 use skylode_core::material::Material;
@@ -170,6 +170,35 @@ pub(super) fn modal(
     title: &str,
     lines: &[&str],
 ) {
+    modal_with_hint(frame, area, width, height, title, lines, None);
+}
+
+/// [`modal`], plus a key hint drawn **muted** as the box's last line.
+///
+/// **Muted, like every footer in the crate**, and that is the whole reason the hint is
+/// a parameter instead of another string in `lines`: `mine`'s footer says it outright
+/// — *"a key hint is the least urgent thing on the screen, and the whole point of
+/// giving the chrome a de-emphasised colour is that the rows above it can then be read
+/// without competition"*. Passed inside `lines` it went through [`theme::marked`] like
+/// every other row, found no mark in `Enter  collect`, and came out drawn exactly as
+/// loud as the numbers it sits under.
+///
+/// One definition for what a hint looks like, in the same function that already owns
+/// what a *box* looks like — so the offline summary, the compression dialog and the
+/// dev menu cannot drift apart on it.
+///
+/// **The caller still owns the height.** The hint is one more row inside the box, so a
+/// caller deriving its height from `lines.len()` has to count it; the two callers that
+/// pass a fixed height already have the room.
+pub(super) fn modal_with_hint(
+    frame: &mut Frame,
+    area: Rect,
+    width: u16,
+    height: u16,
+    title: &str,
+    lines: &[&str],
+    hint: Option<&str>,
+) {
     let rect = centered_rect(area, width, height);
     frame.render_widget(Clear, rect);
     let block = Block::bordered()
@@ -181,7 +210,15 @@ pub(super) fn modal(
     // The body goes through `marked` line by line: several modals quote an
     // affordability (`Cost … Held … ✗`), and a mark must not change meaning by
     // being drawn inside a box instead of in a list.
-    let body: Vec<Line<'static>> = lines.iter().map(|line| theme::marked(line)).collect();
+    let mut body: Vec<Line<'static>> = lines.iter().map(|line| theme::marked(line)).collect();
+    // The hint deliberately does *not*: it is chrome, so it takes the muted hue whole
+    // rather than being scanned for marks it does not carry.
+    if let Some(hint) = hint {
+        body.push(Line::from(Span::styled(
+            hint.to_owned(),
+            Style::default().fg(theme::MUTED),
+        )));
+    }
     frame.render_widget(Paragraph::new(body).block(block), rect);
 }
 
@@ -238,6 +275,30 @@ pub(super) fn render_to_string_sized(
     height: u16,
     draw: impl FnOnce(&mut Frame, Rect),
 ) -> String {
+    let buffer = render_to_buffer(width, height, draw);
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The same draw, handed back as **cells** rather than as text.
+///
+/// The two harnesses are one draw and two readings, which is what keeps a colour test
+/// and a text test from disagreeing about what was on screen. Text answers *"does it
+/// say this"*; this answers *"in what hue"*, and the conformance rules this crate
+/// applies to its chrome — muted footers, accented carets — are only assertable
+/// through the second.
+#[cfg(test)]
+pub(super) fn render_to_buffer(
+    width: u16,
+    height: u16,
+    draw: impl FnOnce(&mut Frame, Rect),
+) -> ratatui::buffer::Buffer {
     use ratatui::{Terminal, backend::TestBackend};
 
     let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
@@ -250,19 +311,29 @@ pub(super) fn render_to_string_sized(
     }) {
         match infallible {}
     }
-    let buffer = terminal.backend().buffer().clone();
-    (0..buffer.area.height)
-        .map(|y| {
-            (0..buffer.area.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    terminal.backend().buffer().clone()
+}
+
+/// The foreground colour of the first cell whose symbol is `needle`.
+///
+/// Scans row by row, so "the caret" and "the first border corner" are one call each
+/// rather than a coordinate a layout change would invalidate.
+#[cfg(test)]
+pub(super) fn colour_of(
+    buffer: &ratatui::buffer::Buffer,
+    needle: &str,
+) -> Option<ratatui::style::Color> {
+    (0..buffer.area.height).find_map(|y| {
+        (0..buffer.area.width)
+            .find(|&x| buffer[(x, y)].symbol() == needle)
+            .map(|x| buffer[(x, y)].fg)
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use ratatui::style::Color;
+
     use super::*;
 
     #[test]
@@ -277,6 +348,54 @@ mod tests {
         let area = Rect::new(0, 0, 40, 10);
         let rect = centered_rect(area, 64, 13);
         assert_eq!(rect, area);
+    }
+
+    /// The defect `modal_with_hint` exists for: a key hint drawn exactly as loud as
+    /// the figures above it.
+    ///
+    /// Both halves are asserted in one draw, because the claim is a *contrast* — a
+    /// hint that muted the whole box with it would pass a test that only looked at the
+    /// hint.
+    #[test]
+    fn a_modal_hint_is_muted_and_the_body_above_it_is_not() {
+        let buffer = render_to_buffer(60, 12, |frame, area| {
+            modal_with_hint(
+                frame,
+                area,
+                40,
+                8,
+                " Title ",
+                &["", " Blocks    76 / 84"],
+                Some(" Enter  collect"),
+            );
+        });
+
+        // `7` is only in the body figure, `E` only in the hint. `Color::Reset` is what
+        // an unstyled cell holds — the terminal's own foreground, which is exactly what
+        // a body row is supposed to keep.
+        assert_eq!(colour_of(&buffer, "7"), Some(Color::Reset));
+        assert_eq!(
+            colour_of(&buffer, "E"),
+            Some(theme::MUTED),
+            "the hint was drawn as loud as the numbers above it"
+        );
+    }
+
+    /// A modal without a hint must be byte-for-byte what it was before the parameter
+    /// existed — six call sites pass `None` through `modal`, and none of them may
+    /// change appearance.
+    #[test]
+    fn a_modal_with_no_hint_draws_what_it_always_drew() {
+        let draw = |hinted: bool| {
+            render_to_string_sized(60, 12, move |frame, area| {
+                if hinted {
+                    modal_with_hint(frame, area, 40, 8, " Title ", &["", " Body"], None);
+                } else {
+                    modal(frame, area, 40, 8, " Title ", &["", " Body"]);
+                }
+            })
+        };
+        assert_eq!(draw(true), draw(false));
     }
 
     #[test]

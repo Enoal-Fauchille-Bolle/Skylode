@@ -13,10 +13,12 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
+    style::Style,
     widgets::Paragraph,
 };
 
 use super::square;
+use crate::theme;
 
 /// Draws the Settings screen with placeholder values (real config is save state,
 /// phase 7).
@@ -58,8 +60,11 @@ pub fn render(frame: &mut Frame, area: Rect) {
     ];
     frame.render_widget(Paragraph::new(detail.join("\n")).block(square("")), right);
 
+    // Muted, like every other footer in the crate. Corrected before phase 9 wires this
+    // screen, so it does not arrive already out of step with the six behind it.
     frame.render_widget(
-        Paragraph::new(" ↑↓  select     ← →  change     Esc  back"),
+        Paragraph::new(" ↑↓  select     ← →  change     Esc  back")
+            .style(Style::default().fg(theme::MUTED)),
         footer_area,
     );
 }

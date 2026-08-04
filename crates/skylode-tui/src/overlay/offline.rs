@@ -86,13 +86,22 @@ pub fn render(frame: &mut Frame, area: Rect, report: &OfflineReport) {
         grouped_u64(report.blocks)
     ));
     lines.push(String::new());
-    lines.push(" Enter  collect".to_owned());
 
+    // Two for the borders and one for the hint, which is no longer in `lines` — it is
+    // chrome and takes the muted hue, so it goes to `modal_with_hint` instead.
     let height = u16::try_from(lines.len())
         .unwrap_or(u16::MAX)
-        .saturating_add(2);
+        .saturating_add(3);
     let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
-    super::modal(frame, area, WIDTH, height, " Welcome back ", &borrowed);
+    super::modal_with_hint(
+        frame,
+        area,
+        WIDTH,
+        height,
+        " Welcome back ",
+        &borrowed,
+        Some(" Enter  collect"),
+    );
 }
 
 /// How long the player was away, and what of it was paid for.
