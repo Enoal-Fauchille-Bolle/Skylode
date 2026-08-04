@@ -27,7 +27,23 @@ One file, at the platform's own data location, resolved through
 | --- | --- |
 | Linux | `~/.local/share/skylode/save.json` |
 | macOS | `~/Library/Application Support/skylode/save.json` |
-| Windows | `%APPDATA%\skylode\save.json` |
+| Windows | `%APPDATA%\skylode\data\save.json` |
+
+**The Windows row was wrong until the loader was written**, and it is corrected here
+from `directories`' own source rather than from the shape the other two rows have.
+`ProjectDirs::data_dir` appends a `data` component on Windows — roaming application
+data conventionally holds several categories side by side, so the crate keeps
+`config`, `data` and `cache` apart under one project folder — while Linux and macOS
+name the category in the path above the project. The call is
+`ProjectDirs::from("", "", "skylode")`: the empty qualifier and organisation are
+dropped on macOS (a bundle identifier of just `skylode`) and ignored on Linux, so the
+project folder is the bare application name on all three.
+
+Only the Linux row has been *observed*; the other two are read off the library's
+implementation. That is the trade [DECISIONS.md](DECISIONS.md) already accepted when
+it chose the library — the point of a crate that knows three platforms is not to
+second-guess its conventions from one of them — and the extra component is a directory
+name, not a rule.
 
 **This revises an earlier "no XDG handling"**, which was written against a
 different question. What that decision rejected — and still rejects — is
@@ -116,9 +132,20 @@ There is deliberately **no separate config file**. One file, one path — see
 [Where the file lives](#where-the-file-lives) for which path, and for what that
 sentence used to claim about XDG and no longer does.
 Prestige does not touch the file — only the player deleting it does — so
-preferences survive a run. Two costs are accepted knowingly: deleting the save
-loses the preferences, and adding a config field bumps `version` and needs a
-migration like any other schema change.
+preferences survive a run. One cost is accepted knowingly: deleting the save loses
+the preferences.
+
+**The second cost turned out not to be one.** This paragraph used to read that adding
+a config field bumps `version` and needs a migration like any other schema change.
+It does not have to: a new preference may carry `serde(default)`, and here — unlike
+the core's play counters — the default is *honest*. A preference missing from an older
+file means the player never expressed one, which is exactly what the default says. A
+default may stand in for an **absence**; what it may not stand in for is a fact we
+failed to record, which is why the core's `blocks_broken` refused the same treatment.
+
+The front-end's `Config` was made serialisable without a `SAVE_VERSION` bump for the
+other half of that argument: a bump protects files already written, and until the
+loader shipped there were none.
 
 The consequence that matters is about the [HMAC](#integrity-hmac), which covers the
 whole file, config included. **No hand-editing is tolerated, and Settings is the
@@ -147,6 +174,14 @@ first thing some players ever see.
 - Update `last_seen` on every write, so offline accrual stays correct (see
   [MECHANICS.md](MECHANICS.md#offline-accrual)).
 
+**Moving `last_seen` belongs to the write, not to the caller**, and the ordering is
+why. `persist::save` calls `GameState::touch(now)` and *then* serialises; a caller
+that touched afterwards would write the previous mark and have the next absence
+measured from a moment that has already been paid for. The clock is **injected** —
+`save(slots, state, config, now)` — so this module reads no clock of its own, the
+same rule the core follows and for the same reason: a wall-clock read buried inside a
+write is a dependency no test can choose.
+
 ### Integrity (HMAC)
 
 An HMAC is a keyed hash. On save: serialize the state to text, compute
@@ -155,6 +190,28 @@ An HMAC is a keyed hash. On save: serialize the state to text, compute
 ```json
 { "data": "<serialized state, version included>", "mac": "<hmac hex>" }
 ```
+
+**`data` is a JSON *string* holding escaped JSON — not a nested object**, and that is
+a requirement rather than a formatting choice. A MAC covers an exact sequence of
+bytes. Nested, `data` would come back from the parser as a tree, and recomputing the
+MAC would mean **re-serialising** it — which `serde_json` does not promise to do
+byte-identically: key order, number formatting and escape choices are all free. A
+perfectly valid save would then fail its own signature, intermittently. As a string,
+the parser hands the payload back unchanged and there is nothing to rebuild.
+
+The cost is accepted knowingly: the file reads as `{"data":"{\"version\":1,…`, which
+spends most of what "human-debuggable" bought above. `jq -r .data save.json` restores
+it in one command, and the alternative is a bug that appears on some saves and not
+others.
+
+One consequence, so it is not mistaken for a hole: the MAC is taken over the payload
+**unescaped**, so a file re-escaped differently — `A` where we wrote `A` — yields
+the same payload, the same MAC and the same run. That is two spellings of one
+document, not a forgery.
+
+The `mac` is 64 lowercase hexadecimal digits, and the reader accepts nothing else —
+no uppercase, no other length. Encoding and decoding are ~15 lines in `persist`
+rather than a `hex` dependency.
 
 **The version is inside `data`, not beside it.** The MAC covers `data` alone, so a
 version in the envelope would be the one field a tamperer could edit freely — and it
@@ -168,11 +225,60 @@ corrupted. This is tamper detection, not prevention: the embedded key is
 extractable. It catches hand-editing and corruption, not determined cheating.
 
 **The key is stored obfuscated, and that is the whole of the hardening.** It is
-held masked — each byte XOR-ed against a fixed pattern — and reassembled by a
-`const fn`, so the plain bytes never appear in the binary and `strings` finds
-nothing. This is the one step worth taking: it moves the attack from a single
-command needing no skill to a debugger, which is where the trade's own rule of
-thumb puts save editing into the *not worth the effort* basket for most players.
+held masked — each byte XOR-ed against a fixed random pattern — and reassembled at
+run time, so the plain bytes never appear in the binary. This is the one step worth
+taking: it moves the attack from a single command needing no skill to a debugger,
+which is where the trade's own rule of thumb puts save editing into the *not worth
+the effort* basket for most players.
+
+**Two implementation details that are the whole of whether it works.**
+
+*Reassembly must not happen at compile time.* A `const fn` called in a `const`
+position is folded by the compiler, which would write the plain key into the
+binary — cancelling the masking with the very line meant to carry it. Even a plain
+function is a pure function of two known arrays, and `cargo build --release` runs
+LTO, so the optimiser could fold it too. `persist::key` is therefore an ordinary
+`fn`, marked `#[inline(never)]`, reading both constants through
+`core::hint::black_box`.
+
+*The key is 64 bytes, which is HMAC-SHA256's block size* — the one length RFC 2104
+neither zero-pads nor pre-hashes. That choice also removes a `Result` from the save
+path: `KeyInit::new` takes exactly a block-sized key and cannot fail, while
+`new_from_slice` takes any length and returns an error that cannot happen. The
+correct cryptographic length and the total signature are the same length.
+
+### Checking the key is really hidden
+
+**This is a procedure, not a test, and the repository says so rather than faking
+one.** A unit test runs inside the process and cannot inspect its own `.rodata`; and
+`cargo test` builds a *test* binary, not the release one a player receives. What the
+tests do assert is that the stored constant is not the key, and a known-answer vector
+pinning the key against accidental change.
+
+```sh
+cargo build --release
+python3 - <<'PY'
+key = bytes.fromhex("…the 64 bytes…")          # from crates/skylode-tui/src/persist/key.rs
+print(open("target/release/skylode-tui","rb").read().count(key))   # must print 0
+PY
+```
+
+Two things that look like they should work and do not:
+
+- **`strings` is the wrong tool.** A binary key contains no printable run, so
+  `strings` would miss it even when it is there in full. The search has to be over raw
+  bytes.
+- **`grep -f keyfile` is the wrong tool too.** `grep` treats each *line* of the
+  pattern file as a separate pattern, so a key containing a `0x0a` byte — this one
+  does, at offset 51 — is silently split into two shorter patterns and the check
+  reports a false pass.
+
+And one caveat that decides *when* the check means anything: while `persist` has no
+caller, the module is dead-code-eliminated from **both** profiles, so the constants
+are absent because the code is absent — a pass that proves nothing. Verified on the
+test binary, where the code is live and unoptimised: `MASKED` and `MASK` are present,
+the reassembled key is **not**. Re-run the release check once the session state
+machine calls the module.
 
 **Build-time injection was considered and rejected.** Reading the key from an
 environment variable at compile time (`env!`) keeps it out of the repository, but
@@ -194,14 +300,68 @@ hiding the key.
 
 ### Robustness and recovery
 
-- **Atomic writes:** write to a temp file, then `rename` (atomic on the same
-  filesystem), so a crash mid-write cannot corrupt the save.
+- **Atomic writes:** write to a temp file **in the save's own directory**, then
+  `rename`, so a crash mid-write cannot corrupt the save. The directory matters: a
+  temp file elsewhere makes the last step a copy across filesystems rather than a
+  rename, and a copy is divisible.
 - **Backup:** keep the last known-good save as `.bak` (free thanks to atomic
   writes).
 - **Schema versioning:** the `version` field enables safe migrations.
 - **On integrity failure:** do not crash or punish. Inform the player the save
   looks modified or corrupted, and offer to restore the `.bak` or start a new
   game. Treat it first as corruption recovery, not anti-cheat enforcement.
+
+#### What a write actually does, in order
+
+1. `create_dir_all` — the one thing the loader *makes*, since a fresh install has no
+   `~/.local/share/skylode` yet.
+2. The sealed text into a temporary file in that same directory.
+3. `sync_all`. Without it the operating system is free to let the rename reach the
+   disk before the bytes do, and a power cut would leave a correctly-named empty file.
+   It costs one flush of a few kilobytes, twice a minute. **The directory itself is
+   not fsynced** — that needs a Unix-only `File::open(dir).sync_all()` and is a no-op
+   or an error elsewhere — so the residual window is a power cut between the rename
+   and the directory entry reaching the platter. Documented rather than closed.
+4. Two renames: the old primary becomes the `.bak`, then the temporary becomes the
+   primary. Each is indivisible, so **the primary is never a half-written file** — it
+   is only ever the target of a rename.
+
+**Atomicity is asserted by construction, not by a test.** No unit test can prove a
+negative about the *timing* of a crash. Three tests stand in for it: a save leaves the
+directory holding exactly the expected files and no leftover temporary; a file
+truncated by hand is refused rather than half-read; and a write that fails leaves the
+previous save intact and loadable.
+
+**The rotation is blind.** The primary is not re-read and re-verified before it
+becomes the `.bak`. Checking would cost a read plus an HMAC on every autosave to
+defend against a player editing their save while the game is running — which that same
+player defeats by editing it while the game is closed.
+
+**A crash between the two renames leaves a good `.bak` and no primary.** This is the
+one window the design keeps, and it has a consequence for the session state machine:
+*a missing primary is only a fresh install when the backup is missing too*. See
+[UI.md](UI.md) §8.3, whose `no save` edge is worded for it.
+
+#### What the loader refuses, and what the `.bak` answers
+
+`persist` loads **one** slot and reports; it never falls back to the backup on its
+own, never deletes a file and never repairs a value. Restoring the backup is a
+keypress in [UI.md](UI.md) §8.3, so the choice belongs to the player.
+
+| What is wrong | Answer | Does the `.bak` help? |
+| --- | --- | --- |
+| no file | not a failure — a fresh install | — |
+| the bytes cannot be reached (permissions, a directory that is a file) | `Io` | **No** — both files share a directory |
+| not an envelope: not JSON, not UTF-8, truncated, bad `mac` encoding | `Damaged` | Yes |
+| envelope intact, signature does not match | `Tampered` | Yes — the main case |
+| written by a newer build | `FromTheFuture` | **No** — the backup is from the future too |
+| signed, and still a run the rules could not produce | `Rejected` | Yes |
+
+Two causes share an answer exactly when they share a **screen**. That is why every way
+an envelope can be malformed is one `Damaged` — unparseable, truncated and badly
+encoded are three diagnoses of one sentence — and why `FromTheFuture` is lifted out of
+the core's own error rather than left inside `Rejected`: it is the only refusal whose
+answer is *"update the game"* rather than *"restore the backup"*.
 
 ## Tech stack
 

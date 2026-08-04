@@ -1686,7 +1686,8 @@ stateDiagram-v2
     state "Offline summary" as Off
     state "Game" as Game
 
-    Load --> Splash: no save (fresh install)
+    Load --> Splash: no save AND no backup
+    Load --> BakMac: no save, backup present
     Load --> Mac: save found
 
     Mac --> Splash: matches
@@ -1725,6 +1726,28 @@ stateDiagram-v2
 player who needs help most, and `Continue` only appears on paths that reached a
 trusted save. **`Rec -> new game -> Game` skips the Splash**: the player has already
 answered the question it asks.
+
+**A missing save is a fresh install only when the backup is missing too**, and this
+edge was corrected when the loader was written rather than guessed at. The atomic
+write is two renames — the old save becomes the `.bak`, then the temporary becomes
+the save — so there is an instant in which the `.bak` exists and the save does not. A
+crash exactly there is rare and entirely possible, and the earlier `no save (fresh
+install)` edge would have walked such a player to the Splash with `Continue` greyed
+out while a perfectly good run sat beside it under the other name. It is the one
+window the atomic write deliberately keeps; see
+[SYSTEMS.md](SYSTEMS.md#robustness-and-recovery).
+
+Note what does **not** change: `persist` never falls back to the backup on its own —
+it loads one slot and reports, and the routing is the machine's. What the new edge
+settles is that the machine must *look* at the backup before concluding "fresh
+install".
+
+**Left open, and it belongs to the session state machine rather than to the loader:**
+whether that path should say so. Continuing from the backup in silence is the one
+place in this diagram where the player is handed a run they did not ask for, and the
+save they lose is seconds old — so the case for a line of text is real and the case
+for a whole frame is not obvious. The two candidates are a toast on entering the game
+and a variant of §6.3's recovery frame worded for *missing* rather than *modified*.
 
 ### 8.4 The "compress first" refusal
 
