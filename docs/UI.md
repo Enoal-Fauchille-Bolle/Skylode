@@ -1039,29 +1039,33 @@ which the frame already drew as `▸` apart from `●` and which phase 7 simply 
 ```text
 0---------1---------2---------3---------4---------5---------6---------7---------
 
-                        ███████ ██   ██ ██    ██
-                        ██      ██  ██   ██  ██
-                        ███████ █████     ████
-                             ██ ██  ██     ██
-                        ███████ ██   ██    ██     L O D E
 
-                        ┌────────────────────────────┐
-                        │  ▸  Continue               │
-                        │     New game               │
-                        │     Quit                   │
-                        └────────────────────────────┘
+            ███████ ██   ██ ██   ██ ██      ███████ ██████  ███████
+            ██      ██  ██   ██ ██  ██      ██   ██ ██   ██ ██
+            ███████ █████     ███   ██      ██   ██ ██   ██ ██████
+                 ██ ██  ██     ██   ██      ██   ██ ██   ██ ██
+            ███████ ██   ██    ██   ███████ ███████ ██████  ███████
 
-                          Lv 23  ·  Diamond Pickaxe
-                          last played 3h ago
+                         ┌────────────────────────────┐
+                         │  ▸  Continue               │
+                         │     New game               │
+                         │     Quit                   │
+                         └────────────────────────────┘
 
-                                                              skylode 0.1.0
+                            Lv 23  ·  Diamond Pickaxe
+                               last played 3h ago
+
+
+
+
+                                                                 skylode 0.1.0
  ↑↓  select     Enter  confirm     q  quit
 ```
 
 `Continue` and the two summary lines are absent on a fresh install. Hardcoded
 chrome, save-derived summary (§2.3).
 
-Four things the implementation settled:
+Seven things the implementation settled:
 
 - **`Settings` is not drawn yet.** It is phase 9's screen, and a row that highlights
   and does nothing teaches the player that the caret is decorative. The row returns
@@ -1075,6 +1079,24 @@ Four things the implementation settled:
   arrow key from `Continue` and the new run's first write — ten seconds later —
   takes both the save and the backup. On a fresh install, and on a title reached
   through recovery, there is nothing to protect and no box appears.
+- **The wordmark is one word in one bounding box**, 55 columns wide. The art it
+  replaced hung ` L O D E` off the end of its last row alone, which made that row
+  twelve columns wider than the block above it — and since the art is left-aligned
+  inside a rect sized from its widest row, the block drew twelve columns left of
+  where it looked like it should. A wordmark whose rows share a box cannot repeat
+  that. It clears the 80-column budget with twelve columns of margin either side, so
+  there is no narrow variant to maintain.
+- **The block is placed at the optical centre, and the corners are pinned.** The
+  slack is split two parts above to three below, so the title sits a little above the
+  arithmetic middle — a block placed dead centre reads as having slipped. The version
+  and the key hints are outside that split, on the last two rows whatever the window
+  does; the version used to ride the slack and ended up a third of the way down a
+  tall terminal. At 80×24 there are eight rows to place, so the small window and the
+  large one differ only in how much air surrounds the same block.
+- **The title obeys the same 160×48 cap as the screens.** It is drawn from `Session`
+  rather than through `App::render`, so it does not inherit that band for free — and
+  without it a 240-column terminal put the version corner and the key hints at
+  opposite ends of the desk, which is exactly what the cap exists to prevent (§10).
 
 ```text
                  ┌ Start a new game? ─────────────────────────┐

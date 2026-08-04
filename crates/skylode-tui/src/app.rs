@@ -69,14 +69,21 @@ use ratatui::widgets::Paragraph;
 /// detail pane would be a hundred columns of whitespace with a forty-column
 /// sentence adrift in it. Past this width the surplus becomes margin either side
 /// rather than more line to cross with the eye.
-const MAX_WIDTH: u16 = 2 * too_small::MIN_WIDTH;
+///
+/// `pub(crate)` because the title screen obeys the same cap without going through
+/// [`App::render`] — [`splash`](crate::overlay::splash) is drawn straight from
+/// [`Session`](crate::session::Session), and a title that spread to 240 columns
+/// would put its version corner a screen's width from its own key hints.
+pub(crate) const MAX_WIDTH: u16 = 2 * too_small::MIN_WIDTH;
 
 /// The tallest, for the same reason and by the same arithmetic.
 ///
 /// This one bites less often — a list genuinely uses every row it is given — but
 /// the Mine screen's grid is a game constant, so a 90-row terminal would strand it
 /// in the middle of an enormous empty box.
-const MAX_HEIGHT: u16 = 2 * too_small::MIN_HEIGHT;
+///
+/// `pub(crate)` for [`MAX_WIDTH`]'s reason.
+pub(crate) const MAX_HEIGHT: u16 = 2 * too_small::MIN_HEIGHT;
 
 /// One simulation step, derived from the core's own tick rate.
 ///

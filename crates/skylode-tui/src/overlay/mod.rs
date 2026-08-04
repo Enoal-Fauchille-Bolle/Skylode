@@ -219,11 +219,28 @@ pub fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 /// Renders an overlay's `draw` into an 80×24 buffer and returns the whole frame
 /// as one string — the shared harness every overlay's snapshot test draws through,
 /// so each module asserts on content rather than re-spelling `TestBackend` setup.
+///
+/// 80×24 is the counted frame, so this is the size almost every assertion wants.
+/// [`render_to_string_sized`] is for the few that are *about* the size.
 #[cfg(test)]
 pub(super) fn render_to_string(draw: impl FnOnce(&mut Frame, Rect)) -> String {
+    render_to_string_sized(80, 24, draw)
+}
+
+/// [`render_to_string`] at a chosen size.
+///
+/// Split out for the overlays whose behaviour is a function of the window: the title
+/// centres its block in the slack, so proving it moved needs a frame with slack in it,
+/// and a test that only ever drew 80×24 would pass on a layout pinned to the top.
+#[cfg(test)]
+pub(super) fn render_to_string_sized(
+    width: u16,
+    height: u16,
+    draw: impl FnOnce(&mut Frame, Rect),
+) -> String {
     use ratatui::{Terminal, backend::TestBackend};
 
-    let mut terminal = match Terminal::new(TestBackend::new(80, 24)) {
+    let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
         Ok(terminal) => terminal,
         Err(infallible) => match infallible {},
     };

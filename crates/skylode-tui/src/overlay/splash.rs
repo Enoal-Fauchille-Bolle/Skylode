@@ -10,22 +10,37 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
+    style::Style,
     widgets::{Block, BorderType, Borders, Padding, Paragraph},
 };
 
 use super::centered_rect;
 use crate::{
+    app::{MAX_HEIGHT, MAX_WIDTH},
     format::age,
     session::{CONFIRM_ROWS, ConfirmRow, Splash, SplashRow},
+    theme,
 };
 
-/// The block-letter wordmark; the value cell's own art, five rows tall.
+/// The block-letter wordmark: the whole word, five rows of a 55-column design.
+///
+/// **Every row belongs to the same box**, and that is a layout requirement rather
+/// than a taste: the art is drawn left-aligned inside a rect [`centered_rect`] sizes
+/// from the *widest* row, so that width is what defines the wordmark's centre. The
+/// art this replaced hung ` L O D E` off the end of its last row alone, making that
+/// row twelve columns wider than the block above it — so the block was centred as if
+/// it were twelve columns wider than it looked, and drew left of centre with a tail
+/// off to the right. One word, one bounding box, and the bug cannot come back.
+///
+/// 55 columns is deliberate too: it clears the 80-column budget
+/// [`too_small`](super::too_small) enforces with twelve columns of margin either
+/// side, so the title needs no narrow variant.
 const LOGO: [&str; 5] = [
-    "███████ ██   ██ ██    ██",
-    "██      ██  ██   ██  ██",
-    "███████ █████     ████",
-    "     ██ ██  ██     ██",
-    "███████ ██   ██    ██     L O D E",
+    "███████ ██   ██ ██   ██ ██      ███████ ██████  ███████",
+    "██      ██  ██   ██ ██  ██      ██   ██ ██   ██ ██",
+    "███████ █████     ███   ██      ██   ██ ██   ██ ██████",
+    "     ██ ██  ██     ██   ██      ██   ██ ██   ██ ██",
+    "███████ ██   ██    ██   ███████ ███████ ██████  ███████",
 ];
 
 /// The version, taken from the manifest rather than written out.
@@ -45,24 +60,56 @@ fn label(row: SplashRow) -> &'static str {
 }
 
 /// Draws the splash screen.
+///
+/// **The title obeys the same width cap as the screens behind it.** It is drawn
+/// straight from [`Session`](crate::session::Session) rather than through
+/// [`App::render`](crate::app::App::render), so it does not inherit that band for
+/// free — and without it, a 240-column terminal put the version corner and the key
+/// hints at opposite ends of the desk. Below the caps this is the identity, so the
+/// counted 80×24 frame is untouched.
 pub fn render(frame: &mut Frame, area: Rect, splash: &Splash) {
-    let [_, logo_area, menu_band, summary_area, fill, footer_area] = Layout::vertical([
-        Constraint::Length(1),
+    let area = area.centered(Constraint::Max(MAX_WIDTH), Constraint::Max(MAX_HEIGHT));
+
+    // Where the slack goes is the whole of vertical centring in ratatui: `Length`
+    // asks for its rows, `Fill` absorbs what is left, and two `Fill`s share it in
+    // proportion. 2 above and 3 below is the **optical** centre — the eye reads the
+    // middle of a frame as slightly above its arithmetic middle, so a title placed
+    // dead centre looks like it has slipped. The version and the footer sit outside
+    // both fills, pinned to the last two rows whatever the window does.
+    let [
+        _,
+        logo_area,
+        _,
+        menu_band,
+        _,
+        summary_area,
+        _,
+        version_area,
+        footer_area,
+    ] = Layout::vertical([
+        Constraint::Fill(2),
         Constraint::Length(5),
+        Constraint::Length(1),
         // A fixed band whatever the menu holds, so losing `Continue` on a fresh
-        // install shortens the box and moves nothing under it.
-        Constraint::Length(6),
+        // install shortens the box and moves nothing under it. Five, which is
+        // exactly the three-row box: at six the box sat with one blank row above
+        // it and two below, and the gaps either side of it are what the eye reads
+        // as the block being centred.
+        Constraint::Length(5),
+        Constraint::Length(1),
         Constraint::Length(2),
-        Constraint::Min(0),
+        Constraint::Fill(3),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(area);
 
     // Left-aligned inside a centred rect, so the block art's columns stay lined up
-    // — a per-line centre would jag them.
+    // — a per-line centre would jag them. See [`LOGO`] for why every row has to
+    // share one bounding box for this to land where it looks like it should.
     let logo_width = LOGO.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
     frame.render_widget(
-        Paragraph::new(LOGO.join("\n")),
+        Paragraph::new(LOGO.join("\n")).style(Style::default().fg(theme::ACCENT)),
         centered_rect(logo_area, logo_width, 5),
     );
 
@@ -93,12 +140,15 @@ pub fn render(frame: &mut Frame, area: Rect, splash: &Splash) {
         summary_area,
     );
 
-    // The version sits bottom-right, above the key hints on the last row.
+    // The version sits bottom-right, above the key hints on the last row. It has a
+    // row of its own rather than riding the slack: rendered into the fill, it
+    // followed the block up and down and landed a third of the way down a tall
+    // window instead of in the corner the wireframe puts it in.
     frame.render_widget(
         Paragraph::new(VERSION)
             .alignment(Alignment::Right)
             .block(Block::default().padding(Padding::right(2))),
-        fill,
+        version_area,
     );
     frame.render_widget(Paragraph::new(footer(splash)), footer_area);
 
@@ -214,10 +264,90 @@ mod tests {
     fn it_draws_the_wordmark_and_the_build_it_is() {
         let splash = Splash::sample(true, false);
         let frame = crate::overlay::render_to_string(|frame, area| render(frame, area, &splash));
-        // The block art renders as full blocks; at least one row must survive.
-        assert!(frame.contains('█'), "the wordmark did not draw: {frame}");
-        assert!(frame.contains("L O D E"), "{frame}");
+        // Every row of the art, not just "some block glyph reached the screen": a
+        // wordmark clipped on the right would still pass the loose version.
+        for row in LOGO {
+            assert!(frame.contains(row), "the wordmark row {row:?} did not draw");
+        }
         assert!(frame.contains(VERSION), "{frame}");
+    }
+
+    /// The bug the one-bounding-box rule exists for.
+    ///
+    /// The art is left-aligned inside a rect sized from its widest row, so a row that
+    /// is wider than the block *looks* pushes the block off-centre by half the
+    /// difference. Asserting on the margins rather than on a column number is what
+    /// keeps this true if the art is ever redrawn at another width.
+    #[test]
+    fn the_wordmark_sits_centred_rather_than_hung_off_its_widest_row() {
+        let splash = Splash::sample(true, true);
+        let frame = crate::overlay::render_to_string(|frame, area| render(frame, area, &splash));
+        let row = frame
+            .lines()
+            .find(|line| line.contains(LOGO[0]))
+            .unwrap_or_default();
+        let left = row.len() - row.trim_start().len();
+        let right = row.len() - row.trim_end().len();
+        assert!(
+            left.abs_diff(right) <= 1,
+            "the wordmark is off-centre by {} columns: {row:?}",
+            left.abs_diff(right)
+        );
+    }
+
+    /// On a window with room to spare the block floats; the corners do not.
+    ///
+    /// 80×48 is twice the counted height, so there are ~31 rows of slack to place —
+    /// enough that a top-anchored layout and a centred one are unmistakably different.
+    #[test]
+    fn a_tall_window_lifts_the_block_off_the_top_and_leaves_the_corners_pinned() {
+        let splash = Splash::sample(true, true);
+        let frame = crate::overlay::render_to_string_sized(80, 48, |frame, area| {
+            render(frame, area, &splash);
+        });
+        let rows: Vec<&str> = frame.lines().collect();
+
+        let logo_row = rows
+            .iter()
+            .position(|line| line.contains(LOGO[0]))
+            .unwrap_or_default();
+        // Well clear of the top — the old layout drew it on row 1 at every height.
+        assert!(
+            logo_row > 6,
+            "the block is still anchored to the top: {frame}"
+        );
+        // And above the arithmetic middle, which is the optical centre's whole point.
+        assert!(
+            logo_row < 24,
+            "the block sank to or below the middle: {frame}"
+        );
+
+        // The version and the hints stay in the last two rows however tall it gets.
+        assert!(
+            rows.get(46).is_some_and(|line| line.contains(VERSION)),
+            "the version did not stay pinned above the footer: {frame}"
+        );
+        assert!(
+            rows.get(47).is_some_and(|line| line.contains("q  quit")),
+            "the footer did not stay on the last row: {frame}"
+        );
+    }
+
+    /// The width cap, which the title does not inherit from [`crate::app::App`].
+    #[test]
+    fn a_very_wide_window_keeps_the_corners_within_the_band_rather_than_at_its_edges() {
+        let splash = Splash::sample(true, true);
+        let width = MAX_WIDTH + 60;
+        let frame = crate::overlay::render_to_string_sized(width, 30, |frame, area| {
+            render(frame, area, &splash);
+        });
+        let margin = usize::from((width - MAX_WIDTH) / 2);
+        let footer = frame.lines().last().map(str::to_owned).unwrap_or_default();
+        assert_eq!(
+            footer.len() - footer.trim_start().len(),
+            margin + 1,
+            "the hints ran to the terminal's edge instead of the band's: {footer:?}"
+        );
     }
 
     #[test]
