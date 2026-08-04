@@ -1160,7 +1160,7 @@ is underlined so a player at 80x18 learns it is the height.
 
         ┌─ Save problem ───────────────────────────────────────────────┐
         │                                                              │
-        │ Your save does not match its checksum.                       │
+        │ Skylode could not verify your save.                          │
         │                                                              │
         │ Either the file was edited, or a write was interrupted.      │
         │ Skylode will not load it: the values inside cannot be        │
@@ -1205,8 +1205,8 @@ When the backup fails too, there is no floor left, and the frame says so:
 
         ┌─ Save problem ───────────────────────────────────────────────┐
         │                                                              │
-        │ Your save does not match its checksum,                       │
-        │ and neither does the backup.                                 │
+        │ Skylode could not verify your save,                          │
+        │ and it could not verify the backup either.                   │
         │                                                              │
         │ Skylode will not load either of them, and has changed        │
         │ neither.                                                     │

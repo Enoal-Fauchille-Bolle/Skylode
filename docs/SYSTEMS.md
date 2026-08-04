@@ -123,8 +123,52 @@ entry at zero, a boost that is a *slow* — is **refused, never repaired**. Clam
 would hand the player a run that is not the one they saved, and the recovery screen's
 backup is seconds old.
 
-This is aimed at a bug in a migration we write, not at a player with a text editor;
-the HMAC below is what covers the latter.
+The per-field half of this is aimed at a bug in a migration we write rather than at a
+player with a text editor; the HMAC below is what turns away the plain hand-edit. The
+cross-field half is aimed squarely at the case *between* those two — the tamperer who
+has the key and re-signs — and it is the only layer that keeps working after the key is
+out.
+
+#### The cross-field audit
+
+Every check above reads **one field**. A level inside the ladder, a carry under its
+denominator, a dial under its ceiling — each is a fact about a number on its own, and a
+file satisfying all of them can still describe a player holding a billion Diamond after
+forty minutes. That is exactly what a tamperer who has found the key produces, so
+`GameState::validate` closes with three checks that compare fields *against each other*:
+
+| Check | Reads | Bounded by |
+| --- | --- | --- |
+| blocks against time | `blocks_broken`, `playtime` | one tick breaks at most one full grid |
+| the ladder against blocks | level, prestige rank, `blocks_broken` | experience comes only from broken blocks |
+| the purse against everything | inventory, `blocks_broken`, `auto_raw_credited` | mining, the reward ladder, the auto-miner |
+
+**Every bound is a deliberate over-estimate.** A save an honest player wrote and this
+refuses is a run lost to a guess — the worst outcome the save system has — while a cheat
+that squeaks under a ceiling ten thousand times too generous had to be coherent across
+the whole document to get there. So each ceiling is derived from a constant the rules
+already enforce (the best block in the game, the biggest grid, the full reward ladder at
+every rank) and rounded the generous way at every step. Nothing here is measured from
+play, and nothing here should ever be tightened to what a *typical* run does.
+
+**`auto_raw_credited` is a counter added for this**, and it is the only one of the three
+that could not be derived. The auto-miner pays out during absences that leave no mark on
+`playtime` — an absence is credited in closed form, never replayed — and the number of
+absences a save has lived through is unbounded, so without a running total the only
+sound ceiling on the player's ore would be "however many seven-day windows they might
+have slept through", which is no ceiling at all. It took `SAVE_VERSION` to 2, and the
+`1 → 2` migration **grandfathers** rather than defaulting to zero: a version-1 file
+cannot say what its auto-miner paid out, and a `0` would be false in the direction that
+accuses an honest save.
+
+**What it does not catch, and cannot.** A tamperer holding the key can raise the
+counters alongside the purse and satisfy all three; nothing inside a file can prove a
+file. What the audit buys is that the lie must now be told consistently in four places
+instead of one. Measured against the real thing: a save inflated to a billion of every
+material is refused, and so is one whose `blocks_broken` was erased, while a prestige
+rank raised from 0 to 10 slips through *on a mature run* (11 869 blocks broken pays for
+1.7 M experience against the 1.35 M eleven climbs demand) and is refused on a younger
+one. That is the over-estimate working as designed, not a check failing.
 
 ### Config in the save
 
@@ -245,11 +289,27 @@ corrupted. This is tamper detection, not prevention: the embedded key is
 extractable. It catches hand-editing and corruption, not determined cheating.
 
 **The key is stored obfuscated, and that is the whole of the hardening.** It is
-held masked — each byte XOR-ed against a fixed random pattern — and reassembled at
-run time, so the plain bytes never appear in the binary. This is the one step worth
-taking: it moves the attack from a single command needing no skill to a debugger,
-which is where the trade's own rule of thumb puts save editing into the *not worth
-the effort* basket for most players.
+held masked — each byte XOR-ed against a pattern — and reassembled at run time, so
+the plain bytes never appear in the binary. This is the one step worth taking: it
+moves the attack from a single command needing no skill to reading the program, which
+is where the trade's own rule of thumb puts save editing into the *not worth the
+effort* basket for most players.
+
+**The mask is derived, not stored, and that came from a measurement.** The first
+version of this held *two* 64-byte constants and XOR-ed them. The plain key was
+genuinely absent from the binary — that half worked — but the two arrays were declared
+one after the other and the compiler laid them out one after the other in `.rodata`.
+That is enough to lose the key without a debugger at all: slide a 128-byte window over
+the whole file, XOR its two halves, and test each candidate against the `mac` of any
+save you already own. Measured against the shipped binary, that search found the key in
+**1.9 seconds** from thirty lines of script. The secret was never the bytes; it was
+their adjacency.
+
+So there is no second array. A 16-byte seed is grown into the 64-byte mask by two
+chained SHA-256 rounds at run time, and a window search has nothing to slide against.
+The rewrite deliberately **did not change what `key()` returns** — the stored constant
+was recomputed so the output is byte-identical — because a new key is a wiped disk for
+every save in existence and there is no migration for a signature.
 
 **Two implementation details that are the whole of whether it works.**
 
@@ -311,6 +371,22 @@ optimiser had removed the code, and the check would be measuring nothing. And
 `key[51] == 0x0a` is confirmed, which is why `grep -f` splits the pattern there and
 reports a false pass.
 
+**Re-run on 2026-08-04 after the mask was moved to a derivation**, which added a
+fourth row and is the one that now matters most:
+
+| Searched for | Occurrences | What it says |
+| --- | --- | --- |
+| the reassembled key | **0** | unchanged: the key itself is still absent |
+| `MASKED` | 1 | the one constant left, and the check still is not passing by absence |
+| `SEED` | 1 | likewise |
+| **the derived mask** | **0** | LTO did *not* fold the two SHA-256 rounds |
+
+The last row is the whole claim. If the optimiser had evaluated the hash at compile
+time it would have written the mask into `.rodata` beside `MASKED`, restoring the
+adjacent pair the derivation exists to remove — and the window search would work again.
+It does not: re-run against the hardened binary, that search reports *not found* after
+scanning all 1.7 MB.
+
 **One consequence worth writing down, found while walking the state machine:** a save
 *from the future* cannot be forged from outside the binary. Raising `version` inside
 the payload invalidates the MAC, so the loader answers `Tampered` and not
@@ -332,8 +408,9 @@ the one that keeps paying.** A tamperer who extracts the key and re-signs the fi
 still has to produce a state that satisfies every rule the types enforce, which is
 a far duller job than editing a number. Unlike the key, that layer also serves the
 honest player: disk corruption fails it in exactly the same way. Deepening it with
-cross-field plausibility checks is therefore worth more than any further work on
-hiding the key.
+[cross-field plausibility checks](#the-cross-field-audit) was therefore worth more than
+any further work on hiding the key — and both were done on 2026-08-04, in that order of
+importance.
 
 ### Robustness and recovery
 
