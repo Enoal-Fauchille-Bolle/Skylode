@@ -224,6 +224,27 @@ impl Toasts {
         })
     }
 
+    /// The announcement [`render`](Toasts::render) would draw, if there is one.
+    ///
+    /// **A search backwards** rather than a look at the last entry, because `ttl` is
+    /// the caller's to choose: a short-lived announcement pushed after a long-lived one
+    /// would otherwise blank the screen while something was still owed its seconds.
+    fn current(&self, now: Instant) -> Option<&Toast> {
+        self.items.iter().rev().find(|toast| toast.expires_at > now)
+    }
+
+    /// Whether an announcement is occupying its slot at `now`.
+    ///
+    /// **Asked by whatever else wants that slot**, which today is the standing
+    /// save-failure banner in [`App::render`](crate::app::App::render). It shares
+    /// [`current`](Toasts::current) with [`render`](Toasts::render) rather than
+    /// re-deriving the rule, so "is a toast up" and "which toast is drawn" cannot come
+    /// apart — a banner painted over a toast that was in fact showing is exactly the
+    /// disagreement two copies of that search would allow.
+    pub fn showing(&self, now: Instant) -> bool {
+        self.current(now).is_some()
+    }
+
     /// Draws the newest announcement still inside its window near the bottom of
     /// `area`, over whatever is already there.
     ///
@@ -237,12 +258,8 @@ impl Toasts {
     /// away. `now` is a parameter for the reason it was one on `prune`: a function that
     /// reads the clock itself cannot be told what time it is, and expiry is exactly the
     /// behaviour worth testing.
-    ///
-    /// A **search backwards** rather than a look at the last entry, because `ttl` is
-    /// the caller's to choose: a short-lived announcement pushed after a long-lived one
-    /// would otherwise blank the screen while something was still owed its seconds.
     pub fn render(&self, frame: &mut Frame, area: Rect, now: Instant) {
-        let Some(toast) = self.items.iter().rev().find(|toast| toast.expires_at > now) else {
+        let Some(toast) = self.current(now) else {
             return;
         };
 

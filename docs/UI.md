@@ -1065,7 +1065,7 @@ which the frame already drew as `▸` apart from `●` and which phase 7 simply 
 `Continue` and the two summary lines are absent on a fresh install. Hardcoded
 chrome, save-derived summary (§2.3).
 
-Seven things the implementation settled:
+Eight things the implementation settled:
 
 - **`Settings` is not drawn yet.** It is phase 9's screen, and a row that highlights
   and does nothing teaches the player that the caret is decorative. The row returns
@@ -1097,6 +1097,16 @@ Seven things the implementation settled:
   rather than through `App::render`, so it does not inherit that band for free — and
   without it a 240-column terminal put the version corner and the key hints at
   opposite ends of the desk, which is exactly what the cap exists to prevent (§10).
+- **It takes the chrome colours the six screens take.** The caret is `ACCENT` (through
+  `theme::marked`, like every list row in the crate), the menu border and the footer and
+  the version are `MUTED`, the wordmark is `ACCENT`. The sharpest symptom of the drift
+  this fixes was internal: the `▸` in the confirmation box below is drawn by `modal`, so
+  it was already accented, while the `▸` in the menu one row above it was not — two
+  carets, two colours, one screen. The summary keeps the hierarchy `theme::marked_row`
+  applies everywhere else: `Lv 23 · Diamond Pickaxe` plain, `last played 3h ago` muted.
+  The *"nowhere to save"* warning takes **no** colour, because §4.4 says a hue doubles a
+  glyph and that sentence has none — colouring it would make it the one place in the
+  interface where a colour carries a meaning by itself.
 
 ```text
                  ┌ Start a new game? ─────────────────────────┐
@@ -1283,6 +1293,45 @@ was built, and written to disk in the same breath, so a player who closes the te
 while reading keeps every block of it. What `Enter` dismisses is a receipt — and the
 write is what stops the next launch measuring the absence from the old mark and paying
 for the same hours twice.
+
+**`Enter  collect` is drawn muted, like every footer in the interface**, and it reaches
+that colour through `overlay::modal_with_hint` rather than through the box's body. A
+hint passed inside the body went through `theme::marked`, found no mark in it, and came
+out exactly as loud as the ore totals above it. Three modals carry such a line — this
+one, the compression dialog's `a  all (n)   Enter  do it`, and the dev menu's — and one
+function now decides what all three look like, for the reason `modal` already decides
+what a *box* looks like.
+
+### 6.4.1 The standing save-failure banner
+
+A save that will not write is a **state**, not an event, and the interface used to
+announce it as one: a single `Save failed: …` toast, three seconds, never repeated. The
+player then carried on mining a run that was no longer being kept, with nothing on
+screen saying so.
+
+The split it settles into:
+
+- **The transition is announced.** One toast when saving breaks, one when it recovers —
+  so the Stats history holds a timestamped line for each edge rather than an identical
+  refusal every ten seconds.
+- **The condition is displayed.** A one-row banner in `theme::REFUSED`, drawn directly
+  above the footer on every screen, naming the cause: `Save failing: permission denied`.
+  It is cleared when a write succeeds — which is the whole reason it is *not* a sticky
+  toast, since nothing ever leaves that buffer (§3.3) and retracting one would take its
+  own history entry with it.
+- **It yields the slot and takes it back.** A live toast covers the banner for its three
+  seconds; when the toast expires the banner is simply true again, so it reappears with
+  nothing having scheduled its return. Both ask `Toasts::showing` — one search, so the
+  two cannot disagree about whether the slot is taken.
+
+**One row and not the toast's three.** The toast box is drawn over the screen with
+`Clear`, so a permanent one would keep three rows of the mine grid hidden for as long as
+the disk stayed broken — a fix that costs the player the thing they are looking at.
+
+**The cause is named, not a generic word.** `permission denied` and `no space left` want
+different actions from the player; `Save failing` alone only says that something is
+wrong. And per §4.4 the sentence carries the meaning alone — strip every colour and the
+banner still says the whole thing, which is what licenses the hue at all.
 
 ### 6.5 Level-up: no modal
 

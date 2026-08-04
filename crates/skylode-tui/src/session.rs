@@ -172,15 +172,6 @@ pub struct Session {
     /// first autosave of a run falls a full period after the run opened rather than
     /// immediately.
     next_autosave: Instant,
-    /// Whether the last write failed.
-    ///
-    /// **A `bool` whose whole job is to make the toast an *edge*.** A full disk fails
-    /// every ten seconds, and announcing each one would bury the game under identical
-    /// refusals; announcing only the transitions means the player hears once that
-    /// saving broke and once that it works again. It is deliberately **not fatal** —
-    /// the run in memory is fine, and throwing it away would be the opposite of what
-    /// *"no continue anyway"* protects.
-    save_failing: bool,
     /// Set when the process should end.
     quit: bool,
     /// Whether every game this session opens gets the dev menu.
@@ -572,7 +563,6 @@ impl Session {
             dirty: true,
             cramped: false,
             next_autosave: Instant::now() + AUTOSAVE_PERIOD,
-            save_failing: false,
             quit: false,
             #[cfg(debug_assertions)]
             dev: false,
@@ -777,20 +767,32 @@ impl Session {
         // taking a clone: the run is a few kilobytes and the write happens twice a
         // minute.
         let outcome = persist::save(slots, &mut app.state, &app.config, now);
+        let was_failing = app.save_error.is_some();
         match outcome {
-            Err(error) if !self.save_failing => {
-                app.toasts
-                    .push(format!("Save failed: {error}"), Tone::Refusal, TOAST_TTL);
-                self.save_failing = true;
+            // **The transition is announced; the condition is displayed.** The toast is
+            // pushed once, so the Stats history gets one timestamped line saying when
+            // saving stopped working rather than one every ten seconds — and
+            // `save_error` carries the fact for as long as it is a fact, which is what
+            // `App::render_save_banner` draws.
+            Err(error) => {
+                if !was_failing {
+                    app.toasts
+                        .push(format!("Save failed: {error}"), Tone::Refusal, TOAST_TTL);
+                }
+                // Rewritten on every failure, not only the first: a disk that goes from
+                // "permission denied" to "no space left" is telling the player
+                // something new, and the banner is the only place they would read it.
+                app.save_error = Some(error.to_string());
             }
-            Ok(()) if self.save_failing => {
-                app.toasts
-                    .push("Saving works again".to_owned(), Tone::Success, TOAST_TTL);
-                self.save_failing = false;
+            Ok(()) => {
+                if was_failing {
+                    app.toasts
+                        .push("Saving works again".to_owned(), Tone::Success, TOAST_TTL);
+                }
+                // The state clears. A toast never could — nothing leaves that buffer —
+                // which is the whole reason the condition is not kept in it.
+                app.save_error = None;
             }
-            // A second failure in a row, or an ordinary success. The player has already
-            // been told which of the two the game is in.
-            _ => {}
         }
     }
 
@@ -1641,6 +1643,17 @@ mod tests {
         }
     }
 
+    /// The standing condition, as opposed to the announcement of its edges.
+    ///
+    /// `None` on any stage without a run, which is the same answer a session that has
+    /// never tried to write gives — there is nothing to report either way.
+    fn standing_failure(session: &Session) -> Option<String> {
+        match &session.stage {
+            Stage::Game(app) | Stage::Offline { app, .. } => app.save_error.clone(),
+            Stage::Splash(_) | Stage::Recovery(_) => None,
+        }
+    }
+
     #[test]
     fn a_new_run_is_on_the_disk_before_the_player_presses_anything() {
         // Not the cadence but its floor: a `New game` abandoned in its first seconds
@@ -1693,18 +1706,34 @@ mod tests {
             "a healthy write spoke up"
         );
 
+        assert_eq!(
+            standing_failure(&session),
+            None,
+            "a healthy session was carrying a failure"
+        );
+
         session.slots = Some(bad);
         session.autosave(now());
         assert_eq!(announcements(&session).len(), 1, "the failure went unsaid");
         assert!(announcements(&session)[0].contains("Save failed"));
+        assert!(
+            standing_failure(&session).is_some(),
+            "the failure was announced but not left standing"
+        );
 
         // Still broken: the player has already been told, and a toast every ten
-        // seconds would bury the game under identical refusals.
+        // seconds would bury the game under identical refusals. **The condition
+        // persists while the announcement does not** — that split is the whole design,
+        // and this is the one place both halves are visible in the same breath.
         session.autosave(now());
         assert_eq!(
             announcements(&session).len(),
             1,
             "the failure repeated itself"
+        );
+        assert!(
+            standing_failure(&session).is_some(),
+            "the condition went quiet along with the toast"
         );
 
         session.slots = Some(good);
@@ -1712,6 +1741,13 @@ mod tests {
         let said = announcements(&session);
         assert_eq!(said.len(), 2, "the recovery went unsaid");
         assert!(said[0].contains("Saving works again"), "{said:?}");
+        // And the banner goes. A toast never could — nothing leaves that buffer — which
+        // is why the condition was never kept in it.
+        assert_eq!(
+            standing_failure(&session),
+            None,
+            "the banner outlived the problem it reported"
+        );
 
         // And once more, silent again — the edge is what is announced, not the state.
         session.autosave(now());
