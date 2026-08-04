@@ -41,7 +41,11 @@ use std::{
 
 use color_eyre::Result;
 use ratatui::{Frame, Terminal, backend::Backend, crossterm::event::KeyEvent, layout::Rect};
-use skylode_core::{enchant::EnchantType, game::GameState, save::Save};
+use skylode_core::{
+    enchant::EnchantType,
+    game::{GameState, OfflineReport},
+    save::Save,
+};
 
 use crate::{
     action::{Action, MenuAction},
@@ -50,7 +54,7 @@ use crate::{
     event::{Event, Events},
     format::rung_label,
     keymap,
-    overlay::{save_recovery, splash, too_small},
+    overlay::{offline, save_recovery, splash, too_small},
     persist::{self, PersistError, SaveSlots},
     toast::{TOAST_TTL, Tone},
 };
@@ -199,6 +203,17 @@ enum Stage {
     Splash(Splash),
     /// A save that would not load, and what can still be done about it (§6.3).
     Recovery(Recovery),
+    /// A run the player has not looked at yet, and what their absence paid (§6.4).
+    ///
+    /// **The run is already credited and already written** by the time this is built:
+    /// `resume` moved the mark and added the ore, and the summary is a *reading* of
+    /// what it did. Pressing `Enter` collects nothing — it dismisses a receipt.
+    Offline {
+        /// The run behind the modal, drawn under it for context.
+        app: Box<App>,
+        /// What the absence paid.
+        report: OfflineReport,
+    },
     /// A run.
     ///
     /// [`Box`]ed because an enum is as large as its largest variant, and [`App`] is a
@@ -334,6 +349,8 @@ enum Chosen {
     NewGame,
     /// The recovery frame's `Restore the backup`.
     RestoreBackup,
+    /// The offline summary's `Enter` — dismiss the receipt and walk into the run.
+    Collect,
     /// Leave.
     Quit,
 }
@@ -702,13 +719,13 @@ impl Session {
     /// mark and have the next absence measured from a moment already paid for. This
     /// supplies `now` and nothing else.
     ///
-    /// Silent on every state that is not a game, and on a session with nowhere to
+    /// Silent on every state that holds no run, and on a session with nowhere to
     /// write: both are ordinary, and neither is news.
     fn autosave(&mut self, now: SystemTime) {
         let Some(slots) = &self.slots else {
             return;
         };
-        let Stage::Game(app) = &mut self.stage else {
+        let Some(app) = Self::running_mut(&mut self.stage) else {
             return;
         };
         // Two disjoint fields of the same `App`, which is why this borrows rather than
@@ -732,21 +749,47 @@ impl Session {
         }
     }
 
+    /// The run this state holds, if it holds one.
+    ///
+    /// **An associated function taking the field rather than a method taking `self`**,
+    /// so that a caller which has already borrowed another field — [`autosave`] holds
+    /// [`slots`](Session#structfield.slots) — can still reach the run. Borrowing
+    /// through `&mut self` would take the whole struct and make those two borrows
+    /// fight, for no reason other than how the signature was written.
+    ///
+    /// [`autosave`]: Session::autosave
+    fn running_mut(stage: &mut Stage) -> Option<&mut App> {
+        match stage {
+            Stage::Game(app) | Stage::Offline { app, .. } => Some(app),
+            Stage::Splash(_) | Stage::Recovery(_) => None,
+        }
+    }
+
     /// Runs whatever the clock owes the current state.
     ///
-    /// **Only a game has a clock.** The title and the recovery frames are still
-    /// pictures: nothing ages on them, so the loop over them is idle by construction
-    /// rather than by a paused flag someone has to remember to set.
+    /// **Only a game has a clock**, and the offline summary deliberately does not: the
+    /// player is reading a receipt for time they have already been paid for, and a run
+    /// mining behind the box would make the moment they press `Enter` part of the sum.
+    /// The title and the recovery frames are still pictures for a simpler reason —
+    /// there is no run at all — so the loop over any of the three is idle by
+    /// construction rather than by a paused flag someone has to remember to set.
+    ///
+    /// **That makes this the first state to pause a tick, and phase 7 left a note due
+    /// about it**: the proc flash resolves its beat in `sync_view` rather than in
+    /// `render`, so a live flash under a paused tick would freeze mid-beat. It cannot
+    /// happen here, and by construction rather than by a `clear`: the only `App` this
+    /// state ever holds has just been built from a load, so its `Flashes` is empty. A
+    /// future state that pauses a *running* game will have to clear it.
     fn advance(&mut self, now: Instant) -> bool {
         match &mut self.stage {
             Stage::Game(app) => app.advance(now),
-            Stage::Splash(_) | Stage::Recovery(_) => false,
+            Stage::Offline { .. } | Stage::Splash(_) | Stage::Recovery(_) => false,
         }
     }
 
     /// Rebuilds the read model, where there is one.
     fn sync_view(&mut self, now: Instant) {
-        if let Stage::Game(app) = &mut self.stage {
+        if let Some(app) = Self::running_mut(&mut self.stage) {
             app.sync_view(now);
         }
     }
@@ -768,6 +811,13 @@ impl Session {
             Stage::Splash(state) => splash::render(frame, area, state),
             Stage::Recovery(state) => save_recovery::render(frame, area, state),
             Stage::Game(app) => app.render(frame, now),
+            // The run is drawn *under* the summary, which is what makes it a modal
+            // rather than a screen: the player can see the mine they are about to walk
+            // back into while they read what it earned without them.
+            Stage::Offline { app, report } => {
+                app.render(frame, now);
+                offline::render(frame, area, report);
+            }
         }
     }
 
@@ -813,7 +863,7 @@ impl Session {
                 }
                 true
             }
-            Stage::Splash(_) | Stage::Recovery(_) => {
+            Stage::Splash(_) | Stage::Recovery(_) | Stage::Offline { .. } => {
                 let Some(action) = keymap::resolve_menu(key) else {
                     return false;
                 };
@@ -844,7 +894,9 @@ impl Session {
         let (cursor, len) = match &self.stage {
             Stage::Splash(splash) => (splash.cursor, splash.rows().len()),
             Stage::Recovery(recovery) => (recovery.cursor, recovery.rows().len()),
-            Stage::Game(_) => return,
+            // Neither holds a list. The offline summary offers one gesture and prints
+            // it — `Enter collect` — so a caret would be pointing at the only row.
+            Stage::Game(_) | Stage::Offline { .. } => return,
         };
         let Ok(len) = isize::try_from(len) else {
             return;
@@ -859,7 +911,7 @@ impl Session {
         match &mut self.stage {
             Stage::Splash(splash) => splash.cursor = moved,
             Stage::Recovery(recovery) => recovery.cursor = moved,
-            Stage::Game(_) => {}
+            Stage::Game(_) | Stage::Offline { .. } => {}
         }
     }
 
@@ -876,6 +928,7 @@ impl Session {
                 RecoveryRow::NewGame => Some(Chosen::NewGame),
                 RecoveryRow::Quit => Some(Chosen::Quit),
             },
+            Stage::Offline { .. } => Some(Chosen::Collect),
             Stage::Game(_) => None,
         }
     }
@@ -886,6 +939,7 @@ impl Session {
             Some(Chosen::Resume) => self.resume_run(now),
             Some(Chosen::NewGame) => self.start_new_run(now),
             Some(Chosen::RestoreBackup) => self.restore_backup(now),
+            Some(Chosen::Collect) => self.collect_offline(),
             Some(Chosen::Quit) => self.quit = true,
             None => {}
         }
@@ -924,6 +978,26 @@ impl Session {
         );
     }
 
+    /// Dismisses the offline summary and walks into the run behind it.
+    ///
+    /// **It collects nothing.** The ore was credited by
+    /// [`resume`](skylode_core::game::GameState::resume) before this state was built,
+    /// and written to disk in the same breath — so a player who closes the terminal
+    /// while reading the summary keeps every block of it. What `Enter` dismisses is a
+    /// receipt.
+    ///
+    /// [`mem::replace`](std::mem::replace) because moving the [`App`] out of one
+    /// variant and into another needs to *own* the stage, and `&mut self` only lends
+    /// it. The value left behind is never observed: it is overwritten on the next line,
+    /// and nothing between the two can look.
+    fn collect_offline(&mut self) {
+        let stage = std::mem::replace(&mut self.stage, Stage::Splash(Splash::fresh(false)));
+        self.stage = match stage {
+            Stage::Offline { app, .. } => Stage::Game(app),
+            other => other,
+        };
+    }
+
     /// §8.3's `Rec -> BakMac` edge: the player asked for the backup.
     fn restore_backup(&mut self, now: SystemTime) {
         let Some(slots) = &self.slots else {
@@ -945,7 +1019,18 @@ impl Session {
     /// abandoned in its first seconds leaves a title with nothing to continue —
     /// and, once the offline summary lands, a resume that credited an absence in
     /// memory and could be paid for a second time on the next launch.
-    fn open_game(&mut self, state: GameState, config: Config, from_backup: bool, now: SystemTime) {
+    fn open_game(
+        &mut self,
+        mut state: GameState,
+        config: Config,
+        from_backup: bool,
+        now: SystemTime,
+    ) {
+        // **Every path, including a brand-new run**, and that costs nothing: a run built
+        // a moment ago has `last_seen == now`, so `resume` answers `None` on a span of
+        // zero. One rule beats a condition that would have to be kept in step with the
+        // ways a game can open.
+        let report = state.resume(now);
         let app = App::new(state).with_config(config);
         #[cfg(debug_assertions)]
         let app = app.with_dev(self.dev);
@@ -969,12 +1054,27 @@ impl Session {
                 TOAST_TTL,
             );
         }
-        self.stage = Stage::Game(Box::new(app));
+        // **The summary appears when the report *paid* something**, and that is derived
+        // rather than a threshold. `resume` already answers `None` on a backward clock
+        // and on a span of zero; what is left is the case `q` then `Continue` creates —
+        // three seconds of absence, a real report, and nothing in it, because the
+        // auto-miner credits whole blocks and three seconds completes none. `gained`
+        // being empty *is* that question, so no number is written down here.
+        //
+        // This corrects `docs/UI.md` §8.3, which draws the edge as `elapsed = 0`.
+        let app = Box::new(app);
+        self.stage = match report {
+            Some(report) if !report.gained.is_empty() => Stage::Offline { app, report },
+            _ => Stage::Game(app),
+        };
 
         // The clock is set *before* the write and from the same instant, so the first
         // autosave of a run falls a full period after it opened rather than counting
         // from whenever the title screen happened to be built.
         self.next_autosave = Instant::now() + AUTOSAVE_PERIOD;
+        // **And the write covers the offline credit.** `resume` moved the mark and added
+        // the ore in memory; a crash before the first cadence would otherwise measure
+        // the next absence from the old mark and pay for the same hours twice.
         self.autosave(now);
     }
 }
@@ -986,6 +1086,7 @@ mod tests {
         buffer::Buffer,
         crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     };
+    use skylode_core::material::Material;
     use tempfile::TempDir;
 
     use super::*;
@@ -1001,12 +1102,23 @@ mod tests {
     /// `pub(crate)`, which is a larger seam than one constant is worth.
     const SEED: u64 = 0x5B1_0DE;
 
-    /// A fixed wall-clock instant, so a written file is the same file every time.
-    const NOW: SystemTime = SystemTime::UNIX_EPOCH;
+    /// The instant a fixture is written at, and the one a boot reads.
+    ///
+    /// **The real clock and not `UNIX_EPOCH`**, unlike `persist`'s own tests. A menu
+    /// confirmation reads `SystemTime::now()` at the moment it opens a game — that is
+    /// what production does, and the session deliberately holds no injected clock — so
+    /// a fixture stamped in 1970 would come back as a fifty-year absence and open an
+    /// offline summary in front of every test in this file.
+    ///
+    /// Nothing here asserts on the *bytes* of a save, which is what makes a moving
+    /// instant harmless: the file's determinism is `persist`'s own test to make.
+    fn now() -> SystemTime {
+        SystemTime::now()
+    }
 
     /// A session with no disk behind it at all.
     fn sessionless() -> Session {
-        Session::boot(None, NOW)
+        Session::boot(None, now())
     }
 
     /// An empty temporary directory and the two slots inside it.
@@ -1031,8 +1143,8 @@ mod tests {
     fn saved(writes: usize) -> (TempDir, SaveSlots) {
         let (dir, slots) = empty();
         for _ in 0..writes {
-            let mut state = GameState::new(SEED, NOW);
-            if let Err(error) = persist::save(&slots, &mut state, &Config::default(), NOW) {
+            let mut state = GameState::new(SEED, now());
+            if let Err(error) = persist::save(&slots, &mut state, &Config::default(), now()) {
                 unreachable!("the fixture should have been written: {error}");
             }
         }
@@ -1167,7 +1279,7 @@ mod tests {
     fn a_launch_over_a_save_offers_to_continue_it_and_says_what_it_is() {
         let (_dir, slots) = saved(1);
         let (result, buffer) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Char('q'))],
         );
         assert!(result.is_ok(), "the loop failed: {result:?}");
@@ -1183,7 +1295,7 @@ mod tests {
     fn continue_re_reads_the_file_and_lands_in_the_run_it_holds() {
         let (_dir, slots) = saved(1);
         let (result, buffer) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Enter), ctrl_c()],
         );
         assert!(result.is_ok(), "the loop failed: {result:?}");
@@ -1224,7 +1336,7 @@ mod tests {
         }
 
         let (result, buffer) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Char('q'))],
         );
         assert!(result.is_ok(), "the loop failed: {result:?}");
@@ -1243,7 +1355,7 @@ mod tests {
         }
 
         let (_, buffer) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Enter), ctrl_c()],
         );
         assert!(
@@ -1260,7 +1372,7 @@ mod tests {
         persist::fixture::tamper(slots.primary());
 
         let (result, buffer) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Char('q'))],
         );
         assert!(result.is_ok(), "the loop failed: {result:?}");
@@ -1277,7 +1389,7 @@ mod tests {
         // `Enter` on the first row is `Restore the backup`; §8.3 lands that on the
         // title, where `Continue` is offered because the file has just been trusted.
         let (_, buffer) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Enter), key(KeyCode::Char('q'))],
         );
         let frame = whole_frame(&buffer);
@@ -1292,7 +1404,7 @@ mod tests {
         persist::fixture::tamper(slots.backup());
 
         let (_, buffer) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Down), key(KeyCode::Char('q'))],
         );
         let frame = whole_frame(&buffer);
@@ -1303,7 +1415,7 @@ mod tests {
         persist::fixture::tamper(slots2.primary());
         persist::fixture::tamper(slots2.backup());
         let (_, after) = run_script(
-            Session::boot(Some(slots2), NOW),
+            Session::boot(Some(slots2), now()),
             vec![key(KeyCode::Enter), key(KeyCode::Char('q'))],
         );
         let frame = whole_frame(&after);
@@ -1317,7 +1429,7 @@ mod tests {
         persist::fixture::from_the_future(slots.primary());
 
         let (_, buffer) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Char('q'))],
         );
         let frame = whole_frame(&buffer);
@@ -1430,7 +1542,7 @@ mod tests {
     /// one.
     fn announcements(session: &Session) -> Vec<String> {
         match &session.stage {
-            Stage::Game(app) => app
+            Stage::Game(app) | Stage::Offline { app, .. } => app
                 .toasts
                 .log(Instant::now())
                 .map(|(_, text)| text.to_string())
@@ -1446,7 +1558,7 @@ mod tests {
         let (_dir, slots) = empty();
         let readable = slots.clone();
         let (result, _) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Enter), ctrl_c()],
         );
         assert!(result.is_ok(), "the loop failed: {result:?}");
@@ -1463,7 +1575,7 @@ mod tests {
         let (dir, _) = empty();
         let slots = unreachable_slots(&dir);
         let (result, buffer) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Enter), ctrl_c()],
         );
         assert!(
@@ -1483,7 +1595,7 @@ mod tests {
         let (bad_dir, _) = empty();
         let bad = unreachable_slots(&bad_dir);
 
-        let mut session = Session::boot(Some(good.clone()), NOW);
+        let mut session = Session::boot(Some(good.clone()), now());
         // `Enter` on a fresh title is `New game`, which opens a run and writes it.
         session.menu(MenuAction::Confirm);
         assert!(
@@ -1492,13 +1604,13 @@ mod tests {
         );
 
         session.slots = Some(bad);
-        session.autosave(NOW);
+        session.autosave(now());
         assert_eq!(announcements(&session).len(), 1, "the failure went unsaid");
         assert!(announcements(&session)[0].contains("Save failed"));
 
         // Still broken: the player has already been told, and a toast every ten
         // seconds would bury the game under identical refusals.
-        session.autosave(NOW);
+        session.autosave(now());
         assert_eq!(
             announcements(&session).len(),
             1,
@@ -1506,13 +1618,13 @@ mod tests {
         );
 
         session.slots = Some(good);
-        session.autosave(NOW);
+        session.autosave(now());
         let said = announcements(&session);
         assert_eq!(said.len(), 2, "the recovery went unsaid");
         assert!(said[0].contains("Saving works again"), "{said:?}");
 
         // And once more, silent again — the edge is what is announced, not the state.
-        session.autosave(NOW);
+        session.autosave(now());
         assert_eq!(announcements(&session).len(), 2);
         drop(good_dir);
     }
@@ -1526,7 +1638,7 @@ mod tests {
         let said = announcements(&session);
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(said[0].contains("will not be kept"), "{said:?}");
-        session.autosave(NOW);
+        session.autosave(now());
         assert_eq!(
             announcements(&session).len(),
             1,
@@ -1537,8 +1649,8 @@ mod tests {
     #[test]
     fn nothing_is_written_from_a_screen_that_has_no_run() {
         let (_dir, slots) = empty();
-        let mut session = Session::boot(Some(slots.clone()), NOW);
-        session.autosave(NOW);
+        let mut session = Session::boot(Some(slots.clone()), now());
+        session.autosave(now());
         assert!(
             matches!(persist::load(slots.primary()), Ok(None)),
             "a title screen wrote a save"
@@ -1552,7 +1664,7 @@ mod tests {
         let (_dir, slots) = empty();
         let readable = slots.clone();
         let (result, _) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![key(KeyCode::Enter), Event::Tick],
         );
         assert!(result.is_err(), "the loop kept going past a dead source");
@@ -1569,7 +1681,7 @@ mod tests {
         // run was written on the way out and read back on the way in.
         let (_dir, slots) = empty();
         let (result, buffer) = run_script(
-            Session::boot(Some(slots), NOW),
+            Session::boot(Some(slots), now()),
             vec![
                 key(KeyCode::Enter),
                 key(KeyCode::Char('q')),
@@ -1594,7 +1706,7 @@ mod tests {
         #[cfg(debug_assertions)]
         {
             let (_dir, slots) = empty();
-            let mut session = Session::boot(Some(slots.clone()), NOW).with_dev(true);
+            let mut session = Session::boot(Some(slots.clone()), now()).with_dev(true);
             session.menu(MenuAction::Confirm);
             if let Stage::Game(app) = &mut session.stage {
                 app.state.dev_set_level(12);
@@ -1608,6 +1720,131 @@ mod tests {
                 }
                 _ => unreachable!("`q` did not land on the title"),
             }
+        }
+    }
+
+    /// A save written as if the run had been put down `ago` before `now()`.
+    ///
+    /// The absence is made by writing at an *earlier* instant rather than by moving a
+    /// clock, which is what keeps the test independent of when it runs: `persist::save`
+    /// stamps the run with the `now` it is handed, so the boot's own `now()` is that much
+    /// later by construction.
+    fn saved_and_left(ago: Duration) -> (TempDir, SaveSlots) {
+        let (dir, slots) = empty();
+        let mut state = GameState::new(SEED, now());
+        let written = now().checked_sub(ago).unwrap_or(now());
+        if let Err(error) = persist::save(&slots, &mut state, &Config::default(), written) {
+            unreachable!("the fixture should have been written: {error}");
+        }
+        (dir, slots)
+    }
+
+    #[test]
+    fn an_absence_that_paid_something_opens_the_summary_before_the_game() {
+        let (_dir, slots) = saved_and_left(Duration::from_secs(6 * 3_600));
+        let (result, buffer) = run_script(
+            Session::boot(Some(slots), now()),
+            vec![key(KeyCode::Enter), ctrl_c()],
+        );
+        assert!(result.is_ok(), "the loop failed: {result:?}");
+        let frame = whole_frame(&buffer);
+        assert!(frame.contains("Welcome back"), "{frame}");
+        assert!(frame.contains("You were away for  6h"), "{frame}");
+        // The run is drawn under it, which is what makes this a modal.
+        assert!(frame.contains("1 Mine"), "{frame}");
+    }
+
+    #[test]
+    fn enter_dismisses_the_summary_and_leaves_the_run_running() {
+        let (_dir, slots) = saved_and_left(Duration::from_secs(6 * 3_600));
+        let (_, buffer) = run_script(
+            Session::boot(Some(slots), now()),
+            vec![key(KeyCode::Enter), key(KeyCode::Enter), ctrl_c()],
+        );
+        let frame = whole_frame(&buffer);
+        assert!(
+            !frame.contains("Welcome back"),
+            "the receipt stayed up: {frame}"
+        );
+        assert!(frame.contains("Haul"), "{frame}");
+    }
+
+    #[test]
+    fn an_absence_too_short_to_pay_for_a_block_shows_no_screen_at_all() {
+        // The `q` then `Continue` case, which is why the rule is "the report paid
+        // something" and not "elapsed > 0": three seconds is a real report with nothing
+        // in it, because the auto-miner credits whole blocks.
+        let (_dir, slots) = saved_and_left(Duration::from_secs(3));
+        let (_, buffer) = run_script(
+            Session::boot(Some(slots), now()),
+            vec![key(KeyCode::Enter), ctrl_c()],
+        );
+        assert!(
+            !whole_frame(&buffer).contains("Welcome back"),
+            "three seconds away opened a summary: {}",
+            whole_frame(&buffer)
+        );
+    }
+
+    #[test]
+    fn the_offline_credit_is_on_the_disk_before_the_player_reads_it() {
+        // `resume` moves the mark and adds the ore *in memory*. A crash before the
+        // first cadence would otherwise measure the next absence from the old mark and
+        // pay for the same six hours twice.
+        let (_dir, slots) = saved_and_left(Duration::from_secs(6 * 3_600));
+        let mut session = Session::boot(Some(slots.clone()), now());
+        session.menu(MenuAction::Confirm);
+        assert!(
+            matches!(session.stage, Stage::Offline { .. }),
+            "the summary never opened"
+        );
+
+        let reloaded = match persist::load(slots.primary()) {
+            Ok(Some(save)) => save,
+            other => unreachable!("the run should have been on disk: {other:?}"),
+        };
+        // Two halves of one write, and both have to be in it. The ore, or the six hours
+        // bought nothing; and the *mark*, or the next launch would measure the absence
+        // from where it already started and pay for them again.
+        //
+        // The mark is checked as a span rather than for equality because the test does
+        // real disk I/O: a second or two passes between the write and this read, and a
+        // second is enough for the auto-miner's carry to complete another block. What
+        // must not have survived is the six hours.
+        let state = reloaded.state;
+        assert!(
+            state.player().get_inventory().raw_value(Material::Stone) > 0,
+            "the absence credited nothing"
+        );
+        let since_written = now().duration_since(state.last_seen()).unwrap_or_default();
+        assert!(
+            since_written < Duration::from_secs(60),
+            "the file still says the run was left {since_written:?} ago"
+        );
+    }
+
+    #[test]
+    fn the_summary_pauses_the_tick_and_holds_no_live_flash() {
+        // Phase 7's note, answered by construction rather than by a `clear`: this is the
+        // first state that pauses a tick, and the only `App` it can hold has just been
+        // built from a load — so there is no beat mid-flight to freeze.
+        let (_dir, slots) = saved_and_left(Duration::from_secs(6 * 3_600));
+        let mut session = Session::boot(Some(slots), now());
+        session.menu(MenuAction::Confirm);
+
+        assert!(
+            !session.advance(Instant::now()),
+            "the tick ran behind the box"
+        );
+        match &session.stage {
+            Stage::Offline { app, .. } => {
+                let mine = app.state.current_mine().kind();
+                assert!(
+                    app.flash.resolve(mine, Instant::now()).is_empty(),
+                    "a flash was left mid-beat under a paused tick"
+                );
+            }
+            _ => unreachable!("the summary never opened"),
         }
     }
 }

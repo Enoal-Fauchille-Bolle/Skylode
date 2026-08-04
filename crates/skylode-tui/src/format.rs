@@ -11,6 +11,8 @@
 //! grouping and the alignment cannot drift between the XP gauge and the inventory
 //! table.
 
+use std::time::Duration;
+
 use skylode_core::{
     pickaxe::PickaxeTier,
     tunables::{RAW_PER_COMPRESSED, TICKS_PER_SECOND},
@@ -80,6 +82,38 @@ pub fn duration_hm(ticks: u64) -> String {
     // column of figures lines up (`14h 22m`, `3h 07m`) without `07m` ever standing
     // alone and reading as a stopwatch.
     format!("{hours}h {minutes:02}m")
+}
+
+/// A span of wall-clock time as `6d 4h`, `6h 12m`, `12m` or `45s`.
+///
+/// **The third duration format in this module, and none of the three is a special
+/// case of another.** [`duration_hm`] totals a *playtime* and therefore never rolls
+/// hours into days — `47h 10m` is a figure to be proud of and `1d 23h` reads as a
+/// timer. [`age`] labels a row in a log and gives one unit, because every column it
+/// spends is a column taken from the sentence. This one describes an **absence**: a
+/// span the player lived through and reads best in its largest unit, with the next one
+/// down for the part that would otherwise be rounded away.
+///
+/// Two units where there are two to give. Under a minute it says seconds, because
+/// [`GameState::resume`](skylode_core::game::GameState::resume) can produce a short
+/// span that still paid for a block, and `0m` would be a screen announcing nothing.
+///
+/// [`Duration`] and not ticks, unlike [`duration_hm`]: an absence is measured against
+/// the wall clock and never simulated, so there are no ticks to divide.
+pub fn span(elapsed: Duration) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+
+    let seconds = elapsed.as_secs();
+    match seconds {
+        s if s >= DAY => format!("{}d {}h", s / DAY, s % DAY / HOUR),
+        // Two digits on the minutes only behind an hour, so a column lines up
+        // (`14h 22m`, `3h 07m`) without `07m` ever standing alone.
+        s if s >= HOUR => format!("{}h {:02}m", s / HOUR, s % HOUR / MINUTE),
+        s if s >= MINUTE => format!("{}m", s / MINUTE),
+        s => format!("{s}s"),
+    }
 }
 
 /// How long ago something was said, in the shortest honest unit: `12s`, `4m`, `3h`.
@@ -499,6 +533,22 @@ mod tests {
         // proud of, not a countdown.
         assert_eq!(duration_hm(minutes(47 * 60 + 10)), "47h 10m");
         assert_eq!(duration_hm(0), "0m");
+    }
+
+    /// An absence *does* roll into days, which is where it parts company with the
+    /// playtime above: `9d 4h` is how long someone was away, and `220h` is not an
+    /// answer anyone reads.
+    #[test]
+    fn an_absence_reads_in_its_two_largest_units() {
+        assert_eq!(span(Duration::from_secs(6 * 3_600 + 12 * 60)), "6h 12m");
+        assert_eq!(span(Duration::from_secs(3 * 3_600 + 7 * 60)), "3h 07m");
+        assert_eq!(span(Duration::from_secs(9 * 86_400 + 4 * 3_600)), "9d 4h");
+        assert_eq!(span(Duration::from_secs(12 * 60)), "12m");
+        // Under the minute it says seconds rather than `0m`: a short absence that
+        // still paid for a block gets a screen, and a screen announcing nothing would
+        // read as a bug.
+        assert_eq!(span(Duration::from_secs(45)), "45s");
+        assert_eq!(span(Duration::ZERO), "0s");
     }
 
     /// Seconds are dropped rather than rounded, so a part-minute reads as the minute
