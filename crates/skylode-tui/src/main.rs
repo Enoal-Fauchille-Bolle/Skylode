@@ -24,6 +24,7 @@ mod format;
 mod keymap;
 mod overlay;
 mod palette;
+mod persist;
 mod screen;
 mod theme;
 mod toast;

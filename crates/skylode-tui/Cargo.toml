@@ -17,5 +17,30 @@ skylode-core = { path = "../skylode-core" }
 # config file" has nowhere to happen.
 serde = { version = "1.0", features = ["derive"] }
 
+# The envelope that goes to disk — `{"data": "…", "mac": "…"}` — is this crate's
+# format, not the core's, so the core's façade cannot write it: `save::to_json`
+# produces the *payload*, and something has to wrap it. Same crate and same version
+# as the core's, so this is one compilation, not two.
+serde_json = "1.0"
+
+# `HMAC-SHA256` over `data` alone (`docs/SYSTEMS.md` §Integrity). Two crates because
+# the construction is two things: `sha2` is the hash, `hmac` is the keying around it.
+# `hmac` also gives constant-time comparison, which costs nothing here and spares a
+# hand-rolled `==` over decoded bytes.
+hmac = "0.13.0"
+sha2 = "0.11.0"
+
+# The atomic write, and it is a *build* dependency rather than a dev one: writing to
+# a temporary file and renaming it into place is the production path, not a testing
+# convenience. `fs::rename` alone would be ten lines; what the crate buys on top is a
+# unique name (two instances cannot collide) and cleanup on drop, so a write that
+# never reaches its `persist` leaves nothing behind. `TempDir` then serves the tests.
+tempfile = "3.27.0"
+
+# Where the one file goes on each platform (`docs/DECISIONS.md`). Hand-rolling the
+# lookup is ten lines on Linux and wrong on macOS and Windows, and a partial
+# reimplementation of a standard is more fragile than none because it looks correct.
+directories = "6.0.0"
+
 [lints]
 workspace = true
