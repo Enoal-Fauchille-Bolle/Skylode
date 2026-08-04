@@ -42,6 +42,8 @@ use serde_json::Value;
 use std::fmt;
 
 use crate::game::GameState;
+use crate::material::COMPRESSED_PREFIX;
+use crate::tunables::RAW_PER_COMPRESSED;
 
 /// The schema this build writes, and the newest it can read.
 ///
@@ -50,7 +52,11 @@ use crate::game::GameState;
 /// [`serde(default)`](https://serde.rs/field-attrs.html#default) can fill in is the
 /// one change that does *not* need a bump, because an old file already answers for
 /// it.
-pub const SAVE_VERSION: u32 = 1;
+pub const SAVE_VERSION: u32 = 2;
+
+/// The schema that had no `auto_raw_credited`, and therefore the last one whose ore
+/// could not be audited. See [`migrate`].
+const VERSION_WITHOUT_AUTO_TOTAL: u32 = 1;
 
 /// The key the version is written under, named once so the reader and the writer
 /// cannot disagree about it.
@@ -158,14 +164,78 @@ pub fn from_json<C: DeserializeOwned>(text: &str) -> Result<Save<C>, SaveError> 
 /// successor. Written as one step per version rather than one function per *pair*
 /// of versions, which would grow as the square of the schema's age.
 ///
-/// There is no step yet, and there cannot be: [`SAVE_VERSION`] is 1, the first
-/// schema this game has had, so a document behind it claims a version no build ever
-/// wrote. That is a refusal, not a migration.
-fn migrate(save: Value, from: u32) -> Result<Value, SaveError> {
-    if from < SAVE_VERSION {
+/// There is one step: `1 → 2`, which gives a document the `auto_raw_credited` counter
+/// that [`GameState`]'s ore audit reads. Anything claiming a version below 1 claims a
+/// schema no build ever wrote, and that is a refusal rather than a migration.
+fn migrate(mut save: Value, from: u32) -> Result<Value, SaveError> {
+    if from < VERSION_WITHOUT_AUTO_TOTAL {
         return Err(SaveError::UnknownVersion { version: from });
     }
+    if from == VERSION_WITHOUT_AUTO_TOTAL {
+        grandfather_auto_total(&mut save);
+    }
     Ok(save)
+}
+
+/// The field [`grandfather_auto_total`] writes, named once so this module and
+/// [`GameState`]'s derive cannot drift apart. A typo here would not fail to compile —
+/// it would produce a document missing a field, which surfaces as a *damaged save* on
+/// the one build that has to read it.
+const AUTO_TOTAL_FIELD: &str = "auto_raw_credited";
+
+/// Gives a version-1 document an `auto_raw_credited` equal to the ore it is already
+/// holding.
+///
+/// **The value is a choice, and the two obvious ones are both wrong.** The counter
+/// records what the auto-miner has paid out over the save's whole life, and a version-1
+/// file simply does not contain that — an absence leaves no trace in
+/// [`playtime`](GameState), so there is nothing to reconstruct it from and no number of
+/// absences to assume.
+///
+/// - **Zero** would be a lie in the dangerous direction. A player who left the game for
+///   a week and came back to a full purse would load a file whose ore exceeds every
+///   ceiling the audit can build, and be told their honest save is impossible. Losing a
+///   run to a guess is the outcome the whole audit is written to avoid.
+/// - **[`u64::MAX`]** would saturate the ceiling and switch the audit off — not for one
+///   load, but for that save forever, since the number is carried forward and only ever
+///   grows.
+///
+/// So the migration **grandfathers the present**: whatever ore the file holds is
+/// accepted as legitimately earned, and everything from that load onwards is audited
+/// against real counters. It cannot refuse the file it is migrating — the allowance is
+/// at least the holdings, by construction — and it does not blind the audit afterwards,
+/// because the number stops moving except when the auto-miner actually pays.
+///
+/// **It concedes nothing to a tamperer**, which is worth stating because it looks like
+/// it does. Someone who can edit a version-1 file to inflate its inventory holds the
+/// signing key already, and a person holding the key can write a version-2 file with
+/// any counter they like. The migration is generous to the past because the past is
+/// unknowable, not because the check is weak.
+///
+/// Every step reads defensively and gives up quietly: a document whose shape is not
+/// what this expects is about to fail to deserialise anyway, and inventing a diagnosis
+/// here would only race the real one.
+fn grandfather_auto_total(save: &mut Value) {
+    let held = save
+        .get("state")
+        .and_then(|state| state.get("player"))
+        .and_then(|player| player.get("inventory"))
+        .and_then(Value::as_object)
+        .map_or(0, |items| {
+            items.iter().fold(0u64, |total, (key, count)| {
+                let each = if key.starts_with(COMPRESSED_PREFIX) {
+                    u64::from(RAW_PER_COMPRESSED)
+                } else {
+                    1
+                };
+                let held = count.as_u64().unwrap_or(0).saturating_mul(each);
+                total.saturating_add(held)
+            })
+        });
+
+    if let Some(state) = save.get_mut("state").and_then(Value::as_object_mut) {
+        state.insert(AUTO_TOTAL_FIELD.to_owned(), Value::from(held));
+    }
 }
 
 /// Why a save could not be written or read.
@@ -357,7 +427,7 @@ mod tests {
         assert_eq!(
             written(&state),
             concat!(
-                r#"{"version":1,"state":{"#,
+                r#"{"version":2,"state":{"#,
                 r#""player":{"pickaxe":{"tier":"Wooden","enchants":{}},"level":1,"#,
                 r#""experience":0,"inventory":{},"prestige":0,"xp_carry":0},"#,
                 r#""mine":{"kind":"Stone","size_level":0,"richness_level":0,"#,
@@ -389,10 +459,103 @@ mod tests {
                 // — whereas a `0` here would be *false*: the player broke blocks, we
                 // simply would not know how many.
                 r#""blocks_broken":0,"playtime":0,"run_playtime":0,"#,
+                // `auto_raw_credited`, and **this** one took the bump the three above
+                // did not — the argument that spared them had one moving part, and it
+                // moved. Files written by TUI phase 8 exist now, on this machine and on
+                // anyone else's who has played, so a migration step both can and must
+                // run. It is `1 → 2` in [`migrate`], and it grandfathers rather than
+                // defaults for the same reason the note above refuses `serde(default)`:
+                // a `0` would be *false* of an older file, and false in the direction
+                // that accuses an honest save of holding ore it could not have earned.
+                r#""auto_raw_credited":0,"#,
                 r#""last_seen":1000},"#,
                 r#""config":{"palette":"dim","ascii_only":true}}"#,
             )
         );
+    }
+
+    /// A version-1 document, built from a version-2 one the only way it can be: take
+    /// the field the bump added back out, and put the old number on it.
+    ///
+    /// The ore is inflated first, so the document is one the audit *would* refuse with
+    /// a counter of zero. That is what makes the pair of tests below mean something —
+    /// without it, both would pass whatever the migration did.
+    fn a_version_one_document_holding(raw: u32) -> String {
+        let text = written(&a_run());
+        // Cut out `"auto_raw_credited":<n>,` whatever `n` is — a played run has already
+        // banked some, which is the counter working rather than a fixture to pin.
+        let key = format!(r#""{AUTO_TOTAL_FIELD}":"#);
+        let at = match text.find(&key) {
+            Some(at) => at,
+            None => unreachable!("the field the bump added is not in the document: {text}"),
+        };
+        let end = match text[at..].find(',') {
+            Some(comma) => at + comma + 1,
+            None => unreachable!("the field the bump added is the last one: {text}"),
+        };
+
+        format!("{}{}", &text[..at], &text[end..])
+            .replacen(
+                &format!(r#""{VERSION_FIELD}":{SAVE_VERSION}"#),
+                &format!(r#""{VERSION_FIELD}":{VERSION_WITHOUT_AUTO_TOTAL}"#),
+                1,
+            )
+            .replacen(
+                r#""inventory":{"#,
+                // Both denominations, because the sum has to convert one of them. A
+                // migration that counted a Compressed unit as *one* raw would
+                // grandfather a total a hundredfold short of what the file holds, and
+                // the load below would refuse the very save it was written to rescue —
+                // so this is what makes that branch checked rather than merely run.
+                &format!(r#""inventory":{{"compressed_diamond":{raw},"diamond":{raw},"#),
+                1,
+            )
+    }
+
+    /// **The migration's whole reason.** A version-1 file cannot say what its
+    /// auto-miner paid out over its life, and a `0` would be a claim rather than an
+    /// absence — the claim that a player who left the game running for a week came back
+    /// to ore they could not have earned. So the ore already in the file is
+    /// grandfathered, and the file loads.
+    #[test]
+    fn a_version_one_save_keeps_the_ore_the_counter_cannot_account_for() {
+        let text = a_version_one_document_holding(50_000_000);
+        match from_json::<Preferences>(&text) {
+            Ok(save) => assert!(save.state.validate().is_ok()),
+            Err(error) => unreachable!("a version-1 save must survive the bump: {error}\n{text}"),
+        }
+    }
+
+    /// The other half, and without it the test above proves nothing: the *same* ore in a
+    /// version-2 document — one this build wrote, whose counter is therefore the truth —
+    /// is refused. The migration is a concession to what an old file cannot know, not a
+    /// hole in the audit.
+    #[test]
+    fn the_same_ore_in_a_current_save_is_refused() {
+        let text = written(&a_run()).replacen(
+            r#""inventory":{"#,
+            r#""inventory":{"diamond":50000000,"#,
+            1,
+        );
+        assert!(matches!(
+            from_json::<Preferences>(&text),
+            Err(SaveError::Invalid { .. })
+        ));
+    }
+
+    /// A version below the first schema names a shape no build ever wrote, so there is
+    /// nothing to migrate *from* and the file is refused rather than guessed at.
+    #[test]
+    fn a_version_below_the_first_schema_is_refused() {
+        let text = written(&a_run()).replacen(
+            &format!(r#""{VERSION_FIELD}":{SAVE_VERSION}"#),
+            &format!(r#""{VERSION_FIELD}":0"#),
+            1,
+        );
+        assert!(matches!(
+            from_json::<Preferences>(&text),
+            Err(SaveError::UnknownVersion { version: 0 })
+        ));
     }
 
     #[test]

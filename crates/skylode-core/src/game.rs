@@ -22,24 +22,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
-use crate::block::Block;
+use crate::block::{Block, MAX_XP_VALUE, RAW_PER_DENSE_BLOCK};
 use crate::boost::Boost;
 use crate::economy;
 use crate::enchant::EnchantType;
 use crate::error::CoreError;
 use crate::material::{Item, Material};
-use crate::mine::{Dug, Mine};
+use crate::mine::{Dug, MAX_CELLS, Mine};
 use crate::mine_kind::MineKind;
 use crate::player::Player;
 use crate::prestige::{self, PERMILLE};
 use crate::reward::{self, LevelReward, Payout};
 use crate::rng::Rng;
 use crate::tunables::{
-    AUTO_MINER_MILLIBLOCKS_PER_TICK, BOOST_DURATION_TICKS, BOOST_MULTIPLIER, MICROBLOCKS_PER_BLOCK,
+    AUTO_MINER_MILLIBLOCKS_PER_TICK, BOOST_DURATION_TICKS, BOOST_MULTIPLIER, LEVEL_CAP,
+    LEVEL_REWARD_BASE, LEVEL_REWARD_EMERALD_PERMILLE, MICROBLOCKS_PER_BLOCK,
     MICROBLOCKS_PER_MILLIBLOCK, MILLIBLOCKS_PER_BLOCK, MILLIS_PER_SECOND, OFFLINE_CAP,
-    TICKS_PER_SECOND,
+    RAW_PER_COMPRESSED, TICKS_PER_SECOND,
 };
 use crate::upgrade;
+use crate::world::World;
 use serde::{Deserialize, Serialize};
 
 /// Everything a saved run consists of.
@@ -215,6 +217,28 @@ pub struct GameState {
     /// otherwise keep climbing across a reset and describe something the player can no
     /// longer see.
     run_playtime: u64,
+    /// Raw items the auto-miner has handed over, across every run and every absence.
+    ///
+    /// **The one counter here that no screen reads.** It exists for
+    /// [`validate`](GameState::validate) alone, and specifically for the one term in the
+    /// ore audit that cannot be reconstructed from anything else in the file. Mining is
+    /// bounded by [`blocks_broken`](GameState) and a level-up's bundle by the ladder, but
+    /// the auto-miner pays out during absences that leave **no** trace in either — an
+    /// absence adds nothing to [`playtime`](GameState) — and the number of absences a
+    /// save has lived through is unbounded. Without this, the only sound ceiling on the
+    /// player's ore would be "however many seven-day windows they might have slept
+    /// through", which is no ceiling at all.
+    ///
+    /// **Raw items and not blocks**, so the figure needs no second reading of Fortune or
+    /// of the prestige multiplier to be spent: both are already inside what
+    /// [`credit_auto_mining`](GameState::credit_auto_mining) paid out, and an audit that
+    /// re-derived them would have to agree with that method forever.
+    ///
+    /// **A lifetime total: a prestige does not clear it**, for
+    /// [`blocks_broken`](GameState)'s reason and one of its own — a reset empties the
+    /// inventory, so a cleared counter could only ever make the ceiling *lower* than the
+    /// ore an honest player is about to mine back.
+    auto_raw_credited: u64,
     /// When this run was last written, for the offline accrual phase 7 credits on
     /// resume. Supplied by the caller — see the module header.
     #[serde(with = "epoch_seconds")]
@@ -288,6 +312,7 @@ impl GameState {
             blocks_broken: 0,
             playtime: 0,
             run_playtime: 0,
+            auto_raw_credited: 0,
             rng,
             last_seen: now,
         }
@@ -461,6 +486,84 @@ impl GameState {
             return Err("this run is older than the save it belongs to");
         }
 
+        self.audit()
+    }
+
+    /// The cross-field half of [`validate`](GameState::validate): whether the counters,
+    /// the ladder and the purse can all be true of **one** run.
+    ///
+    /// **Every check above this one reads a single field.** A level inside the ladder, a
+    /// carry under its denominator, a dial under its ceiling — each is a fact about a
+    /// number on its own, and a file that satisfies all of them can still describe a
+    /// player holding a billion Diamond after forty minutes, which is exactly what a
+    /// tamperer who has found the key produces. These three compare fields *against each
+    /// other*, and that is the whole of what they add.
+    ///
+    /// ## Every bound here is an over-estimate, deliberately and by a wide margin
+    ///
+    /// This is the design rule, not a compromise. A save that an honest player wrote and
+    /// this function refuses is a run lost to a guess — the worst outcome the save system
+    /// has — while a cheat that squeaks under a ceiling ten thousand times too generous
+    /// is a cheat that had to be *coherent across the whole document* to get there. So
+    /// every ceiling is derived from a constant the rules already enforce, and rounded
+    /// the generous way at every step: the best block in the game, the best pickaxe, the
+    /// biggest grid, the full reward ladder at every rank. Nothing here is measured from
+    /// play, and nothing here should ever be tightened to what a *typical* run does.
+    ///
+    /// **What it therefore does not catch, and cannot.** A tamperer holding the key can
+    /// raise the counters alongside the purse and satisfy all three; nothing in a file
+    /// can prove a file. What the audit buys is that the lie has to be told consistently
+    /// in four places instead of one, which is a different order of work.
+    fn audit(&self) -> Result<(), &'static str> {
+        // Only a tick breaks a block, and a tick breaks at most the grid standing in
+        // front of the player — the impact cell plus whatever the blasts reach, all of
+        // them inside one mine. The auto-miner is *not* a hole in this: its blocks are
+        // deliberately excluded from the counter (see `blocks_broken`).
+        if self.blocks_broken > self.playtime.saturating_mul(MAX_CELLS) {
+            return Err("more blocks are broken than the ticks played could have broken");
+        }
+
+        let rank = u64::from(self.player.get_prestige());
+        let multiplier = u64::from(prestige::multiplier_permille(self.player.get_prestige()));
+        let permille = u64::from(PERMILLE);
+
+        // Experience comes from broken blocks and from nothing else — the auto-miner
+        // grants none, and a level-up reward pays ore rather than experience — so the
+        // ladder a save claims to have climbed is priced in blocks. Each rank cost a
+        // full climb to the cap, and the current run is partway up another.
+        let climbed = Player::xp_to_reach(LEVEL_CAP)
+            .saturating_mul(rank)
+            .saturating_add(Player::xp_to_reach(self.player.get_level()))
+            .saturating_add(u64::from(self.player.get_experience()));
+        // The current multiplier applied to *every* past swing, which no run ever had:
+        // the rank only ever counts up, so this over-pays every climb below the last.
+        // The `+ 1` is the experience carry, which can pay out one whole point that the
+        // truncating division below has already dropped.
+        let payable = self
+            .blocks_broken
+            .saturating_mul(u64::from(MAX_XP_VALUE))
+            .saturating_mul(multiplier)
+            .saturating_div(permille)
+            .saturating_add(1);
+        if climbed > payable {
+            return Err("this save has climbed further than its broken blocks could pay for");
+        }
+
+        // The purse, against everything that could ever have filled it. Ore leaves the
+        // inventory as it is spent and never returns, so the ceiling only has to cover
+        // what came *in*: the blocks the player broke, the reward ladder they walked at
+        // every rank, and the auto-miner's own banked total.
+        let earned = self
+            .blocks_broken
+            .saturating_mul(max_raw_per_block())
+            .saturating_add(max_reward_raw_per_climb().saturating_mul(rank.saturating_add(1)))
+            .saturating_mul(multiplier)
+            .saturating_div(permille)
+            .saturating_add(self.auto_raw_credited);
+        if self.player.get_inventory().total_raw() > earned {
+            return Err("more ore is held than this save could have produced");
+        }
+
         Ok(())
     }
 
@@ -532,7 +635,7 @@ impl GameState {
     /// **Built on [`claim_level`](GameState::claim_level) rather than beside it**, so
     /// there is exactly one implementation of "what does collecting a level do". The
     /// snapshot is taken first because the loop mutates the set it is walking; it is
-    /// at most [`LEVEL_CAP`](crate::tunables::LEVEL_CAP) entries, so the copy is free.
+    /// at most [`LEVEL_CAP`] entries, so the copy is free.
     ///
     /// Returns pairs rather than a count: a front-end announcing *"3 rewards
     /// collected"* would be throwing away the only interesting half, and the numbers
@@ -631,7 +734,7 @@ impl GameState {
 
     /// Buys one level of an enchant, capped by the highest world reached.
     ///
-    /// Supplies the [`World`](crate::world::World) itself rather than taking one:
+    /// Supplies the [`World`] itself rather than taking one:
     /// the cap is keyed by the *player's* progress, and a caller free to pass any
     /// world could buy an End-capped Fortune from the Overworld.
     pub fn buy_enchant(&mut self, kind: EnchantType) -> Result<(), CoreError> {
@@ -1293,6 +1396,11 @@ impl GameState {
 
         for &(item, amount) in &gained {
             self.player.inventory_mut().add(item, amount);
+            // Banked for the save audit, in the same loop that pays it, so the counter
+            // cannot drift from what the inventory actually received. Every item here is
+            // an `Item::Raw` — `Block::drops` never answers a Compressed unit — so the
+            // count needs no conversion. See [`auto_raw_credited`](GameState).
+            self.auto_raw_credited = self.auto_raw_credited.saturating_add(u64::from(amount));
         }
         gained
     }
@@ -1382,6 +1490,47 @@ impl GameState {
         self.run_playtime = 0;
         Ok(())
     }
+}
+
+/// The most raw one broken cell can ever be worth, before the prestige multiplier.
+///
+/// Two candidates, and the ceiling is whichever is larger — which is the point of
+/// computing it rather than writing `100`. A dense block drops
+/// [`RAW_PER_DENSE_BLOCK`] and Fortune multiplies that, so the richest ordinary cell is
+/// nine at the End's enchant cap: ninety-nine. The
+/// [`Excavator`](crate::enchant::EnchantType::Excavator) instead *substitutes* one
+/// Compressed unit for the impact block's drop, and takes no Fortune — a flat
+/// [`RAW_PER_COMPRESSED`], which is a hundred. Today the substitution wins by one, and a
+/// phase-10 pass that lifted either the dense drop or the enchant cap would flip that
+/// silently if the number were written down.
+///
+/// A `fn` and not a `const`, because [`World::enchant_cap`] is a `match` on a variant
+/// rather than a constant and cannot be read in a `const` position. It is called once
+/// per load.
+fn max_raw_per_block() -> u64 {
+    let fortune = u64::from(1 + u32::from(World::End.enchant_cap()));
+    let dense = u64::from(RAW_PER_DENSE_BLOCK).saturating_mul(fortune);
+    dense.max(u64::from(RAW_PER_COMPRESSED))
+}
+
+/// The most raw the level-up ladder can hand over across **one** climb to the cap.
+///
+/// The third way ore enters the inventory, and the one with no counter of its own: the
+/// bundles are a function of the level, and a save that has prestiged `n` times has
+/// walked the ladder `n + 1` times.
+///
+/// Generous at both steps on purpose ([`audit`](GameState::audit) explains why). Every
+/// level is priced as if it were the *dearest* one — [`LEVEL_REWARD_BASE`] at
+/// [`LEVEL_CAP`] — where the real bundle grows linearly from the bottom, and the
+/// Emerald line's [`LEVEL_REWARD_EMERALD_PERMILLE`] is added to every level rather than
+/// to the every-third one that earns it. Together that is roughly twice what a full
+/// ladder actually pays, which is the right side to be wrong on.
+fn max_reward_raw_per_climb() -> u64 {
+    let dearest_bundle = u64::from(LEVEL_REWARD_BASE).saturating_mul(u64::from(LEVEL_CAP));
+    let with_emerald = dearest_bundle
+        .saturating_mul(u64::from(PERMILLE) + u64::from(LEVEL_REWARD_EMERALD_PERMILLE))
+        .saturating_div(u64::from(PERMILLE));
+    with_emerald.saturating_mul(u64::from(LEVEL_CAP))
 }
 
 /// The running total for `item` in a `(item, amount)` list, inserted at zero if the
@@ -1561,9 +1710,60 @@ pub enum GameEvent {
 pub mod dev {
     use std::time::UNIX_EPOCH;
 
-    use super::{CoreError, Duration, EnchantType, GameEvent, GameState, Item, Material, MineKind};
+    use super::{
+        CoreError, Duration, EnchantType, GameEvent, GameState, Item, LEVEL_CAP, MAX_CELLS,
+        MAX_XP_VALUE, Material, MineKind, PERMILLE, Player, prestige,
+    };
 
     impl GameState {
+        /// Invents enough history for [`audit`](GameState::audit) to be able to explain
+        /// what this menu just handed over.
+        ///
+        /// **The audit and the dev menu want opposite things, and this is where they are
+        /// reconciled.** The audit refuses a run holding more than its counters can
+        /// account for; the menu's whole job is to produce exactly that. Two ways out
+        /// were rejected before this one:
+        ///
+        /// - **A "this run used the dev menu" flag the audit skips on.** It would have to
+        ///   live in the save to survive a reload, and a field that switches the audit
+        ///   off is a one-word bypass for anyone editing a file — strictly worse than
+        ///   having no audit, because it would look like there was one.
+        /// - **Letting dev runs be unsaveable.** The menu exists to reach states a test
+        ///   cannot play to, and half of what those states are *for* is being reloaded.
+        ///
+        /// So the counters are raised instead: the run is credited with the blocks and
+        /// the ticks its granted ladder would have cost, and the ore ledger is topped up
+        /// to whatever is now held. Nothing is ever lowered, the rest of the save's rules
+        /// are untouched, and the numbers stay true in the only sense a dev run can be —
+        /// they say what the state in front of you *would* have taken.
+        ///
+        /// It is idempotent, so every door may call it without anyone tracking who
+        /// already did. `#[cfg(debug_assertions)]` with the rest of this module: a
+        /// release build has no path that needs covering.
+        fn dev_cover_history(&mut self) {
+            // The ore side needs no arithmetic: the ledger is the one term the audit
+            // takes on trust, so raising it to what is held satisfies that check alone.
+            self.auto_raw_credited = self
+                .auto_raw_credited
+                .max(self.player.get_inventory().total_raw());
+
+            // The experience side does. Every level and rank has to be payable in broken
+            // blocks, so work out how many the ladder would have cost at the best block
+            // in the game and hand the run that many — then the ticks those blocks would
+            // have taken, at one full grid each.
+            let multiplier = u64::from(prestige::multiplier_permille(self.player.get_prestige()));
+            let climbed = Player::xp_to_reach(LEVEL_CAP)
+                .saturating_mul(u64::from(self.player.get_prestige()))
+                .saturating_add(Player::xp_to_reach(self.player.get_level()))
+                .saturating_add(u64::from(self.player.get_experience()));
+            let per_block = u64::from(MAX_XP_VALUE)
+                .saturating_mul(multiplier)
+                .saturating_div(u64::from(PERMILLE))
+                .max(1);
+
+            self.blocks_broken = self.blocks_broken.max(climbed.div_ceil(per_block));
+            self.playtime = self.playtime.max(self.blocks_broken.div_ceil(MAX_CELLS));
+        }
         /// Credits `amount` of `item` out of nothing.
         ///
         /// The door [`Player::inventory_mut`](crate::player::Player) is `pub(crate)` to
@@ -1577,6 +1777,7 @@ pub mod dev {
         /// one that sticks.
         pub fn dev_grant(&mut self, item: Item, amount: u32) {
             self.player.inventory_mut().add(item, amount);
+            self.dev_cover_history();
         }
 
         /// Credits `amount` **raw** of all fifteen materials.
@@ -1610,6 +1811,7 @@ pub mod dev {
             let gained = self.player.add_experience(amount);
             let mut events = Vec::new();
             self.file_crossed_levels(before, gained, &mut events);
+            self.dev_cover_history();
             events
         }
 
@@ -1630,6 +1832,7 @@ pub mod dev {
             self.player.dev_set_level(level);
             let reached = self.player.get_level();
             self.unclaimed.retain(|&waiting| waiting <= reached);
+            self.dev_cover_history();
         }
 
         /// Climbs one rung of the pickaxe roadmap for free — Efficiency, or the tier
@@ -1714,10 +1917,11 @@ pub mod dev {
         /// The rank without the wipe — see
         /// [`Player::dev_set_prestige`](crate::player::Player) for why the two halves
         /// are separable here and nowhere else. The multiplier is a pure function of
-        /// the rank ([`prestige`](crate::prestige)), so this is enough to watch a
+        /// the rank ([`prestige`]), so this is enough to watch a
         /// rank III yield land on a run that has not earned one.
         pub fn dev_set_prestige(&mut self, rank: u32) {
             self.player.dev_set_prestige(rank);
+            self.dev_cover_history();
         }
 
         /// Adds `count` boost charges to the reserve.
@@ -3814,7 +4018,7 @@ mod tests {
             seed,
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000),
         );
-        state.player.grant_break_experience(&[Block::Amethyst; 700]);
+        break_blocks(&mut state, &[Block::Amethyst; 700]);
         equip(&mut state, PickaxeTier::Netherite, instamining());
 
         // Two mines entered and left, so `visited` is not empty and carries holes.
@@ -3970,6 +4174,98 @@ mod tests {
         assert!(state.validate().is_err());
     }
 
+    // --- The cross-field audit ---
+
+    /// Whichever invariant a state breaks, in words, or the empty string if it breaks
+    /// none. Lets the tests below name the check they are about rather than assert a
+    /// bare `is_err`, which any of the three would satisfy.
+    fn refusal(state: &GameState) -> &'static str {
+        state.validate().err().unwrap_or_default()
+    }
+
+    /// A tick breaks at most one full grid, so a counter above that is a history no
+    /// sequence of ticks could have produced.
+    ///
+    /// Raising `blocks_broken` also *raises* the ore and experience allowances, so this
+    /// is the one edit that can only trip the check it is aimed at.
+    #[test]
+    fn more_blocks_than_the_ticks_played_could_have_broken_is_refused() {
+        let mut state = a_run_in_progress(2024);
+        assert_eq!(state.validate(), Ok(()));
+
+        state.blocks_broken = state.playtime.saturating_mul(MAX_CELLS);
+        assert_eq!(state.validate(), Ok(()), "the exact ceiling is still legal");
+
+        state.blocks_broken = state.blocks_broken.saturating_add(1);
+        assert!(refusal(&state).contains("ticks played"), "{state:?}");
+    }
+
+    /// Experience comes from broken blocks and from nothing else, so a ladder is priced
+    /// in them — and a save that kept the ladder while losing the blocks is describing a
+    /// player who levelled on nothing.
+    ///
+    /// The prestige rank is on the same check rather than on one of its own: a rank costs
+    /// a full climb to the cap, which is experience, which is blocks.
+    #[test]
+    fn a_ladder_the_broken_blocks_could_not_have_paid_for_is_refused() {
+        let mut state = a_run_in_progress(2024);
+
+        state.blocks_broken = 0;
+        assert!(refusal(&state).contains("climbed further"), "{state:?}");
+    }
+
+    /// The purse, against everything that could have filled it. This is the check that
+    /// answers the tamperer who edits the one field they can find.
+    #[test]
+    fn more_ore_than_the_run_could_have_produced_is_refused() {
+        let mut state = a_run_in_progress(2024);
+        assert_eq!(state.validate(), Ok(()));
+
+        state
+            .player
+            .inventory_mut()
+            .add(Item::Raw(Material::Diamond), u32::MAX);
+        assert!(refusal(&state).contains("more ore is held"), "{state:?}");
+    }
+
+    /// **The honest player the audit must never accuse.** A week away is credited in one
+    /// closed-form lump that leaves no mark on `playtime` and none on `blocks_broken`, so
+    /// the ore it pays out is exactly the ore no other counter can explain. The ledger is
+    /// what makes it explicable, and this is the test that would fail if a later change
+    /// stopped it being written — the failure mode being a lost run rather than a caught
+    /// cheat.
+    #[test]
+    fn a_week_away_pays_out_ore_the_audit_still_accepts() {
+        let mut state = a_run_in_progress(2024);
+        let held_before = state.player.get_inventory().total_raw();
+
+        let away = state.last_seen() + OFFLINE_CAP;
+        assert!(state.resume(away).is_some(), "a week away must pay");
+        assert!(
+            state.player.get_inventory().total_raw() > held_before,
+            "the fixture did not actually accrue anything"
+        );
+        assert_eq!(state.validate(), Ok(()));
+    }
+
+    /// The ledger is a lifetime total, like the two counters beside it. A prestige that
+    /// cleared it would leave the *next* absence unexplainable — and a reset empties the
+    /// inventory, so the clearing could only ever make the ceiling too low.
+    #[test]
+    fn a_prestige_leaves_the_auto_miner_ledger_alone() {
+        let mut state = GameState::new(7, SystemTime::UNIX_EPOCH);
+        ready_to_prestige(&mut state);
+        for _ in 0..200 {
+            state.tick(Input { space_held: true });
+        }
+        let banked = state.auto_raw_credited;
+        assert!(banked > 0, "the fixture credited nothing to carry across");
+
+        assert_eq!(state.prestige(), Ok(()));
+        assert_eq!(state.auto_raw_credited, banked);
+        assert_eq!(state.validate(), Ok(()));
+    }
+
     /// A run cannot have lasted longer than the save that holds it. The two clocks
     /// are incremented in the same breath and only the shorter one is ever reset, so
     /// the inequality is the whole of their relationship — and it is the one thing a
@@ -4035,6 +4331,21 @@ mod tests {
 
     // --- Prestige ---
 
+    /// Grants what `blocks` are worth in experience **and counts them as broken**.
+    ///
+    /// The counting is the whole point. [`Player::grant_break_experience`] is the half
+    /// of a swing that pays the ladder; [`blocks_broken`](GameState) is moved by
+    /// [`resolve_swing`](GameState::resolve_swing), the half above it. A fixture that
+    /// called the first without the second described a run with a climbed ladder and no
+    /// blocks under it — which is precisely what [`audit`](GameState::audit) refuses,
+    /// and it refused these fixtures the day it was written. Keeping the fixtures honest
+    /// is the fix; weakening the check to accommodate them would have been the bug.
+    fn break_blocks(state: &mut GameState, blocks: &[Block]) {
+        state.player.grant_break_experience(blocks);
+        state.blocks_broken = state.blocks_broken.saturating_add(blocks.len() as u64);
+        state.playtime = state.playtime.max(state.blocks_broken.div_ceil(MAX_CELLS));
+    }
+
     /// Puts a run one call away from a prestige: past the End's unlock level, holding
     /// exactly the Amethyst the next rank costs.
     ///
@@ -4049,9 +4360,7 @@ mod tests {
         // phase 10 gives the XP curve rather than pinning a block count to one of them.
         equip(state, PickaxeTier::Netherite, instamining());
         while state.player.prestige_lock().missing_level().is_some() {
-            state
-                .player
-                .grant_break_experience(&[Block::Amethyst; 1000]);
+            break_blocks(state, &[Block::Amethyst; 1000]);
         }
         assert!(
             state.player.prestige_lock().is_open(),

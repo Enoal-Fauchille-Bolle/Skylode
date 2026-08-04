@@ -39,6 +39,31 @@ const MINE_SIZES: [(u8, u8); 10] = [
 /// before, and a copy is exactly what this constant exists to avoid.
 pub(crate) const MAX_SIZE_LEVEL: u32 = MINE_SIZES.len() as u32 - 1;
 
+/// The most cells any grid in the game can hold.
+///
+/// **An audit ceiling for [`GameState::validate`](crate::game::GameState)**, which uses
+/// it as the bound on what a single tick can bring down: a swing breaks its impact
+/// block and whatever its blasts reach, and every one of those cells is in the grid
+/// standing in front of the player, so no tick can break more than one full grid.
+///
+/// Folded over the whole table rather than read off its last row. The rows happen to
+/// be monotone today, and a ceiling that quietly assumed so would be wrong the day a
+/// re-balance made one level wider and shorter than the one below it — in the
+/// direction that refuses honest saves.
+pub(crate) const MAX_CELLS: u64 = {
+    let mut max = 0;
+    let mut level = 0;
+    while level < MINE_SIZES.len() {
+        let (width, height) = MINE_SIZES[level];
+        let cells = width as u64 * height as u64;
+        if cells > max {
+            max = cells;
+        }
+        level += 1;
+    }
+    max
+};
+
 /// The highest richness level a mine can reach: 10 rungs, `0..=9`.
 ///
 /// Richness is a *curve*, not an irregular table like `MINE_SIZES`, so it is a

@@ -23,13 +23,32 @@ use serde::{Deserialize, Serialize};
 /// Number of raw items a *dense* block yields when mined.
 ///
 /// Matches Minecraft's crafting ratio: nine ingots or gems make one block, so
-/// breaking that block returns nine. Private, and it stays that way: this is a
+/// breaking that block returns nine. **`pub(crate)`, and no wider**: this is a
 /// balance number, and callers who want to know what a block is worth should ask
-/// the block, via [`Block::drops`]. Unrelated to
+/// the block, via [`Block::drops`].
+///
+/// It was private until the save audit needed it. [`GameState::validate`](crate::game::GameState)
+/// builds the ceiling on what one broken cell can be worth, and the richest cell in
+/// the game is a dense block under a maxed Fortune — so the audit has to multiply this
+/// by something rather than ask a block, which would only answer for the block it is.
+/// That is the one caller the rule above bends for, and it reads the constant to bound
+/// a file rather than to pay a player. Unrelated to
 /// [`RAW_PER_COMPRESSED`](crate::tunables::RAW_PER_COMPRESSED) (100), which *is*
 /// public, because it is a denomination the UI must know in order to render a
 /// price — different ratio, different concept, different audience.
-const RAW_PER_DENSE_BLOCK: u32 = 9;
+pub(crate) const RAW_PER_DENSE_BLOCK: u32 = 9;
+
+/// The most experience any one block is worth, over the whole table.
+///
+/// **An audit ceiling, not a dial.** It exists for
+/// [`GameState::validate`](crate::game::GameState), which bounds the experience a save
+/// claims to have earned by the blocks it claims to have broken; a number *below* the
+/// table's true maximum would refuse honest saves, which is the one failure that
+/// matters here. Written down rather than derived because an enum cannot fold over its
+/// own variants, and pinned by `no_block_is_worth_more_experience_than_the_ceiling`,
+/// which walks `ALL_BLOCKS` — so a phase-10 re-balance that lifts an arm above it
+/// fails a test rather than silently locking someone out of their run.
+pub(crate) const MAX_XP_VALUE: u32 = 72;
 
 /// How much [`mining_power`](crate::pickaxe::Pickaxe::mining_power) a block costs
 /// per point of [`hardness`](Block::hardness): a cell yields at
@@ -527,6 +546,32 @@ mod tests {
             ALL_BLOCKS.len(),
             24,
             "a Block variant was added or removed: update ALL_BLOCKS"
+        );
+    }
+
+    /// [`MAX_XP_VALUE`] must sit at or above every arm of the table, and **one arm
+    /// must reach it**.
+    ///
+    /// The two halves guard opposite failures. Too low, and
+    /// [`GameState::validate`](crate::game::GameState) refuses a save an honest player
+    /// wrote — the outcome the whole audit is written to avoid. Too high, and the
+    /// ceiling stops constraining anything, which is a check that passes forever
+    /// without saying so. Only the first is dangerous, which is why the equality is
+    /// asserted second and separately.
+    #[test]
+    fn no_block_is_worth_more_experience_than_the_ceiling() {
+        for &block in ALL_BLOCKS {
+            assert!(
+                block.xp_value() <= MAX_XP_VALUE,
+                "{block:?} is worth {} against a ceiling of {MAX_XP_VALUE}",
+                block.xp_value()
+            );
+        }
+        assert!(
+            ALL_BLOCKS
+                .iter()
+                .any(|block| block.xp_value() == MAX_XP_VALUE),
+            "the ceiling is above every block, so it bounds nothing"
         );
     }
 

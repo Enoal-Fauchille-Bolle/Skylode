@@ -21,7 +21,7 @@ use std::fmt;
 /// No [`Material`] key begins with it, which is what makes
 /// [`Item::from_save_key`] able to split a key by looking at its front and nothing
 /// else. `every_material_key_is_a_word_of_its_own` holds that.
-const COMPRESSED_PREFIX: &str = "compressed_";
+pub(crate) const COMPRESSED_PREFIX: &str = "compressed_";
 
 /// A raw resource obtained by mining blocks.
 ///

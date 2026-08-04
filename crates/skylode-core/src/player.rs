@@ -255,6 +255,29 @@ impl Player {
         (1..LEVEL_CAP).contains(&level).then(|| level * 100)
     }
 
+    /// The total experience a player must have earned to *stand* at `level`, counting
+    /// from the level 1 every run starts at.
+    ///
+    /// **Summed over [`xp_for_level`](Player::xp_for_level) rather than closed-form.**
+    /// The curve is linear today, so `100 × (n−1)n ÷ 2` would agree — and would stop
+    /// agreeing the moment `docs/ROADMAP.md`'s open XP tunable reshapes it, silently
+    /// and in whichever direction the new curve bends. One definition of the curve,
+    /// walked; the arithmetic is fifty additions on a path that runs once per load.
+    ///
+    /// [`u64`], because [`GameState::validate`](crate::game::GameState) multiplies this
+    /// by a prestige rank that a file is free to claim is enormous, and an audit that
+    /// overflowed would wrap into a bound that accuses an honest save.
+    ///
+    /// `fold` with `saturating_add` rather than `sum()`, for
+    /// [`grant_break_experience`](Player::grant_break_experience)'s reason: `sum()`
+    /// panics on overflow in a debug build, and this crate's lints refuse a panic where
+    /// a refusal will do.
+    pub(crate) fn xp_to_reach(level: u32) -> u64 {
+        (1..level)
+            .filter_map(Self::xp_for_level)
+            .fold(0u64, |total, step| total.saturating_add(u64::from(step)))
+    }
+
     /// Whether the player's mining level has opened `world`.
     ///
     /// A **query, not a stored set.** The unlocked worlds are an interval that

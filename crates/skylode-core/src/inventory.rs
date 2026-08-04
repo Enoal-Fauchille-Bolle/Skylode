@@ -156,6 +156,28 @@ impl Inventory {
         Ok(())
     }
 
+    /// Everything held, converted to raw units and added up across materials.
+    ///
+    /// **The quantity a save audit can actually bound**, and the reason it is one
+    /// number rather than a map. [`compress`](Inventory::compress) is free and lossless
+    /// both ways, so the split between the two denominations is the player's filing
+    /// choice and moves without anything being earned; the raw total underneath does
+    /// not move, and only mining, the auto-miner and a level-up reward can raise it.
+    /// Adding unlike materials together is deliberate for the same reason — the audit
+    /// asks how much ore a run could have produced in total, not which ore.
+    ///
+    /// [`u64`] and saturating throughout: this is fed a file rather than a run, so
+    /// every count in it is whatever a tamperer typed.
+    pub(crate) fn total_raw(&self) -> u64 {
+        self.items.iter().fold(0u64, |total, (item, &count)| {
+            let each = match item {
+                Item::Raw(_) => 1,
+                Item::Compressed(_) => u64::from(RAW_PER_COMPRESSED),
+            };
+            total.saturating_add(u64::from(count).saturating_mul(each))
+        })
+    }
+
     /// Whether this stock could have been produced by the rules.
     ///
     /// One invariant, the one the type docs open with: **a count of `0` is never
@@ -164,6 +186,11 @@ impl Inventory {
     /// them apart. A save could carry the difference back in, and then two
     /// inventories holding exactly the same items would stop comparing equal —
     /// which is quietly the end of every test in this crate that compares one.
+    ///
+    /// **How much is held is not this type's question.** That is a cross-field one —
+    /// the purse against the counters that could have filled it — and it lives in
+    /// [`GameState::validate`](crate::game::GameState), which is the only place that can
+    /// see both. [`total_raw`](Inventory::total_raw) is what this type lends it.
     ///
     /// See [`Mine::validate`](crate::mine::Mine) for why the message is a plain
     /// string.

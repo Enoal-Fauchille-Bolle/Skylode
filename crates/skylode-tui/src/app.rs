@@ -3359,12 +3359,33 @@ mod tests {
     /// returns, so a patch describing a run the rules could not produce is refused here
     /// rather than quietly played. The config is `()` so this crate needs no serde
     /// dependency; each patch must match, so a save-format rename fails loudly.
+    /// The counters [`veteran`] rewrites before the caller's own patches land.
+    ///
+    /// `GameState::validate` audits the run's ladder and purse against the history its
+    /// counters describe, so a document patched to a level-30 player holding Emerald and
+    /// left at `"blocks_broken":0` describes a run the rules could not have produced —
+    /// and is refused, correctly, by the very door this helper goes through. Every test
+    /// here is about a *screen*, not about the audit, so the history is handed over once
+    /// in this list rather than restated in thirty call sites.
+    ///
+    /// The figures are deliberately far above anything a patch below asks for: their job
+    /// is to stop being the subject, not to be plausible. `game.rs`'s own tests are where
+    /// the audit's edges are pinned.
+    const A_LONG_HISTORY: &[(&str, &str)] = &[
+        (r#""blocks_broken":0"#, r#""blocks_broken":1000000"#),
+        (r#""playtime":0"#, r#""playtime":100000"#),
+        (
+            r#""auto_raw_credited":0"#,
+            r#""auto_raw_credited":1000000000000"#,
+        ),
+    ];
+
     fn veteran(patches: &[(&str, &str)]) -> App {
         let mut text = match save::to_json(&GameState::new(SEED, std::time::UNIX_EPOCH), &()) {
             Ok(text) => text,
             Err(error) => unreachable!("a fresh run must serialise: {error:?}"),
         };
-        for (from, to) in patches {
+        for (from, to) in A_LONG_HISTORY.iter().chain(patches) {
             assert!(text.contains(from), "the save no longer contains {from:?}");
             text = text.replacen(from, to, 1);
         }
