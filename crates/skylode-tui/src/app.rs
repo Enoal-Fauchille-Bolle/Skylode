@@ -310,6 +310,22 @@ impl App {
         self
     }
 
+    /// Opens this session on the preferences the save carried.
+    ///
+    /// **A builder step for [`with_dev`](App::with_dev)'s reason**: the hundred-odd
+    /// tests that build an `App` are not about preferences, and a second parameter on
+    /// [`new`](App::new) would make every one of them name a default.
+    ///
+    /// It exists because [`Config`] lives *inside* the save (`docs/SYSTEMS.md`
+    /// §*Config in the save*): a loaded run brings its own, and only a genuinely new
+    /// one falls back to [`Config::default`]. Applied after construction rather than
+    /// during it because nothing `new` computes reads it — the read model is projected
+    /// from the run, and the preferences are consulted while *drawing*.
+    pub fn with_config(mut self, config: Config) -> Self {
+        self.config = config;
+        self
+    }
+
     /// Rebuilds the read model from the run.
     ///
     /// Called before drawing, and only when a draw is actually about to happen: the
@@ -1777,16 +1793,11 @@ impl App {
     pub(crate) fn render(&self, frame: &mut Frame, now: Instant) {
         let area = frame.area();
 
-        // The terminal-too-small filter, in front of everything (UI-EN.md §6.2).
-        // It is not a screen and not a modal: below the 80×24 budget it replaces
-        // the whole frame regardless of which tab or overlay is up, and yields it
-        // back untouched once the window grows, because it reads no state. Drawing
-        // it here — before the tab bar even splits the area — is what "a filter,
-        // not a state with edges" means in code.
-        if !too_small::fits(area) {
-            too_small::render(frame, area);
-            return;
-        }
+        // The terminal-too-small filter used to stand here and now stands one level
+        // up, in `Session::render` (UI-EN.md §6.2). It is not a screen and not a
+        // modal: below the 80×24 budget it replaces the whole frame regardless of
+        // what is up — *including the title*, which is what this function cannot
+        // see. Keeping a second copy here would mean a check that can never be true.
 
         // Everything below draws into the *band*, not into the terminal. The filter
         // above deliberately still reads the whole frame — "is the window big
@@ -2232,20 +2243,6 @@ mod tests {
             painted,
             "the mine screen drew no swatch:\n{}",
             whole_frame(&buffer)
-        );
-    }
-
-    #[test]
-    fn a_cramped_terminal_shows_the_filter_instead_of_the_open_screen() {
-        // Sitting on a non-default tab, under the budget: the filter must win over
-        // whatever was up, drawing its message and none of the tab bar.
-        let mut app = session();
-        app.update(Action::SelectScreen(2));
-        let frame = whole_frame(&render_to_sized_buffer(&app, 54, 18));
-        assert!(frame.contains("Skylode needs 80 x 24"), "{frame}");
-        assert!(
-            !frame.contains("2 Inventory"),
-            "the tab bar leaked through: {frame}"
         );
     }
 

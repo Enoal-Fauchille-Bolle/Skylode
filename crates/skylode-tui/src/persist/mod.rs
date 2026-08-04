@@ -25,24 +25,7 @@
 //! [`EventHandler`]: crate::event::EventHandler
 //! [`main`]: crate
 
-// **`cfg_attr(not(test), …)` and not a bare `expect`.** These modules are fully
-// exercised by their own inline tests, so under `--all-targets` — which compiles this
-// crate twice, once as a binary and once as a test harness — a bare expectation would
-// go *unfulfilled* in the test build and fail the lint. The `cfg_attr` is what makes
-// the marker true in exactly the build where nothing calls them yet.
-//
-// `expect` rather than `allow`, per this crate's convention: when the session state
-// machine arrives, each of these turns into an "unfulfilled lint expectation" error
-// naming a door that has just been given its caller.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "awaiting the phase-8 session state machine")
-)]
 mod envelope;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "awaiting the phase-8 session state machine")
-)]
 mod key;
 
 use std::{
@@ -77,10 +60,6 @@ const BACKUP_FILE: &str = "save.json.bak";
 /// it removes an error case that could never fire instead of inventing a message for
 /// one.
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "awaiting the phase-8 session state machine")
-)]
 pub struct SaveSlots {
     /// The directory both files live in.
     dir: PathBuf,
@@ -91,10 +70,6 @@ pub struct SaveSlots {
     backup: PathBuf,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "awaiting the phase-8 session state machine")
-)]
 impl SaveSlots {
     /// The two slots inside `dir`.
     ///
@@ -139,17 +114,38 @@ impl SaveSlots {
 /// [`GameState::resume`](skylode_core::game::GameState::resume), whose [`None`] *is*
 /// the "no screen at all" case.
 ///
-/// **A bare `expect` and not a `cfg_attr`, unlike everything else here**, and the
-/// difference is the point: its neighbours are dead only until the state machine calls
-/// them, and their own tests already do. This one is dead in *both* builds, because
-/// there is no test that could call it — which is the same statement as "it is the one
-/// line the environment owns", written where the compiler can see it.
-#[expect(
-    dead_code,
-    reason = "the environment lookup, called only by the phase-8 session state machine"
-)]
+/// It has exactly one caller, [`main`](crate), for the same reason
+/// [`seed_from`](crate::session::seed_from) does: reading the environment is the
+/// outside's job, and the reading is spent immediately on a [`Session`] that then
+/// carries the answer for the rest of the run.
+///
+/// [`Session`]: crate::session::Session
 pub fn location() -> Option<SaveSlots> {
     ProjectDirs::from("", "", "skylode").map(|dirs| SaveSlots::in_dir(dirs.data_dir()))
+}
+
+/// When the file at `path` was last written, or nothing if that cannot be asked.
+///
+/// **The one number the recovery screen cannot get any other way.** §6.3 offers
+/// *"Restore the backup — saved 8 seconds ago"*, and that age is what the player's
+/// decision is actually about: a backup from four seconds ago costs them nothing,
+/// one from last week costs them a session. It cannot come from the file's own
+/// [`last_seen`](GameState::last_seen), because at that point the backup has not been
+/// verified — `docs/UI.md` §8.3 checks it only *after* the player asks for it — and
+/// reading a `last_seen` out of an unverified file would be trusting the one thing on
+/// screen that is under suspicion.
+///
+/// The modification time is honest here for a reason particular to this module: the
+/// backup is produced by [`fs::rename`], which moves a directory entry and leaves the
+/// content's timestamp alone. So this answers *when that run was written*, not when it
+/// was rotated aside.
+///
+/// **Every failure is [`None`] rather than an error.** A missing file, a filesystem
+/// that does not record modification times, a platform that refuses the call — none of
+/// them is a reason to withhold the screen, and the caller's only use for the answer is
+/// one line of text it can leave out.
+pub fn written_at(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).ok()?.modified().ok()
 }
 
 /// Writes the run, atomically, rotating the previous save into the backup.
@@ -178,10 +174,6 @@ pub fn location() -> Option<SaveSlots> {
 /// becomes the backup. Checking would cost a read plus an HMAC on every autosave to
 /// defend against a player editing their save while the game is running, which that
 /// same player defeats by editing it while the game is closed.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "awaiting the phase-8 session state machine")
-)]
 pub fn save(
     slots: &SaveSlots,
     state: &mut GameState,
@@ -222,10 +214,6 @@ pub fn save(
 /// **A missing file is [`Ok(None)`](Option) and not an error.** A fresh install is
 /// the ordinary opening of this game, and folding it in with the failures would make
 /// the recovery screen the first thing every new player sees.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "awaiting the phase-8 session state machine")
-)]
 pub fn load(path: &Path) -> Result<Option<Save<Config>>, PersistError> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
@@ -277,10 +265,6 @@ fn refusal(error: SaveError) -> PersistError {
 /// [`GameState::resume`](skylode_core::game::GameState::resume) uses for "no screen at
 /// all".
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "awaiting the phase-8 session state machine")
-)]
 pub enum PersistError {
     /// The bytes could not be reached: a permission refused, a directory that is a
     /// file, a disk that has gone away.
@@ -347,6 +331,66 @@ impl std::error::Error for PersistError {
             Self::Rejected(error) => Some(error),
             Self::Damaged | Self::Tampered | Self::FromTheFuture { .. } => None,
         }
+    }
+}
+
+/// Broken saves, built by the module that owns the key.
+///
+/// **Test-only, and `pub(crate)` on purpose.** The session state machine's tests have
+/// to walk every branch of `docs/UI.md` §8.3, which means producing a file that fails
+/// its signature and one that claims a version from the future — and neither can be
+/// written from outside this module, because the key is deliberately not reachable
+/// from anywhere else. Handing out two named fixtures is what keeps that true: nothing
+/// outside `persist` gets [`envelope::seal`], only two files it already knows how to
+/// describe.
+#[cfg(test)]
+pub(crate) mod fixture {
+    use std::{fs, path::Path};
+
+    use skylode_core::save::SAVE_VERSION;
+
+    use super::envelope;
+
+    /// Reads the file, or gives up loudly — a fixture that cannot be read is a broken
+    /// test rather than a case under test.
+    fn text_at(path: &Path) -> String {
+        match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) => unreachable!("{} should be readable: {error}", path.display()),
+        }
+    }
+
+    fn write(path: &Path, text: String) {
+        if let Err(error) = fs::write(path, text) {
+            unreachable!("{} should be writable: {error}", path.display());
+        }
+    }
+
+    /// Edits the payload without re-signing it, which is what a hand-editor leaves
+    /// behind: a well-formed envelope whose `mac` no longer matches.
+    pub(crate) fn tamper(path: &Path) {
+        write(
+            path,
+            text_at(path).replacen(r#"{"data":"{"#, r#"{"data":"X"#, 1),
+        );
+    }
+
+    /// Re-signs the payload claiming the next version up.
+    ///
+    /// **Signed correctly**, which is the whole point: this is what a newer build's own
+    /// write looks like to this one, so the loader must refuse it for being from the
+    /// future rather than for being damaged.
+    pub(crate) fn from_the_future(path: &Path) {
+        let payload = match envelope::open(&text_at(path)) {
+            Ok(payload) => payload,
+            Err(error) => unreachable!("the fixture should be a valid save: {error}"),
+        };
+        let bumped = payload.replace(
+            &format!("\"version\":{SAVE_VERSION}"),
+            &format!("\"version\":{}", SAVE_VERSION + 1),
+        );
+        assert_ne!(bumped, payload, "the fixture carried no version to bump");
+        write(path, envelope::seal(&bumped));
     }
 }
 
@@ -429,11 +473,10 @@ mod tests {
         }
     }
 
+    /// The same edit the session's tests make, kept in one place: the fixtures
+    /// `persist` hands out are the ones it tests itself against.
     fn corrupt(path: &Path) {
-        let text = text_at(path);
-        if let Err(error) = fs::write(path, text.replacen(r#"{"data":"{"#, r#"{"data":"X"#, 1)) {
-            unreachable!("the fixture should be writable: {error}");
-        }
+        super::fixture::tamper(path);
     }
 
     #[test]
@@ -531,6 +574,22 @@ mod tests {
         let (_dir, slots) = slots();
         assert!(matches!(load(slots.primary()), Ok(None)));
         assert!(matches!(load(slots.backup()), Ok(None)));
+    }
+
+    #[test]
+    fn a_written_file_can_say_how_old_it_is_and_a_missing_one_says_nothing() {
+        let (_dir, slots) = slots();
+        // Nothing there: the recovery screen simply leaves the line out.
+        assert!(written_at(slots.primary()).is_none());
+
+        let (mut state, config) = (a_run(), Config::default());
+        if let Err(error) = save(&slots, &mut state, &config, NOW) {
+            unreachable!("the save should have been written: {error}");
+        }
+        // The *filesystem's* clock and not `NOW`: `save` writes a run stamped with the
+        // instant it was handed, and a modification time the operating system chooses.
+        // What the screen needs is that the second one exists at all.
+        assert!(written_at(slots.primary()).is_some());
     }
 
     /// One byte, in the payload — and the backup written moments earlier is untouched,

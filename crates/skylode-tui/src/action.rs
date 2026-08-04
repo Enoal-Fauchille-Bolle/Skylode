@@ -186,3 +186,36 @@ pub enum Action {
     /// player is" means on a given screen, so the reducer answers it.
     JumpToCurrent,
 }
+
+/// What the player wants on a screen that is **not** a game.
+///
+/// The title, the recovery frames and the offline summary all show a short list and
+/// a caret, and nothing else: there is no tab ring to walk, no modal to stack, no
+/// mine key to hold. Four gestures cover every one of them.
+///
+/// **A second enum rather than four of [`Action`]'s twenty-six**, and the reason is
+/// the same one that made `Action` exist. `Action`'s exhaustive `match` in
+/// [`App::update`](crate::app::App::update) is what keeps the reducer complete;
+/// answering a splash with that vocabulary would mean a `match` in which twenty-two
+/// arms are "cannot happen here", and the compiler would stop being able to tell the
+/// difference between a gesture nobody implemented and one nobody can make.
+///
+/// It carries no target — *which* row `Confirm` takes is a question about a cursor,
+/// and [`keymap`](crate::keymap) has no more access to a menu's state than it has to
+/// the run's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuAction {
+    /// Move the caret up a row, wrapping at the top.
+    Up,
+    /// Move it down, wrapping at the bottom.
+    Down,
+    /// Take the row it is on (`Enter`).
+    Confirm,
+    /// Leave the game entirely (`q`, `Ctrl-C`).
+    ///
+    /// **Always the process and never a screen behind**, because on every screen that
+    /// answers this vocabulary there is nothing behind: the title is the bottom of the
+    /// stack, and the recovery frames are in front of a save the game has refused to
+    /// load.
+    Quit,
+}

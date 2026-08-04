@@ -1,10 +1,11 @@
 //! Skylode's terminal front-end.
 //!
-//! The binary is deliberately thin: it installs error reporting, hands the
-//! terminal to [`app::App`], and restores it afterwards. Everything else lives in
-//! the modules below, arranged around one boundary — *raw input* becomes a
-//! *semantic action* exactly once, in [`keymap`], so that [`app::App::update`]
-//! can be exercised without a terminal at all.
+//! The binary is deliberately thin: it installs error reporting, reads the two
+//! things only the outside can answer — where a save lives and what time it is —
+//! hands the terminal to [`session::Session`], and restores it afterwards.
+//! Everything else lives in the modules below, arranged around one boundary — *raw
+//! input* becomes a *semantic action* exactly once, in [`keymap`], so that
+//! [`app::App::update`] can be exercised without a terminal at all.
 //!
 //! The design this implements is `organization/UI-EN.md`; the game rules it will
 //! eventually render live in `skylode-core`, which this crate may read but never
@@ -32,20 +33,15 @@ mod toast;
 mod view;
 mod widget;
 
-use std::{
-    io::stdout,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{io::stdout, time::SystemTime};
 
+use crate::{event::EventHandler, session::Session};
 use color_eyre::Result;
 use ratatui::crossterm::{
     event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
     execute,
     terminal::supports_keyboard_enhancement,
 };
-use skylode_core::game::GameState;
-
-use crate::{app::App, event::EventHandler, session::Session};
 
 /// How often the event thread wakes the render loop, in milliseconds.
 ///
@@ -61,36 +57,17 @@ use crate::{app::App, event::EventHandler, session::Session};
 /// cadence must never be able to change game balance.
 const TICK_RATE_MS: u64 = 10;
 
-/// The seed a fresh run starts from, taken from the clock.
-///
-/// **This is the only entropy in the game, and it is deliberately on this side of
-/// the crate boundary.** `skylode-core` compiles `rand` with
-/// `default-features = false`, which strips `thread_rng` and `os_rng` out of the
-/// build entirely — so the determinism contract is enforced by the compiler rather
-/// than by discipline, and a seed *has* to be handed in from outside. Here is
-/// outside.
-///
-/// Nanoseconds since the epoch, not seconds: two runs started in the same second
-/// should not lay out the same mine. A clock before 1970 falls back to `0`, which
-/// is a legal seed — a wrong clock should give a boring run, not no run.
-///
-/// Phase 7 takes this over: a loaded save carries its own generator, position
-/// included, and only a genuinely new run reaches this line.
-fn seed_from_clock() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since_epoch| since_epoch.as_nanos() as u64)
-}
-
 fn main() -> Result<()> {
     // Pretty panic and error reports. Installed first so that anything failing
     // below is still reported legibly.
     color_eyre::install()?;
 
-    // A fresh run. `now` is passed in rather than read inside the core, which is the
-    // same rule as the seed: the rules take the clock as an argument so that a test
-    // can choose it.
-    let state = GameState::new(seed_from_clock(), SystemTime::now());
+    // The two readings this binary owes the rest of the program, and the only two:
+    // where the platform keeps a save, and what time it is. Both are the environment,
+    // and `main` is the outside — everything below takes them as arguments so that a
+    // test can choose them.
+    let slots = persist::location();
+    let session = Session::boot(slots, SystemTime::now());
 
     // `init` enables raw mode, switches to the alternate screen, and installs a
     // panic hook that restores both before any message is printed — the reason
@@ -99,18 +76,17 @@ fn main() -> Result<()> {
     let enhanced = enable_key_releases();
     let events = EventHandler::new(TICK_RATE_MS);
 
-    let app = App::new(state);
     // The dev menu's *activation*, and the only place the environment is read for it.
     // The compilation gate is `#[cfg(debug_assertions)]`, applied at every door down to
     // `skylode_core::game::dev`; this line is the second layer, so that an ordinary
     // `cargo run` is an ordinary game. In a release build the whole statement is absent
     // along with the method it calls.
     #[cfg(debug_assertions)]
-    let app = app.with_dev(dev_requested());
+    let session = session.with_dev(dev_requested());
 
     // The result is held, not propagated with `?`: the terminal must be restored
     // first, or an error would print into the alternate screen and vanish with it.
-    let result = Session::new(app).run(&mut terminal, events);
+    let result = session.run(&mut terminal, events);
 
     if enhanced {
         // Before `restore`, and unconditional on how the loop ended: these flags are
@@ -128,10 +104,10 @@ fn main() -> Result<()> {
 /// job is to be set has no business having a grammar of truthy strings — and the one
 /// person who types it is the one who wrote this line.
 ///
-/// It reads the environment, which is legal here for [`seed_from_clock`]'s reason and no
-/// other: `main` is the outside. The reading is spent immediately on
-/// [`App::with_dev`](crate::app::App::with_dev) and never consulted again, so nothing
-/// below this function can ask the environment what mode it is in.
+/// It reads the environment, which is legal here for [`persist::location`]'s reason and
+/// no other: `main` is the outside. The reading is spent immediately on
+/// [`Session::with_dev`] and never consulted again, so nothing below this function can
+/// ask the environment what mode it is in.
 ///
 /// `#[cfg(debug_assertions)]` because there is nothing for it to enable in a release
 /// build: `App` has no `dev` field there, and `keymap` has no branch that would read it.

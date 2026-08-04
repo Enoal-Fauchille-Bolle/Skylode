@@ -5,6 +5,13 @@
 //! terminal. It is also where UI-EN.md §9's configurable sub-tab binding will
 //! land: one function to change, not a `match` scattered across six screens.
 //!
+//! **Three functions and not one**, because the game is no longer the only thing on
+//! screen. [`resolve`] answers a run; [`resolve_menu`] answers the states that are
+//! not a run at all (the title, the recovery frames) in [`MenuAction`]'s four
+//! gestures; and [`resolve_too_small`] answers the one screen that is drawn over
+//! every other. They live together because the invariant above is about the *module*:
+//! a `KeyCode` named anywhere else is a binding nobody can find.
+//!
 //! **Resolution order**, and it matters:
 //! 0. A key *release* — it can only ever mean "stop mining", and nothing else here
 //!    may see it.
@@ -20,11 +27,70 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::{action::Action, app::App, config::SubTabKeys, overlay::Modal, screen::Screen};
+use crate::{
+    action::{Action, MenuAction},
+    app::App,
+    config::SubTabKeys,
+    overlay::Modal,
+    screen::Screen,
+};
 
 /// The digits that jump straight to a tab. Derived from the ring, so a seventh
 /// screen does not need this constant edited — only the ring.
 const FIRST_TAB_DIGIT: char = '1';
+
+/// Translates a key press on a menu screen, or `None` if nothing is bound there.
+///
+/// **One resolver for the title and for the recovery frames**, because they are the
+/// same interaction: a short list, a caret, `Enter`. Two functions would have to be
+/// kept identical by hand, and the moment they drifted the recovery screen would be
+/// the one that lost a key — it is the screen nobody tests by playing.
+///
+/// It takes no state at all, unlike [`resolve`]. Nothing here is contextual: `Enter`
+/// means *take the row the caret is on* whatever that row happens to be, and which
+/// row that is belongs to the caller that owns the cursor.
+///
+/// **`Ctrl-C` is here too, and it is the same answer as `q`.** On a screen with no
+/// game behind it there is no third thing quitting could mean.
+pub fn resolve_menu(key: KeyEvent) -> Option<MenuAction> {
+    // A release is never a menu gesture. It reaches this far only on a terminal
+    // speaking the kitty protocol, where every key is reported twice — so without
+    // this the caret would move two rows per press there and one row everywhere else.
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
+    {
+        return Some(MenuAction::Quit);
+    }
+    match key.code {
+        // Arrows only, matching the game's own lists: no screen in Skylode binds
+        // `j`/`k`, and a menu that did would be teaching a gesture that works nowhere
+        // else.
+        KeyCode::Up => Some(MenuAction::Up),
+        KeyCode::Down => Some(MenuAction::Down),
+        KeyCode::Enter => Some(MenuAction::Confirm),
+        KeyCode::Char('q') => Some(MenuAction::Quit),
+        _ => None,
+    }
+}
+
+/// Translates a key press while the terminal is too small to draw anything.
+///
+/// **The narrowest resolver in the crate, and deliberately so.** §6.2's screen prints
+/// exactly one affordance — *"Enlarge the window, or press q to quit"* — and it is
+/// drawn over every state, including the title. So `q` here has to mean the process
+/// and not "back to the title": the title is a screen this terminal cannot draw
+/// either, and a key that promised to quit and did not would be the one lie on a
+/// frame whose whole job is to be readable when nothing else is.
+pub fn resolve_too_small(key: KeyEvent) -> Option<MenuAction> {
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+    let control_c = key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('c' | 'C'));
+    (control_c || key.code == KeyCode::Char('q')).then_some(MenuAction::Quit)
+}
 
 /// Translates a key press into an [`Action`], or `None` if nothing is bound.
 ///
