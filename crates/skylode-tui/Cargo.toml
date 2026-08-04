@@ -9,5 +9,13 @@ crossterm = "0.29.0"
 ratatui = "0.30.2"
 skylode-core = { path = "../skylode-core" }
 
+# `Config` is the `C` of `skylode_core::save::Save<C>` — the type parameter that
+# carries the player's preferences through the core without the core ever learning
+# what a palette is. `from_json::<C>` bounds `C` on `DeserializeOwned`, so the
+# derives are not a convenience here: without them `Config` cannot cross that
+# boundary at all, and `docs/SYSTEMS.md`'s "config lives in the save, there is no
+# config file" has nowhere to happen.
+serde = { version = "1.0", features = ["derive"] }
+
 [lints]
 workspace = true
