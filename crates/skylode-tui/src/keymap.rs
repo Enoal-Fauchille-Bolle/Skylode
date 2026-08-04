@@ -225,7 +225,10 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
 
     // 4. The global ring bindings.
     match key.code {
-        KeyCode::Char('q') => return Some(Action::Quit),
+        // **Back to the title, not out of the program** (`docs/UI.md` §8.3). `Ctrl-C`
+        // above is the one that ends the process; this one puts the run down, and the
+        // session writes it before rebuilding the title from the file.
+        KeyCode::Char('q') => return Some(Action::ToTitle),
         // `?` is global and printed in every footer, so it opens Help from anywhere.
         KeyCode::Char('?') => return Some(Action::OpenHelp),
         KeyCode::Tab => return Some(Action::NextScreen),
@@ -338,9 +341,15 @@ mod tests {
     }
 
     #[test]
-    fn q_and_ctrl_c_both_quit() {
+    fn q_leaves_for_the_title_and_ctrl_c_leaves_the_program() {
+        // The two exits are different actions and not one with a modifier: §8.3 has an
+        // edge from a game back to the title and none from a game to the process, and
+        // `Ctrl-C` is a terminal convention rather than something the game drew.
         let app = session();
-        assert_eq!(resolve(&app, press(KeyCode::Char('q'))), Some(Action::Quit));
+        assert_eq!(
+            resolve(&app, press(KeyCode::Char('q'))),
+            Some(Action::ToTitle)
+        );
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(resolve(&app, ctrl_c), Some(Action::Quit));
     }

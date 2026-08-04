@@ -45,7 +45,7 @@ use skylode_core::{enchant::EnchantType, game::GameState, save::Save};
 
 use crate::{
     action::{Action, MenuAction},
-    app::App,
+    app::{App, Leaving},
     config::Config,
     event::{Event, Events},
     format::rung_label,
@@ -793,13 +793,23 @@ impl Session {
                 // ownership and there is nothing left to ask afterwards.
                 let banked = banks(&action);
                 app.update(action);
-                let leaving = app.should_quit;
-                self.quit = leaving;
-                // On the way out, and on anything the player would be sorry to repeat.
+                let leaving = app.leaving;
                 // The borrow of `self.stage` above ends at the last use of `app`, which
-                // is what lets this reach back into `self`.
-                if leaving || banked {
-                    self.autosave(SystemTime::now());
+                // is what lets the rest of this arm reach back into `self`.
+                let now = SystemTime::now();
+
+                // **The write comes first on every exit**, and on the `ToTitle` path
+                // that ordering is load-bearing rather than tidy: the title is rebuilt
+                // by re-reading the file, so a save that happened afterwards would
+                // build a title out of the *previous* run — `Continue` would offer the
+                // state the player had ten seconds ago.
+                if leaving.is_some() || banked {
+                    self.autosave(now);
+                }
+                match leaving {
+                    Some(Leaving::Process) => self.quit = true,
+                    Some(Leaving::ToTitle) => self.stage = Self::look(self.slots.as_ref(), now),
+                    None => {}
                 }
                 true
             }
@@ -1084,6 +1094,15 @@ mod tests {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
+    /// `Ctrl-C` — the only key that ends the process from *inside* a game.
+    ///
+    /// Every script below that finishes in a run ends on this rather than on `q`,
+    /// which now walks back to the title. That is the whole of what this commit
+    /// changed, and the scripts are where it shows.
+    fn ctrl_c() -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+    }
+
     /// Runs the real loop over `events`, into an off-screen terminal of that size.
     fn run_sized(
         session: Session,
@@ -1136,7 +1155,7 @@ mod tests {
             whole_frame(&title)
         );
 
-        let (_, game) = into_a_new_game(vec![key(KeyCode::Char('q'))]);
+        let (_, game) = into_a_new_game(vec![ctrl_c()]);
         assert!(
             whole_frame(&game).contains("will not be kept"),
             "{}",
@@ -1165,7 +1184,7 @@ mod tests {
         let (_dir, slots) = saved(1);
         let (result, buffer) = run_script(
             Session::boot(Some(slots), NOW),
-            vec![key(KeyCode::Enter), key(KeyCode::Char('q'))],
+            vec![key(KeyCode::Enter), ctrl_c()],
         );
         assert!(result.is_ok(), "the loop failed: {result:?}");
         let frame = whole_frame(&buffer);
@@ -1225,7 +1244,7 @@ mod tests {
 
         let (_, buffer) = run_script(
             Session::boot(Some(slots), NOW),
-            vec![key(KeyCode::Enter), key(KeyCode::Char('q'))],
+            vec![key(KeyCode::Enter), ctrl_c()],
         );
         assert!(
             whole_frame(&buffer).contains("Restored from the backup"),
@@ -1315,7 +1334,7 @@ mod tests {
         // or the player stares at a blank terminal until they touch a key. Asserted
         // by giving the loop a script that quits on its very first event: if drawing
         // came second, nothing would ever have been painted.
-        let (result, buffer) = into_a_new_game(vec![key(KeyCode::Char('q'))]);
+        let (result, buffer) = into_a_new_game(vec![ctrl_c()]);
         assert!(result.is_ok(), "the loop failed: {result:?}");
         let frame = whole_frame(&buffer);
         assert!(frame.contains("1 Mine"), "nothing was drawn: {frame}");
@@ -1327,11 +1346,8 @@ mod tests {
         // presses then a quit, and the frame left on screen has to be the third
         // screen of the ring — proof the keys went through the reducer and that the
         // redraw happened after them rather than before.
-        let (result, buffer) = into_a_new_game(vec![
-            key(KeyCode::Tab),
-            key(KeyCode::Tab),
-            key(KeyCode::Char('q')),
-        ]);
+        let (result, buffer) =
+            into_a_new_game(vec![key(KeyCode::Tab), key(KeyCode::Tab), ctrl_c()]);
         assert!(result.is_ok(), "the loop failed: {result:?}");
         let frame = whole_frame(&buffer);
         assert!(frame.contains("Inventory"), "{frame}");
@@ -1345,8 +1361,7 @@ mod tests {
     fn a_key_nothing_is_bound_to_leaves_the_session_alone() {
         // `resolve` returns `None` and the loop must simply go round again — not
         // quit, not panic, not swallow the next event.
-        let (result, buffer) =
-            into_a_new_game(vec![key(KeyCode::Char('z')), key(KeyCode::Char('q'))]);
+        let (result, buffer) = into_a_new_game(vec![key(KeyCode::Char('z')), ctrl_c()]);
         assert!(result.is_ok(), "the loop failed: {result:?}");
         assert!(whole_frame(&buffer).contains("Haul"), "the screen moved");
     }
@@ -1357,12 +1372,8 @@ mod tests {
         // out against the new size on the next draw, which the loop is about to do
         // anyway. Both must still reach the quit behind them, which is what fails if
         // either arm ever starts returning early.
-        let (result, buffer) = into_a_new_game(vec![
-            Event::Tick,
-            Event::Resize,
-            Event::Tick,
-            key(KeyCode::Char('q')),
-        ]);
+        let (result, buffer) =
+            into_a_new_game(vec![Event::Tick, Event::Resize, Event::Tick, ctrl_c()]);
         assert!(result.is_ok(), "the loop failed: {result:?}");
         assert!(whole_frame(&buffer).contains("Haul"), "the screen moved");
     }
@@ -1436,7 +1447,7 @@ mod tests {
         let readable = slots.clone();
         let (result, _) = run_script(
             Session::boot(Some(slots), NOW),
-            vec![key(KeyCode::Enter), key(KeyCode::Char('q'))],
+            vec![key(KeyCode::Enter), ctrl_c()],
         );
         assert!(result.is_ok(), "the loop failed: {result:?}");
         assert!(
@@ -1453,7 +1464,7 @@ mod tests {
         let slots = unreachable_slots(&dir);
         let (result, buffer) = run_script(
             Session::boot(Some(slots), NOW),
-            vec![key(KeyCode::Enter), key(KeyCode::Char('q'))],
+            vec![key(KeyCode::Enter), ctrl_c()],
         );
         assert!(
             result.is_ok(),
@@ -1549,5 +1560,54 @@ mod tests {
             matches!(persist::load(readable.primary()), Ok(Some(_))),
             "the run was dropped with the channel"
         );
+    }
+
+    #[test]
+    fn q_in_a_game_goes_back_to_the_title_rather_than_out_of_the_program() {
+        // §8.3's `Game -> Splash` edge, walked: `Enter` starts a run, `q` puts it down,
+        // and the title behind it offers to continue — which it can only do because the
+        // run was written on the way out and read back on the way in.
+        let (_dir, slots) = empty();
+        let (result, buffer) = run_script(
+            Session::boot(Some(slots), NOW),
+            vec![
+                key(KeyCode::Enter),
+                key(KeyCode::Char('q')),
+                key(KeyCode::Char('q')),
+            ],
+        );
+        assert!(result.is_ok(), "the loop failed: {result:?}");
+        let frame = whole_frame(&buffer);
+        assert!(
+            frame.contains("Continue"),
+            "the title did not find the run it had just left: {frame}"
+        );
+        assert!(frame.contains("Lv 1"), "{frame}");
+    }
+
+    #[test]
+    fn leaving_for_the_title_writes_the_run_before_re_reading_it() {
+        // The ordering `on_key` depends on. A save that happened *after* the re-read
+        // would build a title out of the previous file, so the level the title shows is
+        // the assertion: the dev menu takes the run to level 12, `q` writes it, and the
+        // title has to have read that.
+        #[cfg(debug_assertions)]
+        {
+            let (_dir, slots) = empty();
+            let mut session = Session::boot(Some(slots.clone()), NOW).with_dev(true);
+            session.menu(MenuAction::Confirm);
+            if let Stage::Game(app) = &mut session.stage {
+                app.state.dev_set_level(12);
+            }
+            session.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+
+            match &session.stage {
+                Stage::Splash(splash) => {
+                    let level = splash.resume().map(Resume::level);
+                    assert_eq!(level, Some(12), "the title read a stale file");
+                }
+                _ => unreachable!("`q` did not land on the title"),
+            }
+        }
     }
 }

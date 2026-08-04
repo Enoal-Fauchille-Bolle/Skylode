@@ -137,11 +137,32 @@ enum Reach {
     AsFarAsPossible,
 }
 
+/// How a run ends, when the player has asked it to.
+///
+/// **One field of two values and not two booleans.** `q` and `Ctrl-C` are different
+/// exits — one goes back to the title, the other ends the program — and a pair of
+/// flags would make "leaving to the title *and* to the process" a state the type
+/// allows and nothing forbids. It is the same answer this crate already gives for
+/// [`dev`](App#structfield.dev) and for the running boost: when two things cannot
+/// both be true, say so with the type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Leaving {
+    /// Back to the splash, with the run written first (`q`).
+    ToTitle,
+    /// Out of the program altogether (`Ctrl-C`).
+    Process,
+}
+
 /// The whole front-end state.
 #[derive(Debug)]
 pub struct App {
-    /// Set by [`Action::Quit`]; the loop reads it and stops.
-    pub should_quit: bool,
+    /// How the player has asked to leave, if they have.
+    ///
+    /// Set by the reducer and read by [`Session`](crate::session::Session), which owns
+    /// what each answer *means*: the run is written either way, and only one of the two
+    /// ends the loop. `App` deliberately does not act on it — a type that owns no
+    /// disk and no terminal cannot be the one that decides what leaving costs.
+    pub leaving: Option<Leaving>,
     /// The tab currently on screen.
     pub screen: Screen,
     /// The modal stacked over it, if any.
@@ -276,7 +297,7 @@ impl App {
         let flash = Flashes::new();
         let view = View::from_state(&state, cursors, None, &toasts, &flash, now);
         Self {
-            should_quit: false,
+            leaving: None,
             screen: Screen::Mine,
             modal: None,
             toasts,
@@ -377,7 +398,8 @@ impl App {
             return;
         }
         match action {
-            Action::Quit => self.should_quit = true,
+            Action::ToTitle => self.leaving = Some(Leaving::ToTitle),
+            Action::Quit => self.leaving = Some(Leaving::Process),
             Action::NextScreen => self.screen = self.screen.next(),
             Action::PrevScreen => self.screen = self.screen.prev(),
             Action::SelectScreen(index) => {
@@ -2113,7 +2135,7 @@ mod tests {
         let app = session();
         assert_eq!(app.screen, Screen::Mine);
         assert!(app.modal.is_none());
-        assert!(!app.should_quit);
+        assert!(app.leaving.is_none());
     }
 
     #[test]
@@ -2151,8 +2173,15 @@ mod tests {
     #[test]
     fn quit_raises_the_flag_the_loop_watches() {
         let mut app = session();
+        app.update(Action::ToTitle);
+        assert_eq!(app.leaving, Some(Leaving::ToTitle));
+
+        // And `Ctrl-C`'s own action is the other exit, not a louder version of the
+        // same one: the session ends the process for one and rebuilds the title for
+        // the other.
+        let mut app = session();
         app.update(Action::Quit);
-        assert!(app.should_quit);
+        assert_eq!(app.leaving, Some(Leaving::Process));
     }
 
     #[test]

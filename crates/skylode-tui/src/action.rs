@@ -22,9 +22,21 @@
 /// these five instead of adding five apiece.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Leave the game (also the target of `Ctrl-C`). For now it exits the
-    /// process; once the session state machine (UI-EN.md §6.3) lands it will
-    /// return to the splash instead.
+    /// Put this run down and go back to the title screen (`q`).
+    ///
+    /// **It is not "quit", and the distinction is the whole of `docs/UI.md` §8.3's
+    /// `Game -> Splash` edge.** The run is written to disk on the way out and the
+    /// title is rebuilt by re-reading that file, so `Continue` means the same thing
+    /// after leaving a game as it does after launching the program. The session owns
+    /// both halves; all this says is *the player is done with this run for now*.
+    ToTitle,
+    /// End the process (`Ctrl-C`).
+    ///
+    /// **A terminal convention rather than a game affordance**, which is why §8.3
+    /// draws no edge for it: `Ctrl-C` means *stop this program* in every terminal the
+    /// player has ever used, and a game that answered it with a menu would be the one
+    /// program that did not. It still saves on the way out — leaving by the short door
+    /// is not a reason to lose a swing.
     Quit,
     /// Advance one tab along the ring, wrapping past the last back to the first.
     NextScreen,
