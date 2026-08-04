@@ -44,7 +44,7 @@ use ratatui::{Frame, Terminal, backend::Backend, crossterm::event::KeyEvent, lay
 use skylode_core::{enchant::EnchantType, game::GameState, save::Save};
 
 use crate::{
-    action::MenuAction,
+    action::{Action, MenuAction},
     app::App,
     config::Config,
     event::{Event, Events},
@@ -71,6 +71,20 @@ use crate::{
 /// asked for.
 const FRAME_PERIOD: Duration = Duration::from_millis(33);
 
+/// How often a running game is written to disk (`docs/SYSTEMS.md` §*Save cadence*).
+///
+/// **Unconditional, and the `dirty` flag that section asks for is deliberately not
+/// here.** That flag was specified before the auto-miner existed; today every single
+/// tick credits it, so "has the state changed since the last write" is a `bool` that
+/// cannot be false while a game is up — and a field that cannot be false is a field
+/// that lies about what it is for. The saving it was meant to buy is instead
+/// structural: the title and the recovery frames have no run to write, so the loop
+/// there does not reach this clock at all.
+///
+/// Ten seconds is what bounds the loss: a crash costs at most that much mining, on
+/// top of which every important transaction writes on the spot.
+const AUTOSAVE_PERIOD: Duration = Duration::from_secs(10);
+
 /// The seed a fresh run starts from, taken from the wall clock.
 ///
 /// **This is the only entropy in the game, and it is deliberately on this side of
@@ -91,6 +105,22 @@ const FRAME_PERIOD: Duration = Duration::from_millis(33);
 pub fn seed_from(now: SystemTime) -> u64 {
     now.duration_since(UNIX_EPOCH)
         .map_or(0, |since_epoch| since_epoch.as_nanos() as u64)
+}
+
+/// Whether this gesture is worth a write of its own, ahead of the clock.
+///
+/// `docs/SYSTEMS.md` §*Save cadence* asks for one *"on important transactions"*, and
+/// these three are what that means here: [`Confirm`](Action::Confirm) takes every
+/// modal — a purchase, a compression, a prestige — while
+/// [`BuyMax`](Action::BuyMax) and [`ClaimAll`](Action::ClaimAll) are the two gestures
+/// that spend or collect without one.
+///
+/// **The list is short on purpose.** Everything else — walking a cursor, sliding the
+/// richness dial, changing tab — is either free to redo or caught by the ten-second
+/// clock, and a session that wrote on every keystroke would be a session that wrote
+/// on the arrow keys.
+fn banks(action: &Action) -> bool {
+    matches!(action, Action::Confirm | Action::BuyMax | Action::ClaimAll)
 }
 
 /// A running session: one state, the loop that drives it, and where it saves.
@@ -128,6 +158,25 @@ pub struct Session {
     /// waits**: a resize raises `dirty`, the next pass redraws, and only then is a key
     /// read. So this is never stale when it is consulted.
     cramped: bool,
+    /// When the running game is next due to be written — [`AUTOSAVE_PERIOD`]'s clock.
+    ///
+    /// The **fourth** deadline in this loop, beside the frame ceiling here and the
+    /// simulation's inside [`App`], and it is held the same way: compared against the
+    /// wall clock and reset from it, so a busy frame does not push the next write back
+    /// by what it overshot. It only matters while a [`Stage::Game`] is up, and it is
+    /// reset by [`open_game`](Session::open_game) — which has just written — so the
+    /// first autosave of a run falls a full period after the run opened rather than
+    /// immediately.
+    next_autosave: Instant,
+    /// Whether the last write failed.
+    ///
+    /// **A `bool` whose whole job is to make the toast an *edge*.** A full disk fails
+    /// every ten seconds, and announcing each one would bury the game under identical
+    /// refusals; announcing only the transitions means the player hears once that
+    /// saving broke and once that it works again. It is deliberately **not fatal** —
+    /// the run in memory is fine, and throwing it away would be the opposite of what
+    /// *"no continue anyway"* protects.
+    save_failing: bool,
     /// Set when the process should end.
     quit: bool,
     /// Whether every game this session opens gets the dev menu.
@@ -460,6 +509,8 @@ impl Session {
             next_frame: Instant::now(),
             dirty: true,
             cramped: false,
+            next_autosave: Instant::now() + AUTOSAVE_PERIOD,
+            save_failing: false,
             quit: false,
             #[cfg(debug_assertions)]
             dev: false,
@@ -582,7 +633,19 @@ impl Session {
                 self.next_frame = now + FRAME_PERIOD;
             }
 
-            match events.next()? {
+            // Not a bare `?`: a dead event source ends the session, and the run in
+            // memory is worth more than the ten seconds the cadence would have owed
+            // it. A real `EventHandler` gets here when its thread has died and the
+            // channel closed, which is not a reason to lose a swing.
+            let event = match events.next() {
+                Ok(event) => event,
+                Err(error) => {
+                    self.autosave(SystemTime::now());
+                    return Err(error);
+                }
+            };
+
+            match event {
                 // **Nothing.** The heartbeat's whole job is to end the block above's
                 // wait so that `advance` below gets to look at the clock; how many
                 // beats arrived is not a quantity anything here counts. That is the
@@ -616,9 +679,57 @@ impl Session {
 
             // After the event and not before: a key pressed this pass should reach
             // the step it belongs to, not the one after it.
-            self.dirty |= self.advance(Instant::now());
+            let now = Instant::now();
+            self.dirty |= self.advance(now);
+
+            // And after the step, so what reaches the disk includes it. The stage is
+            // checked here rather than inside `autosave` so that a title screen does
+            // not push its deadline forward every pass and then write the instant a
+            // game opens.
+            if matches!(self.stage, Stage::Game(_)) && now >= self.next_autosave {
+                self.autosave(SystemTime::now());
+                self.next_autosave = now + AUTOSAVE_PERIOD;
+            }
         }
         Ok(())
+    }
+
+    /// Writes the running game, and announces only a *change* in whether that works.
+    ///
+    /// **It never calls `touch`.** [`persist::save`] moves
+    /// [`last_seen`](skylode_core::game::GameState::last_seen) itself, before
+    /// serialising, because a caller that touched afterwards would write the previous
+    /// mark and have the next absence measured from a moment already paid for. This
+    /// supplies `now` and nothing else.
+    ///
+    /// Silent on every state that is not a game, and on a session with nowhere to
+    /// write: both are ordinary, and neither is news.
+    fn autosave(&mut self, now: SystemTime) {
+        let Some(slots) = &self.slots else {
+            return;
+        };
+        let Stage::Game(app) = &mut self.stage else {
+            return;
+        };
+        // Two disjoint fields of the same `App`, which is why this borrows rather than
+        // taking a clone: the run is a few kilobytes and the write happens twice a
+        // minute.
+        let outcome = persist::save(slots, &mut app.state, &app.config, now);
+        match outcome {
+            Err(error) if !self.save_failing => {
+                app.toasts
+                    .push(format!("Save failed: {error}"), Tone::Refusal, TOAST_TTL);
+                self.save_failing = true;
+            }
+            Ok(()) if self.save_failing => {
+                app.toasts
+                    .push("Saving works again".to_owned(), Tone::Success, TOAST_TTL);
+                self.save_failing = false;
+            }
+            // A second failure in a row, or an ordinary success. The player has already
+            // been told which of the two the game is in.
+            _ => {}
+        }
     }
 
     /// Runs whatever the clock owes the current state.
@@ -677,8 +788,19 @@ impl Session {
                 let Some(action) = keymap::resolve(app, key) else {
                     return false;
                 };
+                // Asked before the reducer runs, because `Action` is `Clone` and not
+                // `Copy` — the prestige confirm carries a `String` — so `update` takes
+                // ownership and there is nothing left to ask afterwards.
+                let banked = banks(&action);
                 app.update(action);
-                self.quit = app.should_quit;
+                let leaving = app.should_quit;
+                self.quit = leaving;
+                // On the way out, and on anything the player would be sorry to repeat.
+                // The borrow of `self.stage` above ends at the last use of `app`, which
+                // is what lets this reach back into `self`.
+                if leaving || banked {
+                    self.autosave(SystemTime::now());
+                }
                 true
             }
             Stage::Splash(_) | Stage::Recovery(_) => {
@@ -828,22 +950,22 @@ impl Session {
                 TOAST_TTL,
             );
         }
-        match &self.slots {
-            Some(slots) => {
-                if let Err(error) = persist::save(slots, &mut app.state, &app.config, now) {
-                    app.toasts
-                        .push(format!("Save failed: {error}"), Tone::Refusal, TOAST_TTL);
-                }
-            }
+        if self.slots.is_none() {
             // The tone the game uses for *"you cannot have this"*, which is what this
             // is: the session will play and will not be kept.
-            None => app.toasts.push(
+            app.toasts.push(
                 "No save file: this session will not be kept".to_owned(),
                 Tone::Refusal,
                 TOAST_TTL,
-            ),
+            );
         }
         self.stage = Stage::Game(Box::new(app));
+
+        // The clock is set *before* the write and from the same instant, so the first
+        // autosave of a run falls a full period after it opened rather than counting
+        // from whenever the title screen happened to be built.
+        self.next_autosave = Instant::now() + AUTOSAVE_PERIOD;
+        self.autosave(now);
     }
 }
 
@@ -1281,5 +1403,151 @@ mod tests {
             vec![key(KeyCode::Enter), key(KeyCode::Char('q'))],
         );
         assert!(result.is_ok(), "the loop failed: {result:?}");
+    }
+
+    /// Slots pointing *through* a file, so every read and every write fails with an
+    /// `Io` — the portable way to break a disk without touching permissions.
+    fn unreachable_slots(dir: &TempDir) -> SaveSlots {
+        let blocker = dir.path().join("a-file-not-a-directory");
+        if let Err(error) = std::fs::write(&blocker, "in the way") {
+            unreachable!("the fixture should have been writable: {error}");
+        }
+        SaveSlots::in_dir(&blocker.join("skylode"))
+    }
+
+    /// The toasts of the game a session is showing, or nothing when it is not showing
+    /// one.
+    fn announcements(session: &Session) -> Vec<String> {
+        match &session.stage {
+            Stage::Game(app) => app
+                .toasts
+                .log(Instant::now())
+                .map(|(_, text)| text.to_string())
+                .collect(),
+            Stage::Splash(_) | Stage::Recovery(_) => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_new_run_is_on_the_disk_before_the_player_presses_anything() {
+        // Not the cadence but its floor: a `New game` abandoned in its first seconds
+        // must still leave a title with something to continue.
+        let (_dir, slots) = empty();
+        let readable = slots.clone();
+        let (result, _) = run_script(
+            Session::boot(Some(slots), NOW),
+            vec![key(KeyCode::Enter), key(KeyCode::Char('q'))],
+        );
+        assert!(result.is_ok(), "the loop failed: {result:?}");
+        assert!(
+            matches!(persist::load(readable.primary()), Ok(Some(_))),
+            "the run never reached the disk"
+        );
+    }
+
+    #[test]
+    fn a_write_that_fails_on_the_way_in_is_announced_and_does_not_end_the_session() {
+        // A broken disk found at boot lands on the recovery screen, whose first row is
+        // `Start a new game` — so this is the real path to a run that cannot be saved.
+        let (dir, _) = empty();
+        let slots = unreachable_slots(&dir);
+        let (result, buffer) = run_script(
+            Session::boot(Some(slots), NOW),
+            vec![key(KeyCode::Enter), key(KeyCode::Char('q'))],
+        );
+        assert!(
+            result.is_ok(),
+            "a failed write ended the session: {result:?}"
+        );
+        let frame = whole_frame(&buffer);
+        assert!(frame.contains("Save failed"), "{frame}");
+        // And the game is still there behind the toast: a run in memory is fine, and
+        // throwing it away is what "no continue anyway" exists to refuse.
+        assert!(frame.contains("Haul"), "{frame}");
+    }
+
+    #[test]
+    fn a_failing_write_is_announced_once_and_so_is_its_recovery() {
+        let (good_dir, good) = empty();
+        let (bad_dir, _) = empty();
+        let bad = unreachable_slots(&bad_dir);
+
+        let mut session = Session::boot(Some(good.clone()), NOW);
+        // `Enter` on a fresh title is `New game`, which opens a run and writes it.
+        session.menu(MenuAction::Confirm);
+        assert!(
+            announcements(&session).is_empty(),
+            "a healthy write spoke up"
+        );
+
+        session.slots = Some(bad);
+        session.autosave(NOW);
+        assert_eq!(announcements(&session).len(), 1, "the failure went unsaid");
+        assert!(announcements(&session)[0].contains("Save failed"));
+
+        // Still broken: the player has already been told, and a toast every ten
+        // seconds would bury the game under identical refusals.
+        session.autosave(NOW);
+        assert_eq!(
+            announcements(&session).len(),
+            1,
+            "the failure repeated itself"
+        );
+
+        session.slots = Some(good);
+        session.autosave(NOW);
+        let said = announcements(&session);
+        assert_eq!(said.len(), 2, "the recovery went unsaid");
+        assert!(said[0].contains("Saving works again"), "{said:?}");
+
+        // And once more, silent again — the edge is what is announced, not the state.
+        session.autosave(NOW);
+        assert_eq!(announcements(&session).len(), 2);
+        drop(good_dir);
+    }
+
+    #[test]
+    fn a_session_with_nowhere_to_write_never_pretends_to_have_written() {
+        let mut session = sessionless();
+        session.menu(MenuAction::Confirm);
+        // One toast — the standing "this will not be kept" — and never a save failure,
+        // because nothing was attempted: without a `SaveSlots` there is no way to ask.
+        let said = announcements(&session);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("will not be kept"), "{said:?}");
+        session.autosave(NOW);
+        assert_eq!(
+            announcements(&session).len(),
+            1,
+            "a phantom write reported in"
+        );
+    }
+
+    #[test]
+    fn nothing_is_written_from_a_screen_that_has_no_run() {
+        let (_dir, slots) = empty();
+        let mut session = Session::boot(Some(slots.clone()), NOW);
+        session.autosave(NOW);
+        assert!(
+            matches!(persist::load(slots.primary()), Ok(None)),
+            "a title screen wrote a save"
+        );
+    }
+
+    #[test]
+    fn a_dead_event_source_still_banks_the_run() {
+        // The `?` on `events.next()` used to lose whatever the last ten seconds held.
+        // The script runs out, which is what a dead `EventHandler` looks like.
+        let (_dir, slots) = empty();
+        let readable = slots.clone();
+        let (result, _) = run_script(
+            Session::boot(Some(slots), NOW),
+            vec![key(KeyCode::Enter), Event::Tick],
+        );
+        assert!(result.is_err(), "the loop kept going past a dead source");
+        assert!(
+            matches!(persist::load(readable.primary()), Ok(Some(_))),
+            "the run was dropped with the channel"
+        );
     }
 }
