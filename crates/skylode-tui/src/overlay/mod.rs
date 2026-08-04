@@ -199,6 +199,33 @@ pub(super) fn modal_with_hint(
     lines: &[&str],
     hint: Option<&str>,
 ) {
+    // The body goes through `marked` line by line: several modals quote an
+    // affordability (`Cost … Held … ✗`), and a mark must not change meaning by
+    // being drawn inside a box instead of in a list.
+    let body = lines.iter().map(|line| theme::marked(line)).collect();
+    modal_lines(frame, area, width, height, title, body, hint);
+}
+
+/// [`modal_with_hint`] over a body the caller has **already styled**.
+///
+/// The two wrappers above are the common case — hand over strings, get `theme::marked`
+/// applied for you — and this is the seam for the one box whose rows carry a hierarchy
+/// that a mark scan cannot express: `save_recovery` mutes each choice's consequence
+/// column through [`theme::marked_tail`].
+///
+/// **This does not loosen "one place decides what a box looks like".** What a caller
+/// gains here is its own *body*, which was always its content; the border, the title,
+/// the inset and the hint are still decided in exactly one function, so the compression
+/// dialog and the dip cannot drift apart on any of them.
+pub(super) fn modal_lines(
+    frame: &mut Frame,
+    area: Rect,
+    width: u16,
+    height: u16,
+    title: &str,
+    mut body: Vec<Line<'static>>,
+    hint: Option<&str>,
+) {
     let rect = centered_rect(area, width, height);
     frame.render_widget(Clear, rect);
     let block = Block::bordered()
@@ -207,12 +234,8 @@ pub(super) fn modal_with_hint(
         .padding(Padding::horizontal(1))
         .border_style(Style::default().fg(theme::MUTED))
         .title_style(theme::TITLE);
-    // The body goes through `marked` line by line: several modals quote an
-    // affordability (`Cost … Held … ✗`), and a mark must not change meaning by
-    // being drawn inside a box instead of in a list.
-    let mut body: Vec<Line<'static>> = lines.iter().map(|line| theme::marked(line)).collect();
-    // The hint deliberately does *not*: it is chrome, so it takes the muted hue whole
-    // rather than being scanned for marks it does not carry.
+    // The hint is chrome, so it takes the muted hue whole rather than being scanned
+    // for marks it does not carry.
     if let Some(hint) = hint {
         body.push(Line::from(Span::styled(
             hint.to_owned(),

@@ -19,11 +19,12 @@
 //! in either — so they are one shape with two headers rather than two frames that
 //! would drift apart.
 
-use ratatui::{Frame, layout::Rect};
+use ratatui::{Frame, layout::Rect, text::Line};
 
 use crate::{
     format::age,
     session::{Recovery, RecoveryRow, Trouble},
+    theme,
 };
 
 /// How wide every recovery frame is drawn.
@@ -32,22 +33,40 @@ const WIDTH: u16 = 66;
 /// The column each row's consequence lines up in, so the rows read as a table.
 const HINT_COLUMN: usize = 26;
 
+/// The width of the caret gutter every row opens with, marked or not.
+///
+/// Named because [`HINT_COLUMN`] is measured from *after* it, so the consequence's real
+/// column on the row is the sum — and that sum is what [`theme::marked_tail`] has to be
+/// told for the muting to start where the second column does rather than four columns
+/// into the first.
+const CARET_COLUMNS: usize = 4;
+
 /// Draws the recovery screen for whatever the loader refused.
 pub fn render(frame: &mut Frame, area: Rect, recovery: &Recovery) {
-    let mut lines: Vec<String> = vec![String::new()];
-    lines.extend(explanation(recovery.trouble()));
-    lines.push(String::new());
+    // Built as `Line`s rather than as strings, because the choice rows carry a
+    // hierarchy a mark scan cannot express — see [`rows`]. The prose either side of
+    // them still goes through the plain scan, so it reads exactly as it did.
+    let mut lines: Vec<Line<'static>> = vec![Line::default()];
+    lines.extend(
+        explanation(recovery.trouble())
+            .iter()
+            .map(|l| theme::marked(l)),
+    );
+    lines.push(Line::default());
     lines.extend(rows(recovery));
-    lines.push(String::new());
-    lines.extend(footnote(recovery.trouble()));
+    lines.push(Line::default());
+    lines.extend(
+        footnote(recovery.trouble())
+            .iter()
+            .map(|l| theme::marked(l)),
+    );
 
     // Two for the borders. Derived rather than written down, so a sentence added to
     // one of the four cases cannot silently fall out of the bottom of the box.
     let height = u16::try_from(lines.len())
         .unwrap_or(u16::MAX)
         .saturating_add(2);
-    let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
-    super::modal(frame, area, WIDTH, height, " Save problem ", &borrowed);
+    super::modal_lines(frame, area, WIDTH, height, " Save problem ", lines, None);
 }
 
 /// What went wrong, in the player's words.
@@ -85,7 +104,16 @@ fn explanation(trouble: Trouble) -> Vec<String> {
 }
 
 /// The rows the player can take, with the caret on the one they are pointing at.
-fn rows(recovery: &Recovery) -> Vec<String> {
+///
+/// **The consequence column is muted and the choice is not.** These rows are the one
+/// place in the interface where the secondary column comes *last* — everywhere else it
+/// is a label in front of a value — so they go through [`theme::marked_tail`] rather
+/// than the plain [`theme::marked`] every other modal body takes. What the player is
+/// choosing between keeps the foreground; what each choice costs supports it.
+///
+/// The caret still takes [`theme::ACCENT`]: `marked_tail` runs the mark scan last, so a
+/// mark cannot be recoloured by the half of the row it lands in.
+fn rows(recovery: &Recovery) -> Vec<Line<'static>> {
     recovery
         .rows()
         .iter()
@@ -100,9 +128,14 @@ fn rows(recovery: &Recovery) -> Vec<String> {
             match hint(*row, recovery.trouble()) {
                 Some(hint) => {
                     let pad = HINT_COLUMN.saturating_sub(label.chars().count());
-                    format!("{caret}{label}{}{hint}", " ".repeat(pad))
+                    theme::marked_tail(
+                        &format!("{caret}{label}{}{hint}", " ".repeat(pad)),
+                        CARET_COLUMNS + HINT_COLUMN,
+                    )
                 }
-                None => format!("{caret}{label}"),
+                // No consequence to set apart, so the plain scan — and the row is
+                // shorter than the muting would ever start anyway.
+                None => theme::marked(&format!("{caret}{label}")),
             }
         })
         .collect()
@@ -169,6 +202,55 @@ mod tests {
     fn drawn(trouble: Trouble) -> String {
         let recovery = Recovery::sample(trouble);
         crate::overlay::render_to_string(|frame, area| render(frame, area, &recovery))
+    }
+
+    /// **The choice keeps the foreground; what it costs steps back.**
+    ///
+    /// All three claims in one draw, because they are one claim about a *row*: a
+    /// version that muted the whole line would pass a test looking only at the
+    /// consequence, and one that muted nothing would pass a test looking only at the
+    /// label. The caret is the third, and it is the reason `marked_tail` runs the mark
+    /// scan last — it sits at column 1, well inside the plain half, but the rule that
+    /// protects it has to hold wherever a mark lands.
+    #[test]
+    fn a_choice_outweighs_its_consequence_and_the_caret_outranks_both() {
+        let recovery = Recovery::sample(Trouble::BackupOffered {
+            age: Some(Duration::from_secs(60)),
+        });
+        let buffer = crate::overlay::render_to_buffer(80, 24, |frame, area| {
+            render(frame, area, &recovery);
+        });
+
+        // Located by content rather than by a counted column: the box is centred, so a
+        // coordinate here would encode the terminal's width as well as the layout's.
+        let text = |y: u16| -> String {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        };
+        let (y, line) = (0..buffer.area.height)
+            .map(|y| (y, text(y)))
+            .find(|(_, line)| line.contains("Restore the backup"))
+            .unwrap_or_default();
+        let column = |needle: char| {
+            u16::try_from(line.chars().position(|c| c == needle).unwrap_or(0)).unwrap_or(0)
+        };
+        let colour_at = |x: u16| buffer[(x, y)].fg;
+
+        // All three probes on the one row, so nothing above it can answer instead.
+        assert_eq!(colour_at(column('▸')), theme::ACCENT, "the caret");
+        assert_eq!(
+            colour_at(column('R')),
+            ratatui::style::Color::Reset,
+            "the choice was de-emphasised along with its consequence"
+        );
+        // The `s` of `saved`, which is the first letter of the second column.
+        let hint_x = u16::try_from(line.find("saved").unwrap_or(0)).unwrap_or(0);
+        assert_eq!(
+            colour_at(hint_x),
+            theme::MUTED,
+            "the consequence column is as loud as the choice it annotates"
+        );
     }
 
     #[test]

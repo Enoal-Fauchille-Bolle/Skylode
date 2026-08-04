@@ -1183,6 +1183,21 @@ Loading data that failed its HMAC is exactly what a hand-editor needs, and refus
 it is a real if partial protection. The innocent player loses seconds, not a run: the
 `.bak` is the last save that passed, and autosave runs every 10 s.
 
+**The consequence column is muted and the choice is not.** These rows are the one place
+in the interface where the secondary column comes *last* — everywhere else it is a label
+in front of a value (`Cost   40 Redstone`) — so they go through `theme::marked_tail`
+rather than the plain scan every other modal body takes. What the player is choosing
+between keeps the foreground; what each choice costs supports it. The caret is still
+`ACCENT`: the mark scan runs last, so §4.5's *"the colour of a mark is derived from the
+mark"* cannot be switched off by which half of the row the mark lands in.
+
+The prose either side of the rows stays at full weight, and deliberately. `The backup is
+the last save that passed its check…` is the answer to *"what do I do now"* — content,
+not signposting — and muting it would de-emphasise the sentence at the moment it matters
+most. Likewise the box's title stays `TITLE` like every other: one colour for every
+title says *"this is a box"* and nothing else, and a red one here would open a second
+axis of meaning to maintain for the sake of two frames.
+
 When the backup fails too, there is no floor left, and the frame says so:
 
 ```text

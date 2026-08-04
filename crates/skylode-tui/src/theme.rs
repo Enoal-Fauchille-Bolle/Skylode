@@ -233,14 +233,46 @@ pub fn marked(text: &str) -> Line<'static> {
 /// Runs of one style are merged, so a plain row still comes back as a single unstyled
 /// span and the buffer sees the style it would have seen without this call.
 pub fn marked_row(text: &str, label_columns: usize, tint: Option<Color>) -> Line<'static> {
-    let base = |column: usize| {
+    styled(text, |column| {
         if column < label_columns {
             Style::default().fg(MUTED)
         } else {
             tint.map_or_else(Style::default, |colour| Style::default().fg(colour))
         }
-    };
+    })
+}
 
+/// `text` as a [`Line`] with everything from column `from` onward muted.
+///
+/// **[`marked_row`]'s rule with the halves the other way round**, for a row whose
+/// secondary column comes *last*. The recovery screen annotates each choice with its
+/// consequence at a fixed column — `Restore the backup    saved 1m ago` — and there it
+/// is the annotation that steps back and the choice that keeps the foreground, which is
+/// the opposite arrangement to the Upgrades pane's `Cost   40 Redstone`.
+///
+/// One rule survives the swap unchanged, and it is the load-bearing one: the **mark
+/// scan still wins**, so a `▸` or a `✗` falling in the muted half keeps its own hue.
+/// §4.5's *"the colour of a mark is derived from the mark"* cannot be switched off by
+/// where on the row the mark happens to land.
+pub fn marked_tail(text: &str, from: usize) -> Line<'static> {
+    styled(text, |column| {
+        if column < from {
+            Style::default()
+        } else {
+            Style::default().fg(MUTED)
+        }
+    })
+}
+
+/// The shared body of [`marked_row`] and [`marked_tail`]: walk the columns, ask `base`
+/// what each one would be, and let a mark override it.
+///
+/// **Extracted rather than duplicated**, because the run-merging below is the part that
+/// must not drift: two copies would be two chances to split a `▸●` into one span or to
+/// leave a plain row carrying spans it does not need. `base` is a closure over the
+/// column index, which is what lets the two callers disagree about *where* the muting
+/// goes without disagreeing about anything else.
+fn styled(text: &str, base: impl Fn(usize) -> Style) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run: Option<(Style, String)> = None;
 
