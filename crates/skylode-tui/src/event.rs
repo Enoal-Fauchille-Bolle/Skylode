@@ -1,7 +1,7 @@
 //! The terminal event source.
 //!
 //! A background thread polls crossterm and forwards what it reads down an
-//! [`mpsc`] channel, so the render loop in [`crate::app::App::run`] can block on
+//! [`mpsc`] channel, so the render loop in [`crate::session::Session::run`] can block on
 //! a single `next()` and receive both real input *and* a periodic [`Event::Tick`]
 //! from one place. The thread exists because `event::read` blocks: draining it on
 //! the render thread would stall drawing, and a fixed tick could not be
@@ -61,7 +61,7 @@ pub enum Event {
     Resize,
 }
 
-/// Where [`crate::app::App::run`] gets its events from.
+/// Where [`crate::session::Session::run`] gets its events from.
 ///
 /// **A trait with exactly one production implementor**, which is usually a smell and
 /// here is the point: [`EventHandler`] below cannot run without a terminal — its

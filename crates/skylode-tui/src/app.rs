@@ -10,8 +10,7 @@ use std::time::{Duration, Instant};
 
 use color_eyre::Result;
 use ratatui::{
-    Frame, Terminal,
-    backend::Backend,
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     widgets::Tabs,
@@ -34,10 +33,8 @@ use crate::{
     announce,
     config::Config,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
-    event::{Event, Events},
     flash::Flashes,
     format::{denominations, grouped, multiplier, prestige_rank, roman, rung_label, shown_rung},
-    keymap,
     overlay::{
         Conversion, Modal, compression, dip, help,
         prestige::{self as prestige_overlay, CONFIRM_WORD},
@@ -89,22 +86,6 @@ const MAX_HEIGHT: u16 = 2 * too_small::MIN_HEIGHT;
 /// exact for any rate that divides a second evenly, and nanoseconds are what make it
 /// exact at all: at 30 tps, milliseconds would floor to 33 and lose 1% of the day.
 const SIM_PERIOD: Duration = Duration::from_nanos(1_000_000_000 / TICKS_PER_SECOND);
-
-/// The shortest gap between two draws — a **ceiling on the redraw rate**, not a
-/// cadence.
-///
-/// The loop draws when something changed *and* this much time has passed, so a burst
-/// of held keys cannot ask the terminal for two hundred frames a second. It is
-/// deliberately shorter than [`SIM_PERIOD`]: today the simulation is the only thing
-/// that changes the screen, so the real rate is 20 fps and this ceiling never binds —
-/// but the proc flash (two stages of ~100 ms, `docs/UI.md` §7) changes the screen
-/// *between* ticks, and it is the reason the two clocks are separate now rather than
-/// separated later.
-/// **Input is exempt**: a key that meant something draws on the spot, because the
-/// only burst it can produce is bounded by the terminal's own repeat rate, and 33 ms
-/// of latency in the one place the player is looking is worse than a frame nobody
-/// asked for.
-const FRAME_PERIOD: Duration = Duration::from_millis(33);
 
 /// How long after the mine key was last heard from the player still counts as
 /// holding it (`docs/SYSTEMS.md`).
@@ -168,7 +149,7 @@ pub struct App {
     /// **It carries the modal's own state, not just which one is up**, which is why
     /// [`Modal::Compress`] has fields: a dialog with a value in it has nowhere else to
     /// keep that value where "no dialog" and "a dialog reading zero" stay distinct.
-    /// [`keymap`] gives whatever is here first refusal on every key, and
+    /// [`crate::keymap`] gives whatever is here first refusal on every key, and
     /// [`update`](App::update) gives it first refusal on every gesture.
     pub modal: Option<Modal>,
     /// Live announcements, drawn over everything.
@@ -248,17 +229,6 @@ pub struct App {
     /// by the elapsed time would instead drift by whatever each frame overshot, and a
     /// run's pace would depend on how busy the machine was.
     next_tick: Instant,
-    /// The earliest the next draw may happen — [`FRAME_PERIOD`]'s ceiling.
-    next_frame: Instant,
-    /// Whether anything has changed since the last draw.
-    ///
-    /// *Redraw on change* in the one form the front-end can answer cheaply: raised by
-    /// a key that was acted on, a resize, and any simulation step that ran. The last
-    /// of those is why this is not a saving today — a step always runs, because the
-    /// auto-miner credits on every one of them and the Haul strip would go stale if
-    /// it did not. What the flag buys now is that a *quiet* loop — no ticks due, no
-    /// input — asks the terminal for nothing at all.
-    dirty: bool,
     /// When the mine key was last heard from, or [`None`] if it is up.
     ///
     /// The whole of "is the player mining", and deliberately one field rather than
@@ -293,9 +263,10 @@ impl App {
         // on the rung they are standing on, which is the same question asked of the
         // other axis of progression.
         let cursors = Self::cursors_for(&state);
-        // Both clocks start due, so the first pass through the loop draws and the
-        // first step falls in one period rather than one period from whenever the
-        // session happened to be built.
+        // The simulation's clock starts one period out rather than due, so the first
+        // step falls in one period from here rather than the instant the loop first
+        // looks. The *frame* clock is [`Session`](crate::session::Session)'s and starts
+        // due, which is what makes the opening pass draw.
         let now = Instant::now();
         // A session opens having announced nothing, so the log the first projection
         // reads is empty by construction rather than by an argument spelled `None`.
@@ -318,8 +289,6 @@ impl App {
             #[cfg(debug_assertions)]
             dev: None,
             next_tick: now + SIM_PERIOD,
-            next_frame: now,
-            dirty: true,
             last_mine_key: None,
             mine_key_edge: None,
         }
@@ -344,17 +313,22 @@ impl App {
     /// Rebuilds the read model from the run.
     ///
     /// Called before drawing, and only when a draw is actually about to happen: the
-    /// guard is [`dirty`](App#structfield.dirty), on the caller's side, so a pass that
-    /// asks the terminal for nothing does not project a snapshot nobody reads. Which
-    /// is what keeps this affordable now that a 20 tps tick changes the run whether
-    /// the player touches anything or not.
+    /// guard is [`Session`](crate::session::Session)'s `dirty`, on the caller's side,
+    /// so a pass that asks the terminal for nothing does not project a snapshot nobody
+    /// reads. Which is what keeps this affordable now that a 20 tps tick changes the
+    /// run whether the player touches anything or not.
     ///
     /// **`now` is the frame's instant, and it must be the same one the frame is drawn
     /// at.** The history's ages are computed here, the proc flash's beat is resolved
     /// here, and the toast is expired in [`render`](App::render); a second reading of the
     /// clock between them would let a log say `0s` about an announcement the very same
     /// frame had already stopped showing, or draw a blast one beat behind its own toast.
-    fn sync_view(&mut self, now: Instant) {
+    ///
+    /// `pub(crate)` and not private: the loop that decides when a frame is due moved
+    /// out to [`Session`](crate::session::Session), and this is one of the three doors
+    /// it needs. The visibility stops at the crate, so nothing outside can project a
+    /// view at an instant of its own choosing.
+    pub(crate) fn sync_view(&mut self, now: Instant) {
         self.view = View::from_state(
             &self.state,
             self.cursors,
@@ -365,92 +339,6 @@ impl App {
         );
     }
 
-    /// Draws, then blocks for the next event, until asked to quit.
-    ///
-    /// Rendering happens *before* waiting so the first frame appears immediately
-    /// rather than after the first keypress. Blocking on `events.next()` is what
-    /// keeps the app at zero CPU while idle; the tick guarantees we still wake up
-    /// often enough to expire toasts.
-    ///
-    /// **Generic over both of its collaborators, so that the loop itself can be
-    /// tested.** It used to take a `DefaultTerminal` — ratatui's alias for
-    /// `Terminal<CrosstermBackend<Stdout>>` — and a concrete
-    /// [`EventHandler`](crate::event::EventHandler), and
-    /// between them they made this function unreachable from a test: the backend
-    /// writes to the real stdout, and the handler's thread dies the moment it polls
-    /// a terminal that is not there. Everything else in the crate is exercised
-    /// through ratatui's own `TestBackend`; these two parameters are what let the
-    /// loop join it.
-    ///
-    /// Generics rather than `dyn`: both types are known at every call site, so the
-    /// compiler emits one specialised copy per pair (*monomorphisation*) and the
-    /// indirection costs nothing at runtime. `main` still passes the real terminal
-    /// and the real handler, and neither has to change.
-    ///
-    /// The `where` clause is what `?` needs. Since ratatui 0.30 a backend names its
-    /// own error type rather than always being `io::Error`, and `color_eyre::Report`
-    /// can only absorb one that is a `std::error::Error` it can carry across threads
-    /// and outlive the frame. Both real backends satisfy it, including
-    /// `TestBackend`, whose error is [`Infallible`](core::convert::Infallible) — a
-    /// type with no values, so the conversion is one that provably never runs.
-    /// The terminal is borrowed, not consumed: `run` has no business dropping it —
-    /// `main` restores the screen afterwards and needs it alive to do so — and a
-    /// caller that could not look at the terminal again after the loop returned could
-    /// not read the last frame the player saw.
-    pub fn run<B, E>(mut self, terminal: &mut Terminal<B>, events: E) -> Result<()>
-    where
-        B: Backend,
-        B::Error: std::error::Error + Send + Sync + 'static,
-        E: Events,
-    {
-        while !self.should_quit {
-            let now = Instant::now();
-            // Before the wait, not after: the first frame must show the run as it
-            // stands rather than appearing on the first keypress. `new` starts both
-            // flags due, so the opening pass always draws.
-            if self.dirty && now >= self.next_frame {
-                self.sync_view(now);
-                terminal.draw(|frame| self.render(frame, now))?;
-                self.dirty = false;
-                self.next_frame = now + FRAME_PERIOD;
-            }
-
-            match events.next()? {
-                // **Nothing.** The heartbeat's whole job is to end the block above's
-                // wait so that `advance` below gets to look at the clock; how many
-                // beats arrived is not a quantity anything here counts. That is the
-                // difference between a heartbeat and a cadence, and it is what lets
-                // the simulation keep 20 tps whatever rate this channel runs at.
-                Event::Tick => {}
-                Event::Key(key) => {
-                    if let Some(action) = keymap::resolve(&self, key) {
-                        self.update(action);
-                        // Only a key that *meant* something redraws. An unbound key
-                        // changed nothing, and a frame that redraws the same buffer
-                        // is work the terminal has to undo.
-                        self.dirty = true;
-                        // **And it redraws now, not at the next allowed frame.** The
-                        // ceiling exists to stop the *simulation* from asking for two
-                        // hundred frames a second; input cannot ask for more than the
-                        // keyboard repeats, and a tab that appears 33 ms after the key
-                        // is latency the player feels in the one place they are
-                        // looking. Bursts stay bounded because a terminal's repeat
-                        // rate is.
-                        self.next_frame = now;
-                    }
-                }
-                // ratatui lays out against the new size on the next draw; all this
-                // has to do is make sure there is one.
-                Event::Resize => self.dirty = true,
-            }
-
-            // After the event and not before: a key pressed this pass should reach
-            // the step it belongs to, not the one after it.
-            self.advance(Instant::now());
-        }
-        Ok(())
-    }
-
     /// Applies one decoded intent.
     ///
     /// This is the reducer, and it is the reason [`Action`] exists: it takes no
@@ -459,7 +347,7 @@ impl App {
     /// added without deciding what it does here.
     ///
     /// **A modal is offered the gesture before the screen is, and that ordering is
-    /// the rule.** A modal captures the keyboard — [`keymap`] already gives it first
+    /// the rule.** A modal captures the keyboard — [`crate::keymap`] already gives it first
     /// refusal on every *key* — so it must also own what those keys decode to, or a
     /// `←` meant for the compression spinner would slide the richness dial on the
     /// screen behind the box. Phase 6's dip modal was the first to inherit the seam
@@ -602,7 +490,7 @@ impl App {
     /// Offers `action` to the stacked modal, answering whether it took it.
     ///
     /// **Only the two modals with a *state* answer anything** — a spinner's count and
-    /// a caret's side. Help swallows keys in [`keymap`] and never reaches here with a
+    /// a caret's side. Help swallows keys in [`crate::keymap`] and never reaches here with a
     /// gesture at all; `Esc` deliberately falls through to [`Action::CloseModal`] in
     /// the main `match`, so closing a modal stays one implementation for every modal
     /// there will ever be.
@@ -816,8 +704,12 @@ impl App {
             }
             DevRow::SkipTime => self.skip_ahead(dev.skip(), dev.skip_label()),
         };
+        // No redraw is asked for here, and none is needed: this is reached from
+        // `update`, and the loop already redraws on any key that resolved to an
+        // action. The flag it used to raise lives in `Session` now, and reaching up
+        // into the loop to raise it again would be saying twice what the key already
+        // said once.
         self.toasts.push(message, Tone::Success, TOAST_TTL);
-        self.dirty = true;
     }
 
     /// Rewinds the offline mark by `by` and resumes, returning what was credited.
@@ -1608,7 +1500,7 @@ impl App {
 
     /// Moves whichever list the open screen owns by one row.
     ///
-    /// **The screen is chosen here and not in [`keymap`], which is the whole shape of
+    /// **The screen is chosen here and not in [`crate::keymap`], which is the whole shape of
     /// [`Action`]'s list gestures.** `↑` decodes to [`Action::CursorUp`] without
     /// knowing what it will move, because the keymap has no access to the run; which
     /// cursor that is lands where the state is, and that is here.
@@ -1804,7 +1696,14 @@ impl App {
     ///    loop would be asking about an instant that has not happened.
     /// 3. **Run the steps due**, capped.
     /// 4. **Say what they did**, then expire what has been said long enough.
-    fn advance(&mut self, now: Instant) {
+    ///
+    /// **It answers *whether the screen owes a redraw*** rather than writing that
+    /// answer somewhere. The redraw policy belongs to
+    /// [`Session`](crate::session::Session) — it is the one that knows a splash screen
+    /// is up, or that the ceiling has not passed — so the run reports what it did and
+    /// the loop decides what to do about it. A step that ran changed something by
+    /// construction: the auto-miner credits on every one.
+    pub(crate) fn advance(&mut self, now: Instant) -> bool {
         match self.mine_key_edge.take() {
             Some(MineKeyEdge::Down) => self.last_mine_key = Some(now),
             // Not "stop the current step": the field *is* the answer, so clearing it
@@ -1864,14 +1763,18 @@ impl App {
         // A step that ran changed something by construction — the auto-miner credits
         // on every one — so this is `steps > 0` rather than a test of the events,
         // which most steps produce none of.
-        self.dirty |= steps > 0;
+        steps > 0
     }
 
     /// Paints one frame: tab bar, active screen, then the overlays on top.
     ///
     /// Order is the layering: overlays draw last precisely so they cover the
     /// screen rather than being covered by it.
-    fn render(&self, frame: &mut Frame, now: Instant) {
+    ///
+    /// `pub(crate)` for [`sync_view`](App::sync_view)'s reason: the loop calling it
+    /// lives in [`Session`](crate::session::Session) now. It stays `&self` — a pure
+    /// read — which is what lets a test draw an `App` it does not own.
+    pub(crate) fn render(&self, frame: &mut Frame, now: Instant) {
         let area = frame.area();
 
         // The terminal-too-small filter, in front of everything (UI-EN.md §6.2).
@@ -2049,6 +1952,7 @@ impl App {
 mod tests {
 
     use ratatui::{
+        Terminal,
         backend::TestBackend,
         buffer::Buffer,
         crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
@@ -2057,7 +1961,10 @@ mod tests {
     use skylode_core::{game::Input, pickaxe::PickaxeTier, save};
 
     use super::*;
-    use crate::palette;
+    // Both belong to the loop, which lives in `session` now — so they are imported
+    // here rather than at the top of the file, where a release build would find them
+    // unused.
+    use crate::{keymap, palette};
 
     /// The seed every test session starts from.
     ///
@@ -2740,17 +2647,17 @@ mod tests {
     fn a_pass_with_nothing_due_asks_the_terminal_for_no_frame() {
         // The whole of "redraw on change" that the front-end can answer cheaply. A
         // step always changes something, so this only ever fires between two steps —
-        // which is precisely where the ~30 fps ceiling will matter once the proc flash
-        // animates there.
+        // which is precisely where the ~30 fps ceiling matters once the proc flash
+        // animates there. Asserted on `advance`'s answer rather than on a flag, since
+        // the flag is the loop's and this is the run's half of the exchange.
         let mut app = session();
-        app.dirty = false;
         let first = step_due(&app);
 
-        app.advance(first - Duration::from_millis(1));
-        assert!(!app.dirty, "a pass with no step due asked for a frame");
-
-        app.advance(first);
-        assert!(app.dirty, "a step ran without asking for a frame");
+        assert!(
+            !app.advance(first - Duration::from_millis(1)),
+            "a pass with no step due asked for a frame"
+        );
+        assert!(app.advance(first), "a step ran without asking for a frame");
     }
 
     #[test]
@@ -2777,130 +2684,6 @@ mod tests {
 
         let frame = whole_frame(&render_to_buffer(&app));
         assert!(frame.contains("Mine refilled"), "{frame}");
-    }
-
-    /// An event source that reads from a script instead of from a terminal.
-    ///
-    /// The whole reason [`App::run`] is generic. It hands out the scripted events in
-    /// order and then returns an error, which is how the loop is made to stop even if
-    /// the script never quits: a real `EventHandler` blocks forever waiting for a key
-    /// that a test will never press, so "the script ran out" has to be a *failure*
-    /// rather than a silence. Every test below asserts on the state after `run`
-    /// returns, so which of the two ways it ended is checked explicitly.
-    ///
-    /// `Cell` and not `&mut self`: [`Events::next`] takes `&self` — the real receiver
-    /// needs no exclusive borrow — so the cursor has to be interior-mutable. `Cell`
-    /// rather than `RefCell` because a `usize` is `Copy` and there is nothing to
-    /// borrow, which makes the read a plain load and not a runtime borrow check.
-    struct Script {
-        events: Vec<Event>,
-        next: std::cell::Cell<usize>,
-    }
-
-    impl Script {
-        fn new(events: Vec<Event>) -> Self {
-            Self {
-                events,
-                next: std::cell::Cell::new(0),
-            }
-        }
-    }
-
-    impl Events for Script {
-        fn next(&self) -> Result<Event> {
-            let index = self.next.get();
-            self.next.set(index + 1);
-            self.events
-                .get(index)
-                .copied()
-                .ok_or_else(|| color_eyre::eyre::eyre!("the script ran out"))
-        }
-    }
-
-    /// A key press with no modifiers, as the event source would report it.
-    fn key(code: KeyCode) -> Event {
-        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
-    }
-
-    /// Runs the real loop over `events`, into an off-screen 80×24 terminal.
-    ///
-    /// Hands back the terminal too, so a test can read what the *last* frame drew —
-    /// the loop draws before every wait, so the buffer after `run` is the frame the
-    /// player was looking at when they quit.
-    fn run_script(events: Vec<Event>) -> (Result<()>, Buffer) {
-        let mut terminal = match Terminal::new(TestBackend::new(80, 24)) {
-            Ok(terminal) => terminal,
-            Err(infallible) => match infallible {},
-        };
-        let result = session().run(&mut terminal, Script::new(events));
-        (result, terminal.backend().buffer().clone())
-    }
-
-    #[test]
-    fn the_loop_draws_before_it_waits() {
-        // The first frame must be on screen *before* the first event is asked for,
-        // or the player stares at a blank terminal until they touch a key. Asserted
-        // by giving the loop a script that quits on its very first event: if drawing
-        // came second, nothing would ever have been painted.
-        let (result, buffer) = run_script(vec![key(KeyCode::Char('q'))]);
-        assert!(result.is_ok(), "the loop failed: {result:?}");
-        let frame = whole_frame(&buffer);
-        assert!(frame.contains("1 Mine"), "nothing was drawn: {frame}");
-    }
-
-    #[test]
-    fn a_key_is_decoded_and_applied_before_the_next_frame() {
-        // The loop's real job: key → `keymap::resolve` → `update` → redraw. Two tab
-        // presses then a quit, and the frame left on screen has to be the third
-        // screen of the ring — proof the keys went through the reducer and that the
-        // redraw happened after them rather than before.
-        let (result, buffer) = run_script(vec![
-            key(KeyCode::Tab),
-            key(KeyCode::Tab),
-            key(KeyCode::Char('q')),
-        ]);
-        assert!(result.is_ok(), "the loop failed: {result:?}");
-        let frame = whole_frame(&buffer);
-        assert!(frame.contains("Inventory"), "{frame}");
-        assert!(
-            frame.contains("Compressible now"),
-            "not on Inventory: {frame}"
-        );
-    }
-
-    #[test]
-    fn a_key_nothing_is_bound_to_leaves_the_session_alone() {
-        // `resolve` returns `None` and the loop must simply go round again — not
-        // quit, not panic, not swallow the next event.
-        let (result, buffer) = run_script(vec![key(KeyCode::Char('z')), key(KeyCode::Char('q'))]);
-        assert!(result.is_ok(), "the loop failed: {result:?}");
-        assert!(whole_frame(&buffer).contains("Haul"), "the screen moved");
-    }
-
-    #[test]
-    fn a_tick_and_a_resize_both_go_round_the_loop_without_changing_the_screen() {
-        // `Tick` runs the heartbeat and `Resize` does nothing at all — ratatui lays
-        // out against the new size on the next draw, which the loop is about to do
-        // anyway. Both must still reach the quit behind them, which is what fails if
-        // either arm ever starts returning early.
-        let (result, buffer) = run_script(vec![
-            Event::Tick,
-            Event::Resize,
-            Event::Tick,
-            key(KeyCode::Char('q')),
-        ]);
-        assert!(result.is_ok(), "the loop failed: {result:?}");
-        assert!(whole_frame(&buffer).contains("Haul"), "the screen moved");
-    }
-
-    #[test]
-    fn a_dead_event_source_stops_the_loop_instead_of_spinning() {
-        // The other way out. A real `EventHandler` whose thread has died closes the
-        // channel, and `recv` then fails forever — so the `?` on `events.next()` has
-        // to end the loop rather than let it spin on an error it ignores. The script
-        // reproduces that by running out.
-        let (result, _) = run_script(vec![Event::Tick]);
-        assert!(result.is_err(), "the loop kept going past a dead source");
     }
 
     #[test]

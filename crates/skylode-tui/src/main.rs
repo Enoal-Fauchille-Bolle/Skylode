@@ -26,6 +26,7 @@ mod overlay;
 mod palette;
 mod persist;
 mod screen;
+mod session;
 mod theme;
 mod toast;
 mod view;
@@ -44,7 +45,7 @@ use ratatui::crossterm::{
 };
 use skylode_core::game::GameState;
 
-use crate::{app::App, event::EventHandler};
+use crate::{app::App, event::EventHandler, session::Session};
 
 /// How often the event thread wakes the render loop, in milliseconds.
 ///
@@ -109,7 +110,7 @@ fn main() -> Result<()> {
 
     // The result is held, not propagated with `?`: the terminal must be restored
     // first, or an error would print into the alternate screen and vanish with it.
-    let result = app.run(&mut terminal, events);
+    let result = Session::new(app).run(&mut terminal, events);
 
     if enhanced {
         // Before `restore`, and unconditional on how the loop ended: these flags are
