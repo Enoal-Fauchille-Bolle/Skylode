@@ -101,10 +101,24 @@ impl EventHandler {
     /// Spawns the polling thread. `tick_rate` is the heartbeat period in
     /// milliseconds.
     ///
-    /// The thread `expect`s on poll/read/send because it runs off the main
-    /// thread and cannot return a [`Result`] to anyone: a terminal that can no
-    /// longer be polled is unrecoverable, and the panic hook installed by
-    /// [`ratatui::init()`] restores the terminal before the message prints.
+    /// The thread `expect`s on **poll and read** because it runs off the main thread
+    /// and cannot return a [`Result`] to anyone: a terminal that can no longer be
+    /// polled is unrecoverable, and the panic hook installed by [`ratatui::init()`]
+    /// restores the terminal before the message prints.
+    ///
+    /// **A failed `send` is not in that class, and treating it as one was a bug.** The
+    /// channel is unbounded, so `send` cannot fail for being full; the only way it
+    /// fails is that the [`Receiver`](mpsc::Receiver) is gone — which happens exactly
+    /// once, when [`Session::run`](crate::session::Session::run) returns and drops the
+    /// handler it was given. That is the shutdown signal, not an error, and the thread
+    /// answers it by returning. It used to `expect` instead, so **every** exit raced:
+    /// between the loop breaking and the process ending, `main` still has to pop the
+    /// keyboard flags and restore the screen — far longer than the 10 ms until the next
+    /// tick — so the thread almost always got there first and panicked into the shell
+    /// the player had just come back to.
+    ///
+    /// The run was never at risk: the write happens before `quit` is set
+    /// (`Session::on_key`), so the panic followed a save that had already landed.
     #[expect(
         clippy::expect_used,
         reason = "a background thread cannot propagate a Result; a dead terminal is unrecoverable"
@@ -122,7 +136,7 @@ impl EventHandler {
                         .unwrap_or(tick_rate);
 
                     if event::poll(timeout).expect("unable to poll for event") {
-                        match event::read().expect("unable to read event") {
+                        let delivered = match event::read().expect("unable to read event") {
                             // Every kind, releases included: see `Event::Key`. The
                             // one filter that would be safe here — dropping releases
                             // — is the one that would cost the mine key its stop.
@@ -130,12 +144,18 @@ impl EventHandler {
                             CrosstermEvent::Resize(_, _) => sender.send(Event::Resize),
                             // Everything else — mouse, focus, paste — is ignored.
                             _ => Ok(()),
+                        };
+                        // The loop has ended and taken the receiver with it. Nothing
+                        // left to report to, so the thread stops reporting.
+                        if delivered.is_err() {
+                            return;
                         }
-                        .expect("failed to send terminal event");
                     }
 
                     if last_tick.elapsed() >= tick_rate {
-                        sender.send(Event::Tick).expect("failed to send tick event");
+                        if sender.send(Event::Tick).is_err() {
+                            return;
+                        }
                         last_tick = Instant::now();
                     }
                 }
