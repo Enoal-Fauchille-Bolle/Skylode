@@ -70,18 +70,42 @@ pub fn render(frame: &mut Frame, area: Rect, recovery: &Recovery) {
 }
 
 /// What went wrong, in the player's words.
+///
+/// ## Why the first line stopped naming the checksum
+///
+/// **One sentence now covers two different refusals, deliberately.** A save is turned
+/// away either because its signature does not match ([`PersistError::Tampered`]) or
+/// because it is signed perfectly and describes a run the rules could not have produced
+/// ([`PersistError::Rejected`], which is `GameState::validate`'s cross-field audit).
+/// The old wording asserted the first, so it was simply *false* on screen whenever the
+/// second fired.
+///
+/// The fix could have been a second message. It is one vague message instead, and that
+/// is the deliberate half: the two refusals differ only in **which check a tamperer
+/// tripped**, and telling them apart on screen is telling that tamperer what to fix
+/// next. A player has the same thing to do either way — restore the backup — so the
+/// distinction buys them nothing and costs the audit something.
+///
+/// It is only vague *here*. Each refusal still carries its own precise sentence in
+/// [`PersistError`]'s [`Display`](std::fmt::Display), and `validate` still names the
+/// exact invariant in a `&'static str` — which is what a bug report needs and what the
+/// screen must not print.
+///
+/// [`PersistError`]: crate::persist::PersistError
+/// [`PersistError::Tampered`]: crate::persist::PersistError::Tampered
+/// [`PersistError::Rejected`]: crate::persist::PersistError::Rejected
 fn explanation(trouble: Trouble) -> Vec<String> {
     match trouble {
         Trouble::BackupOffered { .. } => vec![
-            " Your save does not match its checksum.".to_owned(),
+            " Skylode could not verify your save.".to_owned(),
             String::new(),
             " Either the file was edited, or a write was interrupted.".to_owned(),
             " Skylode will not load it: the values inside cannot be".to_owned(),
             " trusted, and it will not guess which ones.".to_owned(),
         ],
         Trouble::NothingLeft => vec![
-            " Your save does not match its checksum,".to_owned(),
-            " and neither does the backup.".to_owned(),
+            " Skylode could not verify your save,".to_owned(),
+            " and it could not verify the backup either.".to_owned(),
             String::new(),
             " Skylode will not load either of them, and has changed".to_owned(),
             " neither.".to_owned(),
@@ -258,7 +282,7 @@ mod tests {
         let frame = drawn(Trouble::BackupOffered {
             age: Some(Duration::from_secs(8)),
         });
-        assert!(frame.contains("does not match its checksum"), "{frame}");
+        assert!(frame.contains("could not verify your save"), "{frame}");
         assert!(frame.contains("Restore the backup"), "{frame}");
         assert!(frame.contains("saved 8s ago"), "{frame}");
         assert!(frame.contains("Start a new game"), "{frame}");
@@ -276,7 +300,10 @@ mod tests {
     #[test]
     fn the_both_failed_screen_changes_nothing_and_offers_no_restore() {
         let frame = drawn(Trouble::NothingLeft);
-        assert!(frame.contains("and neither does the backup."), "{frame}");
+        assert!(
+            frame.contains("could not verify the backup either."),
+            "{frame}"
+        );
         assert!(frame.contains("has changed"), "{frame}");
         assert!(!frame.contains("Restore the backup"), "{frame}");
     }

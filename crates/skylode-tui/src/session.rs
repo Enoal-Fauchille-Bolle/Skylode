@@ -1469,7 +1469,7 @@ mod tests {
         );
         assert!(result.is_ok(), "the loop failed: {result:?}");
         let frame = whole_frame(&buffer);
-        assert!(frame.contains("does not match its checksum"), "{frame}");
+        assert!(frame.contains("could not verify your save"), "{frame}");
         assert!(frame.contains("Restore the backup"), "{frame}");
     }
 
@@ -1511,7 +1511,7 @@ mod tests {
             vec![key(KeyCode::Enter), key(KeyCode::Char('q'))],
         );
         let frame = whole_frame(&after);
-        assert!(frame.contains("neither does the backup"), "{frame}");
+        assert!(frame.contains("verify the backup either"), "{frame}");
         assert!(!frame.contains("Restore the backup"), "{frame}");
     }
 
