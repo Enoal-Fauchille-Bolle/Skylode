@@ -2003,6 +2003,84 @@ mod tests {
     }
 
     #[test]
+    fn taking_the_boxs_first_row_keeps_the_save_exactly_as_esc_does() {
+        // Two ways to decline and they must agree: `Esc` above, and `Enter` on the row
+        // the caret opens on.
+        let (_dir, slots) = saved(1);
+        let mut session = Session::boot(Some(slots), now());
+        session.menu(MenuAction::Down);
+        session.menu(MenuAction::Confirm);
+        session.menu(MenuAction::Confirm);
+
+        match &session.stage {
+            Stage::Splash(splash) => assert!(splash.confirm().is_none(), "the box stayed up"),
+            _ => unreachable!("declining left the title"),
+        }
+    }
+
+    #[test]
+    fn quitting_from_a_recovery_frame_ends_the_session() {
+        // The third row, walked to. It is the only way out of that screen that does not
+        // touch either file.
+        let (_dir, slots) = saved(2);
+        persist::fixture::tamper(slots.primary());
+        let (result, _) = run_script(
+            Session::boot(Some(slots), now()),
+            vec![key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter)],
+        );
+        assert!(result.is_ok(), "the frame did not let go: {result:?}");
+    }
+
+    #[test]
+    fn a_backup_that_cannot_be_read_leaves_nothing_to_restore() {
+        // A *directory* where the backup should be: the primary is simply missing, so
+        // the machine looks at the backup — and cannot read it either.
+        let (_dir, slots) = empty();
+        if let Err(error) = std::fs::create_dir_all(slots.backup()) {
+            unreachable!("the fixture should have been creatable: {error}");
+        }
+        let (_, buffer) = run_script(
+            Session::boot(Some(slots), now()),
+            vec![key(KeyCode::Down), key(KeyCode::Enter)],
+        );
+        assert!(
+            whole_frame(&buffer).contains("could not be read"),
+            "{}",
+            whole_frame(&buffer)
+        );
+    }
+
+    #[test]
+    fn the_summary_has_no_caret_to_walk() {
+        // `Up` and `Down` reach the offline summary like any other menu key, and there
+        // is nothing there for them to move — it offers one gesture and prints it.
+        let (_dir, slots) = saved_and_left(Duration::from_secs(6 * 3_600));
+        let mut session = Session::boot(Some(slots), now());
+        session.menu(MenuAction::Confirm);
+        session.menu(MenuAction::Up);
+        session.menu(MenuAction::Down);
+        assert!(
+            matches!(session.stage, Stage::Offline { .. }),
+            "a caret gesture moved the summary somewhere"
+        );
+    }
+
+    #[test]
+    fn a_file_that_breaks_between_the_title_and_continue_lands_in_recovery() {
+        // The whole reason `Continue` re-reads rather than keeping the run in memory:
+        // the title is a picture of the file as it was, and the file can move.
+        let (_dir, slots) = saved(2);
+        let mut session = Session::boot(Some(slots.clone()), now());
+        persist::fixture::tamper(slots.primary());
+        session.menu(MenuAction::Confirm);
+
+        assert!(
+            matches!(session.stage, Stage::Recovery(_)),
+            "a broken file was played out of a stale summary"
+        );
+    }
+
+    #[test]
     fn a_fresh_install_is_not_asked_a_question_with_one_answer() {
         // The box protects a run. Where there is none — a fresh install, or a title
         // reached through recovery — `New game` acts on the spot.
