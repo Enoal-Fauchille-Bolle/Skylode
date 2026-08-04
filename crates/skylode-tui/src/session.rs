@@ -237,6 +237,14 @@ pub struct Splash {
     cursor: usize,
     /// Whether this session can write at all — the line under the menu.
     persists: bool,
+    /// Which row of the *"start a new game?"* box the caret is on, while it is up.
+    ///
+    /// **One [`Option`] and not a `bool` beside a cursor**, so "the box is closed" and
+    /// "the box is open on its second row" cannot be held at once. The box exists only
+    /// where it has something to protect: §6.1 draws no confirmation, and this is a
+    /// departure taken because `New game` sits one arrow key away from `Continue` and
+    /// the first autosave ten seconds later writes over the run it was next to.
+    confirm: Option<usize>,
 }
 
 /// What a title screen knows about the save it is offering to continue.
@@ -263,6 +271,22 @@ pub struct Resume {
     /// Whether this came from the backup rather than from the save proper.
     from_backup: bool,
 }
+
+/// A row of the *"start a new game?"* box.
+///
+/// **Two rows and the safe one first.** The caret opens on `Keep`, so the gesture that
+/// destroys a run is never the one a stray `Enter` lands on — which is exactly the
+/// accident the box exists for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmRow {
+    /// Back to the menu, run untouched.
+    Keep,
+    /// Start over, and let the next write have the slot.
+    StartOver,
+}
+
+/// The rows the confirmation box offers, in order.
+pub const CONFIRM_ROWS: [ConfirmRow; 2] = [ConfirmRow::Keep, ConfirmRow::StartOver];
 
 /// A row of the title's menu.
 ///
@@ -351,6 +375,10 @@ enum Chosen {
     RestoreBackup,
     /// The offline summary's `Enter` — dismiss the receipt and walk into the run.
     Collect,
+    /// `New game` where there is a run to lose: raise the box rather than act.
+    AskNewGame,
+    /// The box's `Keep`, or an `Esc` over it.
+    Cancel,
     /// Leave.
     Quit,
 }
@@ -362,6 +390,7 @@ impl Splash {
             resume: None,
             cursor: 0,
             persists,
+            confirm: None,
         }
     }
 
@@ -371,6 +400,7 @@ impl Splash {
             resume: Some(resume),
             cursor: 0,
             persists,
+            confirm: None,
         }
     }
 
@@ -402,6 +432,11 @@ impl Splash {
         self.persists
     }
 
+    /// Which row of the confirmation box the caret is on, while the box is up.
+    pub fn confirm(&self) -> Option<usize> {
+        self.confirm
+    }
+
     /// A title screen with made-up contents, for the renderer's own tests.
     ///
     /// **The same device as [`View::sample`](crate::view::View::sample)**, and it
@@ -410,6 +445,15 @@ impl Splash {
     /// temporary directory to assert the position of a caret. The states the machine
     /// can actually reach are asserted in `session`'s own tests, where the boot routing
     /// is what is under test.
+    /// The same, with the *"start a new game?"* box up over it.
+    #[cfg(test)]
+    pub(crate) fn sample_confirming() -> Self {
+        Self {
+            confirm: Some(0),
+            ..Self::sample(true, true)
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn sample(persists: bool, over_a_save: bool) -> Self {
         let resume = over_a_save.then(|| Resume {
@@ -423,6 +467,7 @@ impl Splash {
             resume,
             cursor: 0,
             persists,
+            confirm: None,
         }
     }
 }
@@ -879,6 +924,7 @@ impl Session {
             MenuAction::Up => self.move_caret(-1),
             MenuAction::Down => self.move_caret(1),
             MenuAction::Confirm => self.confirm(SystemTime::now()),
+            MenuAction::Cancel => self.cancel(),
             MenuAction::Quit => self.quit = true,
         }
     }
@@ -892,7 +938,13 @@ impl Session {
     /// `-1 % 3` is `-1` and not `2`.
     fn move_caret(&mut self, by: isize) {
         let (cursor, len) = match &self.stage {
-            Stage::Splash(splash) => (splash.cursor, splash.rows().len()),
+            // The box owns the caret while it is up, which is what keeps one gesture
+            // driving both lists: `Up` is `Up` whether the player is choosing a menu
+            // row or answering a question.
+            Stage::Splash(splash) => match splash.confirm {
+                Some(cursor) => (cursor, CONFIRM_ROWS.len()),
+                None => (splash.cursor, splash.rows().len()),
+            },
             Stage::Recovery(recovery) => (recovery.cursor, recovery.rows().len()),
             // Neither holds a list. The offline summary offers one gesture and prints
             // it — `Enter collect` — so a caret would be pointing at the only row.
@@ -909,7 +961,10 @@ impl Session {
             Err(_) => 0,
         };
         match &mut self.stage {
-            Stage::Splash(splash) => splash.cursor = moved,
+            Stage::Splash(splash) => match &mut splash.confirm {
+                Some(cursor) => *cursor = moved,
+                None => splash.cursor = moved,
+            },
             Stage::Recovery(recovery) => recovery.cursor = moved,
             Stage::Game(_) | Stage::Offline { .. } => {}
         }
@@ -918,11 +973,24 @@ impl Session {
     /// Which row the caret is on, as a decision rather than as an index.
     fn chosen(&self) -> Option<Chosen> {
         match &self.stage {
-            Stage::Splash(splash) => match splash.rows().get(splash.cursor)? {
-                SplashRow::Continue => Some(Chosen::Resume),
-                SplashRow::NewGame => Some(Chosen::NewGame),
-                SplashRow::Quit => Some(Chosen::Quit),
-            },
+            Stage::Splash(splash) => {
+                if let Some(cursor) = splash.confirm {
+                    return match CONFIRM_ROWS.get(cursor)? {
+                        ConfirmRow::Keep => Some(Chosen::Cancel),
+                        ConfirmRow::StartOver => Some(Chosen::NewGame),
+                    };
+                }
+                match splash.rows().get(splash.cursor)? {
+                    SplashRow::Continue => Some(Chosen::Resume),
+                    // **The box appears only where it protects something.** A fresh
+                    // install and a title reached through recovery both have nothing to
+                    // lose, and a confirmation there would be a question with one
+                    // answer.
+                    SplashRow::NewGame if splash.resume.is_some() => Some(Chosen::AskNewGame),
+                    SplashRow::NewGame => Some(Chosen::NewGame),
+                    SplashRow::Quit => Some(Chosen::Quit),
+                }
+            }
             Stage::Recovery(recovery) => match recovery.rows().get(recovery.cursor)? {
                 RecoveryRow::RestoreBackup => Some(Chosen::RestoreBackup),
                 RecoveryRow::NewGame => Some(Chosen::NewGame),
@@ -940,6 +1008,8 @@ impl Session {
             Some(Chosen::NewGame) => self.start_new_run(now),
             Some(Chosen::RestoreBackup) => self.restore_backup(now),
             Some(Chosen::Collect) => self.collect_offline(),
+            Some(Chosen::AskNewGame) => self.ask_new_game(),
+            Some(Chosen::Cancel) => self.cancel(),
             Some(Chosen::Quit) => self.quit = true,
             None => {}
         }
@@ -965,6 +1035,26 @@ impl Session {
             // exactly the question `look` answers, so it answers it again rather than
             // this branch inventing a second routing.
             Ok(None) | Err(_) => self.stage = Self::look(self.slots.as_ref(), now),
+        }
+    }
+
+    /// Raises the *"start a new game?"* box over the title.
+    ///
+    /// The caret opens on `Keep`, so the answer a stray `Enter` gives is the one that
+    /// changes nothing.
+    fn ask_new_game(&mut self) {
+        if let Stage::Splash(splash) = &mut self.stage {
+            splash.confirm = Some(0);
+        }
+    }
+
+    /// Takes the box back down, having changed nothing.
+    ///
+    /// Silent everywhere else: `Esc` on a title with no question up is a key the player
+    /// pressed at nothing, and there is no screen behind the title to fall back to.
+    fn cancel(&mut self) {
+        if let Stage::Splash(splash) = &mut self.stage {
+            splash.confirm = None;
         }
     }
 
@@ -1846,5 +1936,81 @@ mod tests {
             }
             _ => unreachable!("the summary never opened"),
         }
+    }
+
+    #[test]
+    fn new_game_over_a_save_asks_before_it_writes_over_anything() {
+        let (_dir, slots) = saved(1);
+        // Down onto `New game`, then `Enter`: the box goes up and the run is untouched.
+        let (result, buffer) = run_script(
+            Session::boot(Some(slots.clone()), now()),
+            vec![
+                key(KeyCode::Down),
+                key(KeyCode::Enter),
+                key(KeyCode::Char('q')),
+            ],
+        );
+        assert!(result.is_ok(), "the loop failed: {result:?}");
+        assert!(
+            whole_frame(&buffer).contains("Start a new game?"),
+            "{}",
+            whole_frame(&buffer)
+        );
+    }
+
+    #[test]
+    fn escaping_the_box_leaves_the_menu_exactly_as_it_was() {
+        let (_dir, slots) = saved(1);
+        let mut session = Session::boot(Some(slots), now());
+        session.menu(MenuAction::Down);
+        session.menu(MenuAction::Confirm);
+        session.menu(MenuAction::Cancel);
+
+        match &session.stage {
+            Stage::Splash(splash) => {
+                assert!(splash.confirm().is_none(), "the box stayed up");
+                // And the caret is still on `New game`, not reset to the top: backing
+                // out is not the same gesture as starting again.
+                assert_eq!(
+                    splash.rows().get(splash.cursor()),
+                    Some(&SplashRow::NewGame)
+                );
+            }
+            _ => unreachable!("`Esc` left the title"),
+        }
+    }
+
+    #[test]
+    fn answering_yes_starts_the_run_the_box_warned_about() {
+        let (_dir, slots) = saved(1);
+        let mut session = Session::boot(Some(slots.clone()), now());
+        session.menu(MenuAction::Down);
+        session.menu(MenuAction::Confirm);
+        // `Down` onto `Yes, start over`, then take it.
+        session.menu(MenuAction::Down);
+        session.menu(MenuAction::Confirm);
+
+        assert!(
+            matches!(session.stage, Stage::Game(_)),
+            "no run was started"
+        );
+        // A brand-new run is level 1 and, per the immediate write, already on disk in
+        // place of the old one.
+        match persist::load(slots.primary()) {
+            Ok(Some(save)) => assert_eq!(save.state.player().get_level(), 1),
+            other => unreachable!("the new run should have been written: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fresh_install_is_not_asked_a_question_with_one_answer() {
+        // The box protects a run. Where there is none — a fresh install, or a title
+        // reached through recovery — `New game` acts on the spot.
+        let mut session = sessionless();
+        session.menu(MenuAction::Confirm);
+        assert!(
+            matches!(session.stage, Stage::Game(_)),
+            "a fresh install was asked to confirm"
+        );
     }
 }

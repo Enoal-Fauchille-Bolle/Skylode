@@ -16,7 +16,7 @@ use ratatui::{
 use super::centered_rect;
 use crate::{
     format::age,
-    session::{Splash, SplashRow},
+    session::{CONFIRM_ROWS, ConfirmRow, Splash, SplashRow},
 };
 
 /// The block-letter wordmark; the value cell's own art, five rows tall.
@@ -100,10 +100,68 @@ pub fn render(frame: &mut Frame, area: Rect, splash: &Splash) {
             .block(Block::default().padding(Padding::right(2))),
         fill,
     );
-    frame.render_widget(
-        Paragraph::new(" ↑↓  select     Enter  confirm     q  quit"),
-        footer_area,
-    );
+    frame.render_widget(Paragraph::new(footer(splash)), footer_area);
+
+    // Last, so it covers the menu it is asking about. A modal clears its own rect, so
+    // the title underneath costs nothing and is still readable around it.
+    if let Some(cursor) = splash.confirm() {
+        confirmation(frame, area, splash, cursor);
+    }
+}
+
+/// The key hints on the bottom row.
+///
+/// They change with the box, because the box changes what the keys do: `Esc` exists
+/// only while there is something to decline, and advertising it on a title that cannot
+/// use it would be a fourth hint for a key that does nothing.
+fn footer(splash: &Splash) -> &'static str {
+    if splash.confirm().is_some() {
+        return " ↑↓  select     Enter  confirm     Esc  keep the save";
+    }
+    " ↑↓  select     Enter  confirm     q  quit"
+}
+
+/// The *"start a new game?"* box (§6.1, and a departure from it — see [`Splash`]).
+///
+/// **It names the run it would cost.** A confirmation that only says *"are you sure?"*
+/// asks the player to remember what is at stake; this one prints the level and the
+/// pickaxe, which are the two figures the menu was already showing them.
+fn confirmation(frame: &mut Frame, area: Rect, splash: &Splash, cursor: usize) {
+    let at_stake = splash.resume().map_or_else(String::new, |resume| {
+        format!(" Lv {}  ·  {}", resume.level(), resume.pickaxe())
+    });
+    let rows: Vec<String> = CONFIRM_ROWS
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let caret = if index == cursor { " ▸  " } else { "    " };
+            let label = match row {
+                ConfirmRow::Keep => "No, keep this save",
+                ConfirmRow::StartOver => "Yes, start over",
+            };
+            format!("{caret}{label}")
+        })
+        .collect();
+
+    let mut lines = vec![
+        String::new(),
+        " There is already a run here:".to_owned(),
+        at_stake,
+        String::new(),
+        // What actually happens, and when. The old run is not deleted on the spot —
+        // it goes when the new one first writes, ten seconds later — but a sentence
+        // that offered that as a window would be inviting the player to race it.
+        " Starting over writes over it.".to_owned(),
+        String::new(),
+    ];
+    lines.extend(rows);
+    lines.push(String::new());
+
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2);
+    let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
+    super::modal(frame, area, 52, height, " Start a new game? ", &borrowed);
 }
 
 /// The two lines under the menu: what there is to continue, or why there is not.
@@ -195,5 +253,27 @@ mod tests {
             .find(|line| line.contains('▸'))
             .unwrap_or_default();
         assert!(marked.contains("Continue"), "{frame}");
+    }
+
+    #[test]
+    fn the_confirmation_names_the_run_it_would_cost_and_opens_on_keeping_it() {
+        let splash = Splash::sample_confirming();
+        let frame = crate::overlay::render_to_string(|frame, area| render(frame, area, &splash));
+        assert!(frame.contains("Start a new game?"), "{frame}");
+        // Not a bare "are you sure?": the two figures the menu was already showing.
+        assert!(frame.contains("Lv 23"), "{frame}");
+        assert!(frame.contains("Diamond Pickaxe"), "{frame}");
+        assert!(frame.contains("writes over it"), "{frame}");
+
+        let marked = frame
+            .lines()
+            .find(|line| line.contains('▸'))
+            .unwrap_or_default();
+        assert!(
+            marked.contains("No, keep this save"),
+            "a stray Enter would have destroyed the run: {frame}"
+        );
+        // And the footer advertises the key that backs out, which exists only here.
+        assert!(frame.contains("Esc  keep the save"), "{frame}");
     }
 }

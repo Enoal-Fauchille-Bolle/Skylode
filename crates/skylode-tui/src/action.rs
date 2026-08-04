@@ -223,6 +223,16 @@ pub enum MenuAction {
     Down,
     /// Take the row it is on (`Enter`).
     Confirm,
+    /// Back out of whatever was asked (`Esc`).
+    ///
+    /// **Ignored where there is nothing to back out of**, which is most of the time:
+    /// the title and the recovery frames are the bottom of their own stacks. It exists
+    /// for the one box that asks a question — *start a new game over this save?* — and
+    /// it is [`Esc`] there for the reason every other modal in the game uses `Esc` to
+    /// decline.
+    ///
+    /// [`Esc`]: ratatui::crossterm::event::KeyCode::Esc
+    Cancel,
     /// Leave the game entirely (`q`, `Ctrl-C`).
     ///
     /// **Always the process and never a screen behind**, because on every screen that

@@ -70,6 +70,10 @@ pub fn resolve_menu(key: KeyEvent) -> Option<MenuAction> {
         KeyCode::Up => Some(MenuAction::Up),
         KeyCode::Down => Some(MenuAction::Down),
         KeyCode::Enter => Some(MenuAction::Confirm),
+        // Declining, wherever something was asked. It is `Esc` here because it is `Esc`
+        // in every modal the game already has, and a box that asked to be declined with
+        // a different key would be teaching a second habit for one question.
+        KeyCode::Esc => Some(MenuAction::Cancel),
         KeyCode::Char('q') => Some(MenuAction::Quit),
         _ => None,
     }
