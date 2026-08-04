@@ -271,17 +271,19 @@ their own memory has in mind, and it stays reachable from the swing path alone. 
 consequence to keep straight is that an absence adds nothing to it — exactly as an
 absence adds nothing to `playtime`, which counts simulated tick time.
 
-**No `SAVE_VERSION` bump, and the reason is a fact about the calendar rather than
-about the schema.** A version bump exists to protect files already written, and the
-front-end does not yet write any — the whole disk half of [phase 9](#phase-9---save-serialisation-half-only)
-is still owed. There is therefore no v1 file in existence for a migration to carry
-forward, so writing one would mean shipping a step that can never run, plus a test
-describing a situation that cannot occur. `#[serde(default)]` is refused for a
+**No `SAVE_VERSION` bump, and the reason was a fact about the calendar rather than
+about the schema.** A version bump exists to protect files already written, and at the
+time the front-end wrote none — the whole disk half of
+[phase 9](#phase-9---save-serialisation-half-only) was still owed. There was therefore
+no v1 file in existence for a migration to carry forward, so writing one would have
+meant shipping a step that could never run, plus a test describing a situation that
+could not occur. **That window closed on 2026-08-04**, when TUI phase 8 gave `persist`
+its caller: files exist now, so the next schema change *is* the first real bump, and it
+carries a migration. `#[serde(default)]` was refused for a
 sharper reason: a default of `0` for `blocks_broken` would be *false* of an older
 file rather than merely absent, which is the one thing the
 [`unclaimed` precedent](DECISIONS.md) was careful to establish it was not. The
-golden save moves instead, which is exactly the signal it exists to give. The first
-real bump belongs to the first schema change made *after* the game writes to disk.
+golden save moves instead, which is exactly the signal it exists to give.
 
 **What shipped, and the one thing that did not.** The three counters, their two
 lifetimes, the exclusion of the auto-miner and the golden save are done, and

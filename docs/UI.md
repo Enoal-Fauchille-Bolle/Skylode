@@ -1048,12 +1048,11 @@ which the frame already drew as `▸` apart from `●` and which phase 7 simply 
                         ┌────────────────────────────┐
                         │  ▸  Continue               │
                         │     New game               │
-                        │     Settings               │
                         │     Quit                   │
                         └────────────────────────────┘
 
                           Lv 23  ·  Diamond Pickaxe
-                          last played 3 hours ago
+                          last played 3h ago
 
                                                               skylode 0.1.0
  ↑↓  select     Enter  confirm     q  quit
@@ -1061,6 +1060,42 @@ which the frame already drew as `▸` apart from `●` and which phase 7 simply 
 
 `Continue` and the two summary lines are absent on a fresh install. Hardcoded
 chrome, save-derived summary (§2.3).
+
+Four things the implementation settled:
+
+- **`Settings` is not drawn yet.** It is phase 9's screen, and a row that highlights
+  and does nothing teaches the player that the caret is decorative. The row returns
+  with the screen behind it.
+- **`3h ago`, not `3 hours ago`.** One elapsed-time vocabulary across the crate — the
+  same `format::age` the Stats history prints in its stamp column.
+- **The version is read from the manifest** (`env!("CARGO_PKG_VERSION")`), so this
+  corner cannot drift from what the build actually is.
+- **`New game` asks first, but only where there is a run to lose.** §6.1 drew no
+  confirmation; the box below is a deliberate departure, because `New game` sits one
+  arrow key from `Continue` and the new run's first write — ten seconds later —
+  takes both the save and the backup. On a fresh install, and on a title reached
+  through recovery, there is nothing to protect and no box appears.
+
+```text
+                 ┌ Start a new game? ─────────────────────────┐
+                 │                                            │
+                 │  There is already a run here:              │
+                 │  Lv 23  ·  Diamond Pickaxe                 │
+                 │                                            │
+                 │  Starting over writes over it.             │
+                 │                                            │
+                 │  ▸  No, keep this save                     │
+                 │     Yes, start over                        │
+                 │                                            │
+                 └────────────────────────────────────────────┘
+ ↑↓  select     Enter  confirm     Esc  keep the save
+```
+
+**The caret opens on `No`**, which is the accident the box exists for: a reflexive
+`Enter` must not land on the answer that destroys a run. It **names what is at stake**
+rather than asking a bare *"are you sure?"* — the level and the pickaxe are the two
+figures the menu was already showing. And the footer changes with it: `Esc` is
+advertised only while there is something to decline.
 
 ### 6.2 Terminal too small
 
@@ -1099,8 +1134,8 @@ is underlined so a player at 80x18 learns it is the height.
         │ Skylode will not load it: the values inside cannot be        │
         │ trusted, and it will not guess which ones.                   │
         │                                                              │
-        │ ▸  Restore the backup      saved 8 seconds ago               │
-        │    Start a new game        the current save is kept          │
+        │ ▸  Restore the backup      saved 8s ago                      │
+        │    Start a new game        the backup goes with it           │
         │    Quit                                                      │
         │                                                              │
         │ The backup is the last save that passed its check, so at     │
@@ -1126,10 +1161,10 @@ When the backup fails too, there is no floor left, and the frame says so:
         │ Your save does not match its checksum,                       │
         │ and neither does the backup.                                 │
         │                                                              │
-        │ Both files are kept exactly as they are. Skylode will not    │
-        │ load either of them.                                         │
+        │ Skylode will not load either of them, and has changed        │
+        │ neither.                                                     │
         │                                                              │
-        │ ▸  Start a new game                                          │
+        │ ▸  Start a new game        both files are written over       │
         │    Quit                                                      │
         │                                                              │
         │ If you edited a save by hand, this is why. If you did not,   │
@@ -1140,8 +1175,45 @@ When the backup fails too, there is no floor left, and the frame says so:
  ↑↓  select     Enter  confirm
 ```
 
-**Both files are kept, untouched.** Nothing is destroyed; the game simply refuses to
-be the one that reads it.
+**Both files are kept, untouched — until the player starts over.** Nothing is
+destroyed by the *refusal*; the game simply declines to be the one that reads it. But
+the row that starts a new run does destroy them, at its first write, and both frames
+now say which: the first loses the backup it was offering, the second loses both. The
+earlier wording — *"the current save is kept"* — was true for about ten seconds of play.
+
+**Two more frames, and neither is a fourth screen.** `Io` — the bytes could not be
+reached at all — shares the second frame's shape with a header of its own, because
+telling a player with a permission problem that their file *"does not match its
+checksum"* would be a diagnosis of the wrong thing; and its footnote says why the
+backup is no help (both files live in the same directory). A save written by a **newer
+build** gets a frame that offers only `Quit`:
+
+```text
+0---------1---------2---------3---------4---------5---------6---------7---------
+
+        ┌─ Save problem ───────────────────────────────────────────────┐
+        │                                                              │
+        │ This save was written by a newer version of Skylode.         │
+        │                                                              │
+        │ It is version 2; this build reads up to 1.                   │
+        │ Skylode will not open it: a newer save can describe          │
+        │ things these rules do not have.                              │
+        │                                                              │
+        │ ▸  Quit                                                      │
+        │                                                              │
+        │ Update the game and it will open. Starting again is not      │
+        │ offered: this save is not broken, and an older build         │
+        │ would write over it.                                         │
+        │                                                              │
+        └──────────────────────────────────────────────────────────────┘
+```
+
+**The age beside `Restore the backup` is the file's modification time**, not a
+`last_seen` read out of it: at that point the backup has *not* been verified — §8.3
+checks it only after the player asks — and reading a field out of the one file on
+screen that is under suspicion would be trusting exactly what is in question. A
+`rename` moves a directory entry and leaves the content's timestamp alone, so the
+modification time answers *when that run was written*.
 
 ### 6.4 Offline summary
 
@@ -1155,7 +1227,7 @@ be the one that reads it.
         │  +   372  Coal                                         │
         │  +    31  Gold                                         │
         │                                                        │
-        │  Rate  0.56 blocks/s  ×  6h 12m                        │
+        │  Rate  0.22 blocks/s  ×  6h 12m  =  4 910 blocks       │
         │                                                        │
         │  Enter  collect                                        │
         └────────────────────────────────────────────────────────┘
@@ -1166,10 +1238,29 @@ printing it makes the number checkable in the player's head. The parenthesised
 denomination split is not a compression — it is the same raw total, shown in the
 denomination costs are quoted in.
 
-**Capped time must say so** (`counted 7d (the cap)`); silence there reads as a bug.
-**A backward clock shows no screen at all** — `elapsed` clamps to 0, the player is
-not penalised or flagged, and a `Welcome back, +0` after a DST change is a support
-ticket about a bug that is not one.
+Three things the implementation settled about that line:
+
+- **The rate is `0.22`, from the tunable.** `AUTO_MINER_MILLIBLOCKS_PER_TICK` is 11 at
+  20 tps, so 0.56 was a placeholder. It is read from the constant rather than divided
+  out of the report, which is what makes the multiplication a real check: dividing the
+  report's own blocks by its own span would print a number that agrees with itself
+  whatever the rules did.
+- **The product is printed too.** `rate × elapsed` with no `=` leaves the reader to do
+  the arithmetic and then find nothing to compare it against.
+- **`counted` and not `elapsed` is what is multiplied**, so a capped absence multiplies
+  out to the total above it rather than to one the cap has already cut.
+
+**Capped time must say so** — `You were away for 9d 4h — counted 7d`; silence there
+reads as a bug. **A backward clock shows no screen at all** — `elapsed` clamps to 0,
+the player is not penalised or flagged, and a `Welcome back, +0` after a DST change is
+a support ticket about a bug that is not one. **Neither does an absence too short to
+complete a block**: see §8.3's fourth correction, which is where that rule is derived.
+
+**Nothing is collected by `Enter`.** The ore was credited by `resume` before this frame
+was built, and written to disk in the same breath, so a player who closes the terminal
+while reading keeps every block of it. What `Enter` dismisses is a receipt — and the
+write is what stops the next launch measuring the absence from the old mark and paying
+for the same hours twice.
 
 ### 6.5 Level-up: no modal
 
@@ -1678,38 +1769,41 @@ stateDiagram-v2
     [*] --> Load
 
     state "Load the save" as Load
-    state "HMAC check" as Mac
     state "Save recovery ⚠ hardcoded" as Rec
-    state "Backup HMAC check" as BakMac
-    state "Save recovery, no backup ⚠ hardcoded" as RecNoBak
+    state "Backup check" as BakMac
+    state "Save recovery, nothing left ⚠ hardcoded" as RecNoBak
+    state "Update the game ⚠ hardcoded" as Future
     state "Splash ⚠ hardcoded chrome" as Splash
     state "Offline summary" as Off
     state "Game" as Game
 
-    Load --> Splash: no save AND no backup
-    Load --> BakMac: no save, backup present
-    Load --> Mac: save found
-
-    Mac --> Splash: matches
-    Mac --> Rec: mismatch
+    Load --> Splash: save loads
+    Load --> BakMac: no save
+    Load --> Rec: damaged, tampered, refused
+    Load --> RecNoBak: unreachable (Io)
+    Load --> Future: written by a newer build
 
     Rec --> BakMac: restore the backup
     Rec --> Game: start a new game
     Rec --> [*]: quit
 
-    BakMac --> Splash: backup matches
-    BakMac --> RecNoBak: backup bad or absent
+    BakMac --> Splash: backup loads
+    BakMac --> Splash: no backup either (fresh install)
+    BakMac --> RecNoBak: backup bad
 
     RecNoBak --> Game: start a new game
     RecNoBak --> [*]: quit
 
-    Splash --> Off: Continue, elapsed > 0
-    Splash --> Game: Continue, elapsed = 0
-    Splash --> Game: New game
+    Future --> [*]: quit
+
+    Splash --> Off: Continue, the absence paid something
+    Splash --> Game: Continue, it paid nothing
+    Splash --> Game: New game (confirmed if there is a run)
     Splash --> [*]: Quit
 
-    Off --> Game: Enter, collect
+    Off --> Game: Enter
     Game --> Splash: q
+    Game --> [*]: Ctrl-C
 
     note right of Rec
         Continue anyway is gone.
@@ -1719,6 +1813,11 @@ stateDiagram-v2
         Continue exists only on
         the paths that reached a
         trusted save.
+    end note
+    note right of Future
+        Starting over is NOT offered:
+        the file is good, and an older
+        build would write over it.
     end note
 ```
 
@@ -1742,12 +1841,37 @@ it loads one slot and reports, and the routing is the machine's. What the new ed
 settles is that the machine must *look* at the backup before concluding "fresh
 install".
 
-**Left open, and it belongs to the session state machine rather than to the loader:**
-whether that path should say so. Continuing from the backup in silence is the one
-place in this diagram where the player is handed a run they did not ask for, and the
-save they lose is seconds old — so the case for a line of text is real and the case
-for a whole frame is not obvious. The two candidates are a toast on entering the game
-and a variant of §6.3's recovery frame worded for *missing* rather than *modified*.
+**That path says so with a toast, and the question is closed.** *"Restored from the
+backup save"* fires on entering the game, not on a frame of its own: a frame exists to
+ask something, and here the player would answer *"yes, go on"* every time. What they
+lose is the few seconds the recovery frame itself calls acceptable, so a modal would
+be a full stop in front of a footnote. The same toast covers both ways in — the silent
+one above, and the one where the player asked for the backup at §6.3 — which is what
+keeps *"you are playing the backup"* one sentence rather than two.
+
+**Five things the implementation moved, and each is a decision rather than a
+correction of drafting:**
+
+1. **The two HMAC checks are not states.** `persist::load` answers *"does this file
+   load"* in one call, and a state the loop can linger in is a state that has to draw
+   something. `Load` and `Backup check` are therefore edges out of one function.
+2. **`Io` does not lead to the backup**, and neither does a save from the future. Both
+   files share a directory, so whatever stopped one stops the other; and a backup
+   written by a newer build is from the future too. §6.3's frames say so.
+3. **A save from the future offers only `Quit`**, where the earlier drawing routed
+   every failure to *"start a new game"*. That file is not broken — it failed for being
+   *newer* — so starting a run over it would let an older build overwrite a save the
+   player made with a newer one. It is the one refusal in the table where starting
+   again destroys something that was never damaged.
+4. **`Continue, elapsed = 0` was the wrong condition.** `GameState::resume` answers
+   `None` on a span of *zero*, not on a short one — so `q` followed by `Continue` three
+   seconds later would open a summary for three seconds of absence. The rule is
+   **"the report paid something"**, read off `gained` being non-empty: the auto-miner
+   credits whole blocks, and three seconds completes none. Derived from the report
+   rather than from a threshold someone would have to keep in step with the tunables.
+5. **`Ctrl-C` has an edge now.** It is a terminal convention rather than a game
+   affordance, which is why the drawing did not have one — but it is the only way out
+   of a run once `q` means the title, and it saves on the way out like every other exit.
 
 ### 8.4 The "compress first" refusal
 
@@ -1958,17 +2082,29 @@ alternative — a shorter window — is a stutter the player feels on every hold
 
 ## 10. Ratatui mapping
 
-### 10.1 The three clocks
+### 10.1 The four clocks
 
 The wireframes were drawn against "a fixed 20 tps tick, rendering decoupled at
-~30 fps, redraw on change". Implemented, that is three periods and not two, and the
-third is the one worth writing down.
+~30 fps, redraw on change". Implemented, that is four periods and not two, and the
+last two are the ones worth writing down.
 
 | Clock | Period | Where it lives | What it is |
 | --- | --- | --- | --- |
 | heartbeat | 10 ms | the event thread | **a sampling rate, not a cadence**: it only wakes the loop so it can look at the wall clock |
 | simulation | 50 ms | `App::next_tick` | one `GameState::tick`, with catch-up |
-| redraw | 33 ms | `App::next_frame` | a **ceiling**, not a metronome |
+| redraw | 33 ms | `Session::next_frame` | a **ceiling**, not a metronome |
+| autosave | 10 s | `Session::next_autosave` | the floor on what a crash can cost |
+
+**Three of the four are monotonic (`Instant`) and none of them is the wall clock.** The
+autosave *deadline* is an `Instant` like the others; the `SystemTime` it hands to
+`persist::save` is read at the transition, not per frame. A save cadence measured on the
+wall clock would skip or double on a daylight-saving change.
+
+**The redraw clock moved out of `App`.** *When* to ask the terminal for a frame is a
+question about the session — which state is up, whether it is even a game — while
+*what changed* is the run's answer, so `App::advance` returns whether a step ran and the
+loop decides what to do about it. It is the one thing phase 8's move made *narrower*
+rather than wider.
 
 **The simulation is a deadline with catch-up, not a counter.** A pass that arrives
 three periods late runs three steps, so 20 tps survives a busy machine — a

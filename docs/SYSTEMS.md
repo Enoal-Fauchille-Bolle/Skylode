@@ -168,11 +168,31 @@ first thing some players ever see.
 
 ### Save cadence
 
-- Autosave every 10 seconds, only if state changed (a `dirty` flag).
+- Autosave every 10 seconds while a run is up.
 - On important transactions (upgrade, prestige).
-- On graceful exit.
+- On graceful exit — `q` back to the title, `Ctrl-C`, and a dead event source.
+- On **opening** a run, before the player has pressed anything.
 - Update `last_seen` on every write, so offline accrual stays correct (see
   [MECHANICS.md](MECHANICS.md#offline-accrual)).
+
+**The `dirty` flag this section used to ask for is deliberately not there**, and the
+reason is a mechanic that arrived after it was written. The auto-miner credits on
+*every* tick, so "has the state changed since the last write" is a `bool` that cannot
+be false while a game is up — a field that lies about what it is for. What the flag was
+meant to save is instead structural: the title screen, the recovery frames and the
+offline summary hold no run, so the loop over them never reaches this clock.
+
+**Opening a run writes it, and that is not belt-and-braces.** A `New game` abandoned in
+its first seconds would otherwise leave a title with nothing to continue; and on the
+`Continue` path `GameState::resume` has just credited an absence *in memory*, so a
+crash before the first cadence would measure the next absence from the old mark and pay
+for the same hours twice.
+
+**A failed write is not fatal, and it is announced on the edge.** The run in memory is
+fine, and throwing it away would be the opposite of what *"no continue anyway"*
+protects. A full disk fails every ten seconds, so the toast fires when the answer
+*changes* — once when saving breaks, once when it works again — and the case repairs
+itself without relaunching.
 
 **Moving `last_seen` belongs to the write, not to the caller**, and the ordering is
 why. `persist::save` calls `GameState::touch(now)` and *then* serialises; a caller
@@ -273,12 +293,29 @@ Two things that look like they should work and do not:
   does, at offset 51 — is silently split into two shorter patterns and the check
   reports a false pass.
 
-And one caveat that decides *when* the check means anything: while `persist` has no
-caller, the module is dead-code-eliminated from **both** profiles, so the constants
-are absent because the code is absent — a pass that proves nothing. Verified on the
-test binary, where the code is live and unoptimised: `MASKED` and `MASK` are present,
-the reassembled key is **not**. Re-run the release check once the session state
-machine calls the module.
+And one caveat that decides *when* the check means anything: while `persist` had no
+caller, the module was dead-code-eliminated from **both** profiles, so the constants
+were absent because the code was absent — a pass that proved nothing.
+
+**Run on 2026-08-04, once the session machine called `persist::save`**, which is the
+first time it meant anything. The result, on a 1.7 MB release binary:
+
+| Searched for | Occurrences | What it says |
+| --- | --- | --- |
+| the reassembled key | **0** | `black_box` and `#[inline(never)]` held against LTO |
+| `MASKED` | 1 | the reassembly is *in* the binary — the check is not passing by absence |
+| `MASK` | 1 | likewise |
+
+The middle two rows are the point. A count of zero on all three would mean the
+optimiser had removed the code, and the check would be measuring nothing. And
+`key[51] == 0x0a` is confirmed, which is why `grep -f` splits the pattern there and
+reports a false pass.
+
+**One consequence worth writing down, found while walking the state machine:** a save
+*from the future* cannot be forged from outside the binary. Raising `version` inside
+the payload invalidates the MAC, so the loader answers `Tampered` and not
+`FromTheFuture` — that path is reachable only by something holding the key, which is
+why the test fixture for it lives inside `persist` itself.
 
 **Build-time injection was considered and rejected.** Reading the key from an
 environment variable at compile time (`env!`) keeps it out of the repository, but
@@ -362,6 +399,24 @@ an envelope can be malformed is one `Damaged` — unparseable, truncated and bad
 encoded are three diagnoses of one sentence — and why `FromTheFuture` is lifted out of
 the core's own error rather than left inside `Rejected`: it is the only refusal whose
 answer is *"update the game"* rather than *"restore the backup"*.
+
+**Five refusals, four troubles, three frames.** The session machine groups them once
+more on the way to the screen: `Damaged`, `Tampered` and `Rejected` are one frame with
+the backup offered; `Io` and *"the backup failed too"* share a frame with nothing left
+to offer, differing only in their first sentence; and `FromTheFuture` has a frame of
+its own. `Io` had to be given that sentence rather than reusing the checksum one — a
+player with a permission problem must not be told their file was edited.
+
+**"Start a new game" costs the backup, and the frames now say so.** They used to
+promise *"the current save is kept"*, which is true only until the new run's first
+write: that write rotates the broken file into the backup slot, and the good backup
+goes with it. A sentence that stops being true after ten seconds of play is worse than
+no sentence, so the row reads *"the backup goes with it"*.
+
+**A save from the future is not offered a new game at all.** Every other refusal here
+is a broken file; that one is a *good* file this build is too old to read, so starting
+over would let the older build write over a run the player made with a newer one. Its
+frame offers `Quit` and says to update — see [UI.md](UI.md) §8.3.
 
 ## Tech stack
 

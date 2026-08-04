@@ -8,8 +8,9 @@
 //!   [`crate::app::App::modal`] and [`crate::keymap::resolve`] gives them first
 //!   refusal on every key.
 //! - **Pushed** — the game raises them (offline summary, save recovery, terminal
-//!   too small). There is no key that leads there, so they are not modals at all;
-//!   they belong to the session state machine, which lands in a later pass.
+//!   too small). There is no key that leads there, so they are not modals at all:
+//!   the first two are states of [`Session`](crate::session::Session), and the third
+//!   is drawn *above* it — a filter over every state, including the title.
 //!
 //! The [`dev`] menu is a third kind, and it is in neither list: nobody it was built
 //! for is a player, and it is compiled out of a release build entirely. It is pulled
