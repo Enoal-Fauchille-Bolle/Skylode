@@ -253,6 +253,16 @@ pub struct Resume {
     level: u32,
     /// The pickaxe rung, for `Diamond Pickaxe`.
     pickaxe: String,
+    /// The prestige rank, for `Prestige II`.
+    ///
+    /// **Kept as the raw rank rather than as its numeral**, unlike
+    /// [`pickaxe`](field@Self::pickaxe) beside it. The rule is the same in both cases: format
+    /// here only when the formatting needs something the renderer will not have —
+    /// `rung_label` composes a tier *and* an Efficiency level, so it belongs where both
+    /// are in hand, while a rank is one number. Keeping it a number is also what lets
+    /// the title *drop* the segment at rank 0, which a prepared `"Prestige 0"` string
+    /// could no longer tell apart from a rank the summary genuinely means to print.
+    prestige: u32,
     /// How long ago the run was last written, when the clock allows the subtraction.
     ///
     /// [`None`] on a backward clock, which is the same clamp
@@ -447,10 +457,21 @@ impl Splash {
 
     #[cfg(test)]
     pub(crate) fn sample(persists: bool, over_a_save: bool) -> Self {
+        Self::sample_at_rank(persists, over_a_save, 2)
+    }
+
+    /// The same, over a run at a given prestige `rank`.
+    ///
+    /// **Rank is the one field a caller picks**, because it is the one the title
+    /// branches on: at 0 the headline drops a segment. A test that could only reach
+    /// `sample`'s rank would be asserting half of that rule and calling it done.
+    #[cfg(test)]
+    pub(crate) fn sample_at_rank(persists: bool, over_a_save: bool, rank: u32) -> Self {
         let resume = over_a_save.then(|| Resume {
             source: PathBuf::from("save.json"),
             level: 23,
             pickaxe: "Diamond Pickaxe".to_owned(),
+            prestige: rank,
             idle: Some(Duration::from_secs(3 * 60 * 60)),
             from_backup: false,
         });
@@ -479,6 +500,7 @@ impl Resume {
                 pickaxe.get_tier(),
                 pickaxe.enchants().get_level(EnchantType::Efficiency),
             ),
+            prestige: player.get_prestige(),
             idle: now.duration_since(save.state.last_seen()).ok(),
             from_backup,
         }
@@ -492,6 +514,16 @@ impl Resume {
     /// The pickaxe rung to print.
     pub fn pickaxe(&self) -> &str {
         &self.pickaxe
+    }
+
+    /// The prestige rank, `0` for a run that has never traded itself in.
+    ///
+    /// The `0` is a real answer and not a sentinel — every run starts there — so what
+    /// the title does with it is the title's call. See the
+    /// [`prestige`](field@Self::prestige) field for why the numeral is not baked in
+    /// here.
+    pub fn prestige(&self) -> u32 {
+        self.prestige
     }
 
     /// How long the run has been sitting, when that can be said.
@@ -1846,6 +1878,7 @@ mod tests {
             session.menu(MenuAction::Confirm);
             if let Stage::Game(app) = &mut session.stage {
                 app.state.dev_set_level(12);
+                app.state.dev_set_prestige(3);
             }
             session.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
 
@@ -1853,6 +1886,12 @@ mod tests {
                 Stage::Splash(splash) => {
                     let level = splash.resume().map(Resume::level);
                     assert_eq!(level, Some(12), "the title read a stale file");
+                    // And the rank beside it, which is the only place the *reading* of
+                    // the prestige is exercised: `overlay::splash`'s tests are built on
+                    // `Splash::sample`, so a `Resume::of` that hardcoded rank 0 would
+                    // draw a headline they all still accept.
+                    let rank = splash.resume().map(Resume::prestige);
+                    assert_eq!(rank, Some(3), "the title lost the run's prestige rank");
                 }
                 _ => unreachable!("`q` did not land on the title"),
             }

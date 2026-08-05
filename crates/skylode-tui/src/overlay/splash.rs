@@ -18,8 +18,8 @@ use ratatui::{
 use super::centered_rect;
 use crate::{
     app::{MAX_HEIGHT, MAX_WIDTH},
-    format::age,
-    session::{CONFIRM_ROWS, ConfirmRow, Splash, SplashRow},
+    format::{age, prestige_rank},
+    session::{CONFIRM_ROWS, ConfirmRow, Resume, Splash, SplashRow},
     theme,
 };
 
@@ -50,6 +50,32 @@ const LOGO: [&str; 5] = [
 /// from what cargo thinks this build is — which the hardcoded `skylode 0.1.0` it
 /// replaces could, silently, on the first release.
 const VERSION: &str = concat!("skylode ", env!("CARGO_PKG_VERSION"));
+
+/// The one line that names a run: `Lv 23 · Diamond Eff V · Prestige II`.
+///
+/// **Written once because two places print it**, and they are required to agree: the
+/// summary under the menu says what there is to continue, and the confirmation box says
+/// what a `New game` would cost. Two `format!`s would let the box quote back a run
+/// described in different terms from the one the player was just reading.
+///
+/// **The prestige segment is absent at rank 0, and that is the common case** — every
+/// run before its first prestige, which the balance pass puts at one to a bit over two
+/// hours. `Prestige 0` would spend the headline's third slot announcing something the
+/// player has *not* done; the two figures that survive are the two that are true of
+/// every run. Note that this is the opposite call from the Stats panel, which prints
+/// `rank 0` without hesitating: that panel is a readout of every figure, and this line
+/// is a headline.
+///
+/// The rank goes through [`prestige_rank`], not [`roman`](crate::format::roman), so a
+/// player past the numerals reads `Prestige 16` here rather than a `?` — see that
+/// function for why a prestige rank has no cap to spell out.
+fn headline(resume: &Resume) -> String {
+    let mut line = format!("Lv {} · {}", resume.level(), resume.pickaxe());
+    if resume.prestige() > 0 {
+        line.push_str(&format!(" · Prestige {}", prestige_rank(resume.prestige())));
+    }
+    line
+}
 
 /// What each row of the menu says.
 fn label(row: SplashRow) -> &'static str {
@@ -189,12 +215,13 @@ fn footer(splash: &Splash) -> &'static str {
 /// The *"start a new game?"* box (§6.1, and a departure from it — see [`Splash`]).
 ///
 /// **It names the run it would cost.** A confirmation that only says *"are you sure?"*
-/// asks the player to remember what is at stake; this one prints the level and the
-/// pickaxe, which are the two figures the menu was already showing them.
+/// asks the player to remember what is at stake; this one prints [`headline`], the
+/// very line the menu was already showing them — the same function and not a second
+/// wording, so the box cannot describe the run in terms the summary did not use.
 fn confirmation(frame: &mut Frame, area: Rect, splash: &Splash, cursor: usize) {
-    let at_stake = splash.resume().map_or_else(String::new, |resume| {
-        format!(" Lv {}  ·  {}", resume.level(), resume.pickaxe())
-    });
+    let at_stake = splash
+        .resume()
+        .map_or_else(String::new, |resume| format!(" {}", headline(resume)));
     let rows: Vec<String> = CONFIRM_ROWS
         .iter()
         .enumerate()
@@ -243,8 +270,8 @@ fn confirmation(frame: &mut Frame, area: Rect, splash: &Splash, cursor: usize) {
 /// **The headline is drawn plainly and the age is muted**, which is the hierarchy
 /// [`theme::marked_row`] already applies to every row with a label and a value: the
 /// figures the player came for keep the foreground, the context around them steps
-/// back. Here the figures are the level and the pickaxe — the two the confirmation
-/// box quotes back when a `New game` would cost them — and *when* the run was last
+/// back. Here the figures are [`headline`]'s — the same line the confirmation box
+/// quotes back when a `New game` would cost them — and *when* the run was last
 /// touched is what surrounds them.
 ///
 /// **The "nowhere to save" warning takes no colour at all**, and that is `docs/UI.md`
@@ -255,11 +282,7 @@ fn confirmation(frame: &mut Frame, area: Rect, splash: &Splash, cursor: usize) {
 fn summary(frame: &mut Frame, area: Rect, splash: &Splash) {
     let muted = Style::default().fg(theme::MUTED);
     let lines: Vec<Line<'static>> = if let Some(resume) = splash.resume() {
-        let mut lines = vec![Line::from(format!(
-            "Lv {}  ·  {}",
-            resume.level(),
-            resume.pickaxe()
-        ))];
+        let mut lines = vec![Line::from(headline(resume))];
         if let Some(idle) = resume.idle() {
             lines.push(Line::styled(
                 format!("last played {} ago", age(idle.as_secs())),
@@ -446,13 +469,43 @@ mod tests {
     }
 
     #[test]
-    fn a_title_over_a_save_shows_its_level_its_pickaxe_and_how_long_it_sat() {
+    fn a_title_over_a_save_shows_its_level_its_pickaxe_its_rank_and_how_long_it_sat() {
         let splash = Splash::sample(true, true);
         let frame = crate::overlay::render_to_string(|frame, area| render(frame, area, &splash));
         assert!(frame.contains("Continue"), "{frame}");
-        assert!(frame.contains("Lv 23"), "{frame}");
-        assert!(frame.contains("Diamond Pickaxe"), "{frame}");
+        // One assertion on the whole line rather than three on its pieces: what the
+        // headline promises is an *order* and a separator, and three `contains` would
+        // pass just as well on three figures scattered down the screen.
+        assert!(
+            frame.contains("Lv 23 · Diamond Pickaxe · Prestige II"),
+            "{frame}"
+        );
         assert!(frame.contains("last played 3h ago"), "{frame}");
+    }
+
+    /// The headline's one branch: at rank 0 the segment is not there to read.
+    ///
+    /// Asserting the *absence* of `Prestige` and not just the presence of the two
+    /// figures beside it, because the bug this guards against is a `Prestige 0` shown
+    /// to every player who has not prestiged yet — and a frame carrying it would
+    /// satisfy any assertion written about the level and the pickaxe.
+    #[test]
+    fn a_run_before_its_first_prestige_keeps_the_rank_off_the_headline() {
+        let splash = Splash::sample_at_rank(true, true, 0);
+        let frame = crate::overlay::render_to_string(|frame, area| render(frame, area, &splash));
+        assert!(frame.contains("Lv 23 · Diamond Pickaxe"), "{frame}");
+        assert!(
+            !frame.contains("Prestige"),
+            "a run that has never prestiged was told its rank: {frame}"
+        );
+    }
+
+    /// Past the numerals a rank still reads as a number, never as `roman`'s `?`.
+    #[test]
+    fn a_rank_past_the_roman_table_prints_as_a_number_on_the_title_too() {
+        let splash = Splash::sample_at_rank(true, true, 42);
+        let frame = crate::overlay::render_to_string(|frame, area| render(frame, area, &splash));
+        assert!(frame.contains("Prestige 42"), "{frame}");
     }
 
     #[test]
@@ -477,9 +530,12 @@ mod tests {
         let splash = Splash::sample_confirming();
         let frame = crate::overlay::render_to_string(|frame, area| render(frame, area, &splash));
         assert!(frame.contains("Start a new game?"), "{frame}");
-        // Not a bare "are you sure?": the two figures the menu was already showing.
-        assert!(frame.contains("Lv 23"), "{frame}");
-        assert!(frame.contains("Diamond Pickaxe"), "{frame}");
+        // Not a bare "are you sure?": the very line the menu was already showing,
+        // prestige rank included — the figure a `New game` costs most dearly.
+        assert!(
+            frame.contains("Lv 23 · Diamond Pickaxe · Prestige II"),
+            "{frame}"
+        );
         assert!(frame.contains("writes over it"), "{frame}");
 
         let marked = frame
