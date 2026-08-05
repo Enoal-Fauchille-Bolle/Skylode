@@ -312,14 +312,14 @@ supposed to separate from.
 │                                        ││ Size      12 x 7   (level 5)       │
 │                                        ││ Richness  level 0 / 9   value 10%  │
 └────────────────────────────────────────┘└────────────────────────────────────┘
- Break  61%  Iron Block  ████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
- XP  Lv 23   1 240 / 2 300  ███████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
- Boost  12s  ×1.50          ██████████████████████████████████░░░░░░░░░░░░░░░░
+ Break  61%  Iron Block      ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+ XP  Lv 23   1 240 / 2 300      ███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+ Boost  12s  ×1.50   3 held     ██████████████████████████████░░░░░░░░░░░░░░░░
 
                      ┌──────────────────────────────────────┐
                      │  Excavator!  +1 Compressed Iron      │
                      └──────────────────────────────────────┘
- Space  mine     Tab  next screen     ?  help
+ Space  mine     b  boost     Tab  next screen     ?  help
 ```
 
 **Constraints.** The grid is `Length(42)` and never a percentage (§1). The status
@@ -332,6 +332,22 @@ The `Boost` gauge is the **temporary Redstone boost**, which has a countdown; th
 permanent **Haste** enchant does not and is not shown here. The Pickaxe panel shows
 *derived numbers* — power, the boost product, the Fortune multiplier — with only
 non-zero special enchants listed; the full roster belongs to Upgrades.
+
+**The `Boost` gauge carries two independent facts, and the label is a product of
+them.** A boost that runs and a charge that is banked have nothing to do with each
+other: the player can hold either, both or neither, and the reserve is at its most
+interesting in exactly the state where nothing is running. So the countdown and the
+reserve are composed rather than written out as four sentences —
+`Boost  12s  ×1.50   3 held`, `Boost  —   3 held`, `Boost  12s  ×1.50   no charges`,
+`Boost  —   no charges`.
+
+**`b` fires one charge, and it is contextual to this screen.** A thirty-second window
+spent looking at the Inventory table is thirty seconds wasted, and this is the only
+screen that draws the gauge the boost appears on — so the binding lives here and is
+advertised in this footer, which is the only place outside Help that names it. §9.
+The charge itself is bought on the Upgrades screen (§5.4.4); a level-up grants one
+every fifth level, which is why the footer has to name the key for a player who has
+never opened that sub-tab.
 
 **Core reads — all of them exist, and this screen is wired to them.**
 `Mine::get_target()`, `Mine::break_ratio()`, `Mine::value_weight_percent()`,
@@ -348,6 +364,22 @@ there is no boost — so both gauges read `—` on an empty bar rather than `0%`
 `0s`, which would assert a block part-broken and a countdown running. The Pickaxe
 panel likewise drops the `×1.0 boost → 25.0` clause when nothing multiplies, and
 prints `Fortune —` and `Ench —` rather than a level of zero.
+
+**The empty *reserve* is the one absence in this game that is named and not dashed**,
+and the exception is deliberate. `—` is right for the countdown, where nothing running
+is nothing to measure; it is wrong for the reserve, because a player who has never seen
+the word does not know that the footer's `b  boost` refers to anything they can obtain.
+`no charges` is what makes the key mean something before the first one is granted.
+
+**One departure the rendered screen forced: the gauge labels are padded to 32 columns,
+not 28**, so the frame above draws its bars four columns wider than the built screen
+does. The Boost label is now the longest of the three, and its worst realistic case —
+ten charges banked and fired at once, `Boost  300s  ×2.50   10 held` — is 29 columns.
+Both right-hand panels are full at four content lines apiece, so the label was the only
+place the reserve could go. A `LineGauge` clips its label **in silence**, so an
+overflow would not fail: it would quietly stop printing how many charges the player
+holds, in precisely the state where the number is largest. A bar is a proportion and
+reads the same at 48 columns as at 52; a truncated number does not.
 
 **One departure from the frame above, forced by real numbers.** The composite
 `value 680 Iron` is flush right, not eight spaces along. The frame was counted at
@@ -587,8 +619,9 @@ Recorded when the screen was wired. The frame above is left as drawn.
 
 ### 5.4 Upgrades
 
-Three sub-tabs, because 96 rows of content do not fit in 21. Master-detail gives the
-dip warning a place to be read *before* it is bought.
+Four sub-tabs. Three of them are here because 96 rows of content do not fit in 21;
+the fourth (§5.4.4) is here for the opposite reason, and the asymmetry is the point.
+Master-detail gives the dip warning a place to be read *before* it is bought.
 
 ```text
 0---------1---------2---------3---------4---------5---------6---------7---------
@@ -638,6 +671,13 @@ fixed illustration.
 | **Pickaxe**  | one ladder, 5 tiers × Eff 0..5 + Netherite to 15 ≈ 46 | scrolls (`Scrollbar`, `░`/`█`) |
 | **Enchants** | one row per enchant — 6 tracks, each at its frontier  | **fits**, 13 spare (§5.4.1)    |
 | **Mines**    | 12 mines × 2 tracks = 24 frontiers                    | scrolls, 18 + header (§5.4.2)  |
+| **Boost**    | one — the game's only repeatable purchase             | **fits**, 18 spare (§5.4.4)    |
+
+**No sub-tab prints a price in its list**, on all four: Pickaxe names rungs, Enchants
+names levels and caps, Mines names tracks, Boost names its reserve. The cost is always
+the pane's, where a multi-material price has room to be verdicted line by line and the
+shortfall under each line has somewhere to sit. The list's own `✓ ~ ✗` is the whole of
+what a row says about affordability.
 
 #### 5.4.1 Enchants
 
@@ -844,6 +884,82 @@ Recorded when the screen was wired. The frames above are left as drawn.
   spells the rest out — the world in force, the two the player is not in, and that
   Efficiency is capped by the tier instead. It is the one prose block on this screen
   whose line breaks move with the run, so it is wrapped rather than hand-broken.
+
+#### 5.4.4 Boost
+
+Numbered after the departures rather than in frame order, so that the §5.4.3 this and
+§4.5 both point at keeps its number.
+
+```text
+0---------1---------2---------3---------4---------5---------6---------7---------
+ 1 Mine │ 2 Mines │ 3 Inventory │ [4 Upgrades] │ 5 Stats │ 6 Levels
+  Pickaxe   Enchants   Mines  [Boost]          ⇧←→  sub-tab           M  max
+┌───────────────────────────────────┬──────────────────────────────────────────┐
+│   Item           Reserve          │ Redstone boost                    3 held │
+│ ▸ Redstone boost 3 held        ✓  │                                          │
+│                                   │ Effect    ×2.50 mining power             │
+│                                   │           for 30 s                       │
+│                                   │                                          │
+│                                   │ Cost      3 Compressed Redstone        ✓ │
+│                                   │                                          │
+│                                   │ Reserve   3 charges, unfired             │
+│                                   │                                          │
+│                                   │ Fired with b on the Mine screen.         │
+│                                   │ A second charge adds its window to       │
+│                                   │ the one running, never replacing it.     │
+│                                   │                                          │
+│                                   │                                          │
+│                                   │                                          │
+│                                   │                                          │
+│                                   │                                          │
+└───────────────────────────────────┴──────────────────────────────────────────┘
+ ↑↓  select     Enter  buy one charge     M  buy max     Tab  next screen
+```
+
+**A sub-tab holding one row, which the other three would call a waste of a tab.** The
+screen's own reason for having sub-tabs is that ninety-six rows do not fit in
+twenty-one; this one is here for the opposite reason. A boost is bought with ore, so it
+belongs on the screen where ore is spent — and it is not a *track*, so it cannot be a
+row on any of the other three without lying about their columns. `Level` and `Cap` mean
+nothing to a charge: there is no rung held and no ceiling to reach, which is exactly
+what makes it the only repeatable purchase in the game. The sparse list buys the pane
+beside it, which is where the multiplier, the duration, the stacking rule and the
+reserve are stated — none of which fits in a table cell.
+
+**Two columns and not three, and the width is measured rather than assumed.** The
+master side is 35 columns; `Redstone boost` alone is 14 of them, so a third column
+carrying the effect was clipped to `R` and `3` by the reachability mark before anyone
+saw it. The row's job is what it is, how many are banked, and whether one is
+affordable.
+
+**The price is quoted in Compressed units, and that puts §8.4's `compress first` loop
+squarely on this purchase's path.** `BOOST_COST` is 300 raw, but `Cost::single` sends
+it through `CostLine::from_raw_total`, which normalises any total past
+`RAW_PER_COMPRESSED` into the larger denomination — so the till asks for
+`3 Compressed Redstone`, and a player who has mined four hundred Redstone and never
+compressed any of it is wealthy and refused. The refusal remembers what it named, so
+`c` walks them to the right pile.
+
+**`M` has no cap to stop at, and the wording says so: `buy max`, not `buy to cap`.**
+Every other track ends at a ceiling — a maxed enchant, the last rung, richness 9 — so
+"as far as possible" terminates at something the game defines. The boost is the only
+uncapped sink in the economy (`organization/PRICES-FR.md` §Q10), so `M` here means
+*until the purse refuses*, and it can empty a Redstone reserve the enchant tracks are
+also paid from. Enoal's call, and taken with that consequence stated: `M` means the
+same thing on all four sub-tabs, and a key that behaved differently on one of them
+would be the harder thing to remember.
+
+**The pane is the only one on this screen that says what to press next**, and that is
+forced by the split the core makes. Every other purchase here takes effect the moment
+it is paid for — a rung climbed, a level bought, a ceiling raised. A charge does
+nothing until it is *fired*, from another screen, with a key that appears in no footer
+but Mine's. A pane that quoted a price and stopped would be selling something with no
+visible effect.
+
+**An empty reserve reads `none — nothing to fire`**, and one charge reads `1 charge`
+rather than `1 charges` — the singular is the arm a fixture set to three never reaches,
+and the kind of thing that survives a whole project because it only appears in one
+state.
 
 ### 5.5 Stats
 
@@ -2096,12 +2212,13 @@ never switches a sub-tab, and the sub-tab key is the configurable binding
 | Screen | Key | Action |
 | --- | --- | --- |
 | **Mine** | `Space` | mine (hold; or start/stop under the accessibility toggle) |
+| | `b` | fire one boost charge from the reserve (§5.4.4) |
 | **Mines** | `↑↓` | select mine |
 | | `Enter` | mine it — jump to the Mine screen (the one screen-to-screen edge, §6.1) |
 | | `←/→` | richness **dial** (adjust the value under the cursor) |
 | **Inventory** | `↑↓` | select material |
 | | `c` / `C` | compress / decompress |
-| **Upgrades** | `⇧←→` (configurable) | switch sub-tab (Pickaxe / Enchants / Mines) |
+| **Upgrades** | `⇧←→` (configurable) | switch sub-tab (Pickaxe / Enchants / Mines / Boost) |
 | | `↑↓` | select row (preview is free on any row, §5.5) |
 | | `Enter` | buy the chain up to the cursor; refused past the `✓` prefix. A net power regression routes through the dip modal (§5.7.7) |
 | | `M` | buy max — to the end of the `✓` prefix |
@@ -2175,7 +2292,12 @@ than binding `c` in place (§6.4). No two bindings fight.
   always one keypress from being found; spending a footer slot on `q` as well would
   buy, at best, the removal of that one keypress on one screen.
   **Consequence, applied:** §5.2's Mine footer drops `q  quit` and now reads
-  `Space  mine · Tab  next screen · ?  help`, with 9 columns freed.
+  `Space  mine · Tab  next screen · ?  help`, with 9 columns freed. **Amended when the
+  boost landed**: those 9 columns are now spent on `b  boost`, and the footer reads
+  `Space  mine · b  boost · Tab  next screen · ?  help` at 58 of 80 columns. The rule
+  above is what pays for it — `b` is a *screen-local* binding on the one screen that
+  owns it, which is exactly what a footer is for, where `q` is a global and would have
+  been an exception.
 - **`p` opens the prestige preview, contextual to Stats, and it is shown in Stats'
   footer.** The focus-model alternative is rejected on cost: Stats would need a
   notion of _which panel is focused_ — a navigation concept the game uses **exactly
@@ -2306,7 +2428,8 @@ this document wins for the signature** — and a disagreement is a bug to reconc
 | `upgrade::ladder() -> Vec<PickaxeRung>` | the roadmap (§5.4) | 6 | **done** — a `Vec` and not an iterator, because the screen indexes it (the cursor is a rung number) and prices a slice of it |
 | `upgrade::chain_affordability(&inv, &pickaxe, n)` | the cumulative `✓ ~ ✗` column (§5.4) | 6 | **done** — a chain is **simulated** rung by rung against a cloned inventory, never summed: adding two prices and re-splitting them into denominations describes a payment the player is never asked to make |
 | `Block::ticks_to_break(power)`, `Pickaxe::power_with(tier, eff)` | the dip in ticks per block, and a rung the player does not own (§5.4, §6.7) | 6 | **done** — `TICKS_PER_HARDNESS` was private to `mine`, and `Enchants::upgrade` is `pub(crate)`, so the front-end could compute neither |
-| `EnchantType::ALL`, `GameState::buy_pickaxe_chain` / `buy_enchant` / `buy_mine_size(kind)` / `buy_mine_richness(kind)` | the three sub-tabs and their purchases (§5.4) | 6 | **done** — the two mine doors take a `MineKind`, since the cursor may sit on a mine the player is not standing in |
+| `EnchantType::ALL`, `GameState::buy_pickaxe_chain` / `buy_enchant` / `buy_mine_size(kind)` / `buy_mine_richness(kind)` | the first three sub-tabs and their purchases (§5.4) | 6 | **done** — the two mine doors take a `MineKind`, since the cursor may sit on a mine the player is not standing in |
+| `GameState::buy_boost_charge` / `fire_boost` / `boost_charges`, `economy::boost_cost` | the fourth sub-tab, and `b` on the Mine screen (§5.4.4, §5.1) | — | **already public, and unused for two phases** — the core shipped both doors with the reserve and the timer, and nothing called them; this row exists so the next such gap is visible before it is a chantier |
 | `loot_for_level(n)` / `xp_for_level(n)` | the Levels roadmap (§5.7.5) | 6 | new |
 | `tick(&mut self, input) -> Vec<GameEvent>` | toasts, history, the proc flash — **all of them** (§5.5) | 7 | **done** — the front-end drives it from a 20 tps deadline (§10.1) and words each event in `announce` |
 | spatial `Event`s carrying **their cell list** | the proc flash (§7) | 7 | **done** — plus `broken`, a count the list could not stand in for: the shape includes ground already dug, so the toast and the flash need different numbers (§7) |
