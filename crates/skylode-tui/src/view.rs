@@ -31,7 +31,8 @@ use skylode_core::{
     prestige::{self, PrestigeLock},
     reward::{self, LevelReward},
     tunables::{
-        BOOST_DURATION_TICKS, HASTE_PER_LEVEL, LEVEL_CAP, RAW_PER_COMPRESSED, TICKS_PER_SECOND,
+        BOOST_DURATION_TICKS, BOOST_MULTIPLIER, HASTE_PER_LEVEL, LEVEL_CAP, RAW_PER_COMPRESSED,
+        TICKS_PER_SECOND,
     },
     upgrade,
     world::World,
@@ -41,7 +42,7 @@ use crate::{
     announce,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     flash::{FlashStage, Flashes},
-    format::{MAXED, duration_hm, roman, rung_label, shown_rung},
+    format::{MAXED, duration_hm, grouped, roman, rung_label, shown_rung},
     palette::ColourMode,
     toast::Toasts,
 };
@@ -361,6 +362,8 @@ pub enum UpgradeDetail {
     Enchant(EnchantDetail),
     /// One mine's size or richness track.
     Mine(MineTrackDetail),
+    /// The one consumable the game sells.
+    Boost(BoostDetail),
 }
 
 /// The Pickaxe sub-tab's pane: what the chain to the cursor costs and does.
@@ -573,6 +576,34 @@ pub struct MineTrackDetail {
     pub blocked: Option<TrackBlock>,
 }
 
+/// The Boost sub-tab's pane: the one repeatable purchase in the game.
+///
+/// **Every field here is a constant of the game except two**, and that is what makes the
+/// pane rather than the row the point of the sub-tab. The multiplier and the duration
+/// are [`tunables`](skylode_core::tunables) — the same for the first charge and the
+/// hundredth, since a boost carries no level — so the only figures that move with the
+/// run are what the player holds and what they have banked. A table with three columns
+/// of constants would be a table pretending to be a track.
+///
+/// **`reserve` lives here rather than being read off some shared field**, because the
+/// question the shop asks about it is its own: *"how many will this purchase add to"*.
+/// The Mine screen asks a different one — *"have I got one to fire"* — and answers it
+/// from its own projection, so neither screen's read model depends on the other's.
+#[derive(Clone, Debug)]
+pub struct BoostDetail {
+    /// What one charge costs, verdicted line by line — see [`EnchantDetail::cost`] for
+    /// why no overall verdict sits beside it.
+    pub price: Vec<PriceLine>,
+    /// What the charge multiplies mining power by while it runs.
+    pub multiplier: f32,
+    /// How long one charge runs, in seconds — converted here because
+    /// [`tunables`](skylode_core::tunables) quotes it in ticks, which is the tick
+    /// loop's unit and not a player's.
+    pub seconds: u32,
+    /// How many charges are banked and unfired.
+    pub reserve: u32,
+}
+
 /// What buying the next level of a mine track hands over — **both sides of the step**.
 ///
 /// It used to carry the *after* alone, which is what UI.md §5.4.2's `At 7` block prints;
@@ -638,6 +669,8 @@ pub struct UpgradesView {
     pub enchants: UpgradeSubtab,
     /// The mines' size and richness tracks.
     pub mines: UpgradeSubtab,
+    /// The boost charge, the only thing here that is bought more than once.
+    pub boost: UpgradeSubtab,
 }
 
 impl UpgradesView {
@@ -651,6 +684,7 @@ impl UpgradesView {
             UpgradeTab::Pickaxe => &self.pickaxe,
             UpgradeTab::Enchants => &self.enchants,
             UpgradeTab::Mines => &self.mines,
+            UpgradeTab::Boost => &self.boost,
         }
     }
 }
@@ -1657,6 +1691,65 @@ fn upgrades_view(state: &GameState, cursors: Cursors) -> UpgradesView {
         pickaxe: pickaxe_subtab(state, cursors),
         enchants: enchants_subtab(state, cursors),
         mines: mine_tracks_subtab(state, cursors),
+        boost: boost_subtab(state),
+    }
+}
+
+/// The Boost sub-tab: one row, and a pane that carries the rest (UI.md §5.4.4).
+///
+/// **It takes no [`Cursors`], and that is the shape of the thing rather than a
+/// simplification.** The other three sub-tabs need to know which row is pointed at
+/// because their panes describe *that* row; a list of one has nothing to point at that
+/// is not already the whole list. The `cursor: true` below is therefore a constant, and
+/// `App::step_list_cursor` has nothing to move here.
+///
+/// The price goes through [`economy::boost_cost`] and [`price_lines`] like every other
+/// price on this screen, so the `✓ ~ ✗` this row draws is the same verdict the till will
+/// reach. The boost is the one purchase with **no cap and no ladder**, which is why
+/// there is no [`Mark::NoPrice`] branch: a maxed track has nothing to sell, and this one
+/// never runs out.
+fn boost_subtab(state: &GameState) -> UpgradeSubtab {
+    let inventory = state.player().get_inventory();
+    let cost = economy::boost_cost();
+    let price = price_lines(inventory, cost.lines());
+    let reserve = state.boost_charges();
+    // Widened, divided, narrowed — [`boost_view`]'s conversion and for its reason:
+    // `TICKS_PER_SECOND` is a `u64` while a tick counter is a `u32`.
+    let seconds = u32::try_from(u64::from(BOOST_DURATION_TICKS) / TICKS_PER_SECOND).unwrap_or(0);
+
+    // **Two columns where the other sub-tabs have three, and the list is measured
+    // rather than guessed.** The master side is 35 columns; `Redstone boost` alone is
+    // 14 of them, so a third column carrying the effect was clipped to `3` by the
+    // reachability mark. What the row must say is what it is, how many are banked, and
+    // whether one is affordable — the effect and the price are the pane's, on the rule
+    // the other three already follow: none of them prints a cost in its list either.
+    let rows = vec![UpgradeRow {
+        cells: vec![
+            "Redstone boost".to_owned(),
+            // The reserve on the row as well as in the pane: the list is what a player
+            // scanning the four sub-tabs sees first, and *how many you already hold* is
+            // the fact that decides whether to buy another one.
+            match reserve {
+                0 => NOTHING.to_owned(),
+                held => format!("{} held", grouped(held)),
+            },
+        ],
+        mark: Mark::of(&economy::affordability(inventory, &cost)),
+        cursor: true,
+        current: false,
+    }];
+
+    UpgradeSubtab {
+        header: vec!["Item".to_owned(), "Reserve".to_owned()],
+        rows,
+        offset: 0,
+        detail: UpgradeDetail::Boost(BoostDetail {
+            price,
+            multiplier: BOOST_MULTIPLIER,
+            seconds,
+            reserve,
+        }),
+        footer: BOOST_FOOTER.to_owned(),
     }
 }
 
@@ -2277,6 +2370,14 @@ fn enchant_note(kind: EnchantType, level: u8, cap: u8) -> Vec<String> {
 const SELECT_FOOTER: &str =
     " ↑↓  select     Enter  buy one level     M  buy to cap     Tab  next screen";
 
+/// The Boost sub-tab's own, which differs in both halves rather than in wording.
+///
+/// `buy one charge` and not `buy one level`, because a charge has no level; `buy max`
+/// and not `buy to cap`, because there is no cap — `M` here stops at an empty purse.
+/// Naming what the key actually does is the whole reason this is not [`SELECT_FOOTER`].
+const BOOST_FOOTER: &str =
+    " ↑↓  select     Enter  buy one charge     M  buy max     Tab  next screen";
+
 /// The prose under a mine's dial: what a player should make of *this* dial.
 ///
 /// **Front-end text, not a rule**, which is why it lives here and not beside
@@ -2485,11 +2586,36 @@ fn sample_upgrades() -> UpgradesView {
         footer: SELECT_FOOTER.to_owned(),
     };
 
+    // The one sub-tab whose fixture is *almost* the real thing: every figure in it but
+    // the reserve and the holding is a tunable, so the sample can only differ from a
+    // run in what the player has banked.
+    let boost = UpgradeSubtab {
+        header: vec!["Item".to_owned(), "Reserve".to_owned()],
+        rows: vec![UpgradeRow {
+            cells: vec!["Redstone boost".to_owned(), "3 held".to_owned()],
+            mark: Mark::Affordable,
+            cursor: true,
+            current: false,
+        }],
+        offset: 0,
+        detail: UpgradeDetail::Boost(BoostDetail {
+            // Quoted in Compressed units, which is what `Cost::single` normalises a
+            // 300-raw price into — the fixture would otherwise show a denomination the
+            // till never asks for.
+            price: sample_price(&[(Item::Compressed(Material::Redstone), 3, 12)]),
+            multiplier: BOOST_MULTIPLIER,
+            seconds: 30,
+            reserve: 3,
+        }),
+        footer: BOOST_FOOTER.to_owned(),
+    };
+
     UpgradesView {
         active: UpgradeTab::Pickaxe,
         pickaxe,
         enchants,
         mines,
+        boost,
     }
 }
 

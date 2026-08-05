@@ -30,11 +30,31 @@ pub enum UpgradeTab {
     Enchants,
     /// The twelve mines' size and richness tracks.
     Mines,
+    /// The one consumable the game sells: a temporary Redstone boost charge.
+    ///
+    /// **A sub-tab holding a single row, which the other three would call a waste of
+    /// a tab.** The screen's own reason for having sub-tabs is that ninety-six rows
+    /// do not fit in twenty-one (`docs/UI.md` §5.4) — this one is here for the
+    /// opposite reason. A boost is bought with ore, so it belongs on the screen where
+    /// ore is spent; and it is not a *track*, so it cannot be a row on any of the
+    /// other three without lying about their columns. `Level` and `Cap` mean nothing
+    /// to a charge: there is no rung held and no ceiling to reach, which is exactly
+    /// what makes it the only repeatable purchase in the game.
+    ///
+    /// What the sparse list buys is the detail pane beside it, which is where the
+    /// multiplier, the duration, the stacking rule and the reserve are stated — none
+    /// of which fits in a table cell.
+    Boost,
 }
 
 impl UpgradeTab {
-    /// The three, in the order the sub-tab bar prints them.
-    pub const ALL: [Self; 3] = [Self::Pickaxe, Self::Enchants, Self::Mines];
+    /// The four, in the order the sub-tab bar prints them.
+    ///
+    /// Boost last, and that is the order of a run rather than an alphabet: the three
+    /// permanent tracks are what a player climbs, and the consumable is what they
+    /// reach for when the climb runs out of ceiling (`docs/MECHANICS.md` — permanent
+    /// upgrades alone never instamine Obsidian).
+    pub const ALL: [Self; 4] = [Self::Pickaxe, Self::Enchants, Self::Mines, Self::Boost];
 
     /// The next sub-tab, **wrapping** past the last back to the first.
     ///
@@ -362,13 +382,15 @@ mod tests {
         assert_eq!(step_index(46, 50, 0), 4);
     }
 
-    /// The three sub-tabs are a **ring**, like every list on the screens they belong to
+    /// The four sub-tabs are a **ring**, like every list on the screens they belong to
     /// — they were the exception, and [`step_in`]'s own doc no longer draws the
     /// distinction. What this still pins is that they come back where they started.
     #[test]
     fn the_sub_tabs_wrap_in_both_directions() {
-        assert_eq!(UpgradeTab::Pickaxe.prev(), UpgradeTab::Mines);
-        assert_eq!(UpgradeTab::Mines.next(), UpgradeTab::Pickaxe);
+        assert_eq!(UpgradeTab::Pickaxe.prev(), UpgradeTab::Boost);
+        assert_eq!(UpgradeTab::Boost.next(), UpgradeTab::Pickaxe);
+        // The consumable sits after the three permanent tracks, not among them.
+        assert_eq!(UpgradeTab::Mines.next(), UpgradeTab::Boost);
         for tab in UpgradeTab::ALL {
             assert_eq!(tab.next().prev(), tab, "{tab:?} did not come back");
         }

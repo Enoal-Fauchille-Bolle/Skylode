@@ -29,9 +29,9 @@ use crate::{
     screen::{panel, scrollbar, window},
     theme,
     view::{
-        DipDetail, EnchantDetail, Mark, MineTrackDetail, NOTHING, OwnedRung, PickaxeDetail,
-        PowerDetail, PriceLine, StatStep, TrackBlock, TrackOutcome, UpgradeDetail, UpgradeSubtab,
-        UpgradesView, View, level_word,
+        BoostDetail, DipDetail, EnchantDetail, Mark, MineTrackDetail, NOTHING, OwnedRung,
+        PickaxeDetail, PowerDetail, PriceLine, StatStep, TrackBlock, TrackOutcome, UpgradeDetail,
+        UpgradeSubtab, UpgradesView, View, level_word,
     },
 };
 
@@ -134,6 +134,7 @@ fn tab_name(tab: UpgradeTab) -> &'static str {
         UpgradeTab::Pickaxe => "Pickaxe",
         UpgradeTab::Enchants => "Enchants",
         UpgradeTab::Mines => "Mines",
+        UpgradeTab::Boost => "Boost",
     }
 }
 
@@ -331,6 +332,7 @@ fn detail(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
         UpgradeDetail::Pickaxe(detail) => pickaxe_pane(detail, usize::from(area.height)),
         UpgradeDetail::Enchant(detail) => enchant_pane(detail, usize::from(area.height)),
         UpgradeDetail::Mine(detail) => mine_pane(detail, usize::from(area.height)),
+        UpgradeDetail::Boost(detail) => boost_pane(detail, usize::from(area.height)),
     };
     // Through `marked_row`: the pane quotes the affordability of what is selected, so
     // the same `✓ ~ ✗` appear here as in the list beside it, in the same hues — and
@@ -719,6 +721,62 @@ fn enchant_pane(detail: &EnchantDetail, height: usize) -> Vec<PaneLine> {
     assembled(head, price, tail, height)
 }
 
+/// The Boost pane: the one purchase whose *pane* is the reason its sub-tab exists
+/// (UI.md §5.4.4).
+///
+/// **It is the only pane here that says what to do next, and that is forced by the
+/// split the core makes.** Every other purchase on this screen takes effect the moment
+/// it is paid for — a rung climbed, a level bought, a ceiling raised. A charge does
+/// nothing until it is *fired*, from another screen, with a key that appears in no
+/// footer but that one. A pane that quoted a price and stopped would be selling
+/// something with no visible effect.
+///
+/// **The stacking rule is stated, not merely permitted.** `docs/DECISIONS.md` leaves
+/// the "are you sure?" to the interface and the interface declines to ask one — because
+/// a second charge *adds* its window rather than replacing it, so firing early costs
+/// nothing. That is only true if the player knows it, which is what the last two lines
+/// are for.
+fn boost_pane(detail: &BoostDetail, height: usize) -> Vec<PaneLine> {
+    // **A dash and not `0 held`**, on the rule every readout in this game follows: a
+    // zero states a quantity the player owns, and an empty reserve is the absence of
+    // one. The `Reserve` block below says what the absence *means*; this only has to
+    // avoid contradicting it.
+    let held = match detail.reserve {
+        0 => format!("{NOTHING} "),
+        held => format!("{} held ", grouped(held)),
+    };
+    let mut head = vec![
+        justified(" Redstone boost", &held, DETAIL_WIDTH).into(),
+        PaneLine::from(String::new()),
+    ];
+    head.extend(block(
+        "Effect",
+        &[
+            format!("×{:.2} mining power", detail.multiplier),
+            format!("for {} s", detail.seconds),
+        ],
+    ));
+    head.push(String::new().into());
+
+    let mut tail = vec![PaneLine::from(String::new())];
+    tail.extend(block(
+        "Reserve",
+        &[match detail.reserve {
+            0 => "none — nothing to fire".to_owned(),
+            1 => "1 charge, unfired".to_owned(),
+            held => format!("{} charges, unfired", grouped(held)),
+        }],
+    ));
+    tail.push(String::new().into());
+    // Prose rather than a `block`, for the reason the Mines pane's note is: these are
+    // sentences about how the thing is *used*, not values under a label.
+    tail.push(" Fired with b on the Mine screen.".to_owned().into());
+    tail.push(" A second charge adds its window to".to_owned().into());
+    tail.push(" the one running, never replacing it.".to_owned().into());
+
+    assembled(head, price_block(&detail.price), tail, height)
+}
+
 /// The `Cap` block's four lines (UI.md §5.4.1), which say three things the number alone
 /// does not.
 ///
@@ -1004,11 +1062,14 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_shows_three_sub_tabs_with_the_active_one_bracketed() {
+    fn the_bar_shows_every_sub_tab_with_the_active_one_bracketed() {
         let pickaxe = whole_frame(&render_tab(UpgradeTab::Pickaxe));
         let bar = row_with(&pickaxe, "Pickaxe");
         assert!(bar.contains("[Pickaxe]"), "{bar:?}");
-        assert!(bar.contains("Enchants") && bar.contains("Mines"), "{bar:?}");
+        assert!(
+            bar.contains("Enchants") && bar.contains("Mines") && bar.contains("Boost"),
+            "{bar:?}"
+        );
         assert!(
             bar.contains("⇧←→  sub-tab") && bar.contains("M  max"),
             "{bar:?}"
@@ -1252,6 +1313,66 @@ mod tests {
         );
     }
 
+    /// The one-row sub-tab, and the two columns it fits into 35 of them.
+    ///
+    /// **The width assertion is the point of rendering rather than inspecting the
+    /// view.** A third column carrying the effect measured fine in the source and was
+    /// clipped to `R` and `3` by the mark — ratatui truncates and says nothing, so only
+    /// a real frame can be asked whether a cell survived.
+    #[test]
+    fn the_boost_sub_tab_shows_one_row_and_leaves_the_rest_to_its_pane() {
+        let buffer = render_tab(UpgradeTab::Boost);
+        let list = list_panel(&buffer);
+        assert!(row_with(&list, "Item").contains("Reserve"), "{list}");
+        assert!(
+            row_with(&list, "▸").contains("Redstone boost"),
+            "the one row is not the one under the cursor: {list}"
+        );
+        assert!(
+            row_with(&list, "▸").contains("3 held"),
+            "the reserve was clipped out of the row: {list}"
+        );
+        // A list of one never overflows, so no thumb is drawn.
+        assert!(
+            !list.contains('█'),
+            "a one-row list drew a scrollbar: {list}"
+        );
+    }
+
+    /// What the sub-tab exists for: the pane says what a charge does, what it costs,
+    /// how many are banked, and — alone among the four panes — what to press next.
+    #[test]
+    fn the_boost_pane_prices_the_charge_and_says_how_to_fire_it() {
+        let frame = whole_frame(&render_tab(UpgradeTab::Boost));
+        assert!(frame.contains("×2.50 mining power"), "{frame}");
+        assert!(frame.contains("for 30 s"), "{frame}");
+        // The denomination the till actually quotes: `Cost::single` normalises the
+        // 300-raw tunable into Compressed units.
+        assert!(frame.contains("3 Compressed Redstone"), "{frame}");
+        assert!(frame.contains("3 charges, unfired"), "{frame}");
+        assert!(frame.contains("Fired with b on the Mine screen"), "{frame}");
+        // The stacking rule is stated, because the interface deliberately asks no
+        // confirmation before adding to a running boost.
+        assert!(frame.contains("adds its window"), "{frame}");
+    }
+
+    /// An empty reserve reads as an absence rather than as a zero, on the same rule the
+    /// Mine screen's gauges follow — and the pane says what that absence means.
+    #[test]
+    fn an_empty_reserve_is_drawn_as_nothing_held_rather_than_as_a_count() {
+        let mut view = View::sample();
+        view.upgrades.active = UpgradeTab::Boost;
+        view.upgrades.boost.rows[0].cells[1] = NOTHING.to_owned();
+        if let UpgradeDetail::Boost(detail) = &mut view.upgrades.boost.detail {
+            detail.reserve = 0;
+        }
+        let frame = whole_frame(&render_view(&view));
+
+        assert!(frame.contains("none — nothing to fire"), "{frame}");
+        assert!(!frame.contains("0 charges"), "{frame}");
+        assert!(!frame.contains("0 held"), "{frame}");
+    }
+
     #[test]
     fn each_sub_tab_names_its_own_purchase_in_the_footer() {
         let footer = |buffer: &Buffer| {
@@ -1263,6 +1384,11 @@ mod tests {
         assert!(footer(&render_tab(UpgradeTab::Pickaxe)).contains("buy max"));
         assert!(footer(&render_tab(UpgradeTab::Enchants)).contains("buy one level"));
         assert!(footer(&render_tab(UpgradeTab::Enchants)).contains("buy to cap"));
+        // Neither of the Enchants words survives here: a charge has no level, and `M`
+        // has no cap to stop at.
+        let boost = footer(&render_tab(UpgradeTab::Boost));
+        assert!(boost.contains("buy one charge"), "{boost}");
+        assert!(boost.contains("buy max"), "{boost}");
     }
 
     /// How many of the ladder's rungs the buffer actually shows.

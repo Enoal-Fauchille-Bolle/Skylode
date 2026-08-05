@@ -1077,6 +1077,7 @@ impl App {
             UpgradeTab::Pickaxe => self.buy_pickaxe_chain(reach),
             UpgradeTab::Enchants => self.buy_enchant_levels(reach),
             UpgradeTab::Mines => self.buy_mine_track(reach),
+            UpgradeTab::Boost => self.buy_boost_charges(reach),
         }
     }
 
@@ -1132,6 +1133,15 @@ impl App {
                     MineTrack::Size => state.dev_upgrade_mine_size(kind),
                     MineTrack::Richness => state.dev_upgrade_mine_richness(kind),
                 })
+            }
+            // **One charge per press, `M` included, and `repeat_free` is not reused.**
+            // That helper stops when a purchase *refuses*, and this door cannot: a
+            // reserve has no cap, so "as far as possible" would be `u32::MAX` charges.
+            // The dev menu already has a row that grants up to 99 at once, so a free
+            // buy-max here would be a second, worse way to reach the same state.
+            UpgradeTab::Boost => {
+                self.state.dev_grant_boost_charges(1);
+                (1, None)
             }
         };
 
@@ -1197,6 +1207,9 @@ impl App {
                     MineTrack::Richness => mine.get_richness_level(),
                 });
                 format!("{} {what} → level {level}", kind.name())
+            }
+            UpgradeTab::Boost => {
+                format!("{} boost charges held", grouped(self.state.boost_charges()))
             }
         }
     }
@@ -1360,6 +1373,58 @@ impl App {
         self.refused = None;
         self.toasts.push(
             format!("Bought {} {}", kind.name(), roman(level)),
+            Tone::Success,
+            Salience::Normal,
+            TOAST_TTL,
+        );
+    }
+
+    /// Buys one boost charge into the reserve, or as many as the Redstone allows.
+    ///
+    /// **`M` here has no cap to stop at, and that is deliberate rather than overlooked.**
+    /// Every other track ends at a ceiling — a maxed enchant, the last rung, richness 9 —
+    /// so "as far as possible" terminates at something the game defines. The boost is the
+    /// one uncapped sink in the economy (`organization/PRICES-FR.md` §Q10), so `M` here
+    /// means *until the purse refuses*, and it can empty a Redstone reserve the enchant
+    /// tracks are also paid from. Enoal's call: `M` means the same thing on all four
+    /// sub-tabs, and a key that behaved differently on one of them would be the harder
+    /// thing to remember.
+    ///
+    /// Otherwise this is [`buy_enchant_levels`](App::buy_enchant_levels) with the level
+    /// removed: same [`economy::buy_repeatedly`], same second call for the refusal's
+    /// reason, same two announcements.
+    fn buy_boost_charges(&mut self, reach: Reach) {
+        let wanted = match reach {
+            Reach::ToCursor => 1,
+            Reach::AsFarAsPossible => u32::MAX,
+        };
+        let bought = economy::buy_repeatedly(wanted, || self.state.buy_boost_charge());
+        if bought == 0 {
+            let refusal = self.state.buy_boost_charge();
+            let cost = economy::boost_cost();
+            self.announce_purchase_refusal(refusal, Some(&cost));
+            // **The boost is quoted in Compressed units, so the `compress first` loop
+            // is squarely on its path.** `Cost::single` puts a 300-raw price through
+            // `CostLine::from_raw_total`, which normalises it to `3 Compressed
+            // Redstone` — so a player who has mined 400 Redstone and never compressed
+            // is wealthy and refused, which is exactly what this remembers for the
+            // Inventory screen to point at.
+            self.remember_refusal("Boost charge", &cost);
+            return;
+        }
+
+        self.refused = None;
+        // Read off the run afterwards, never composed from what was asked for: `M`
+        // stops where the purse does, so the count and the reserve are both facts
+        // about what happened rather than about the keypress.
+        let held = self.state.boost_charges();
+        let bought_label = if bought == 1 {
+            "a boost charge".to_owned()
+        } else {
+            format!("{} boost charges", grouped(bought))
+        };
+        self.toasts.push(
+            format!("Bought {bought_label} — {} held", grouped(held)),
             Tone::Success,
             Salience::Normal,
             TOAST_TTL,
@@ -1612,6 +1677,11 @@ impl App {
                     self.cursors.mine_track =
                         cursor::step_in(&cursor::mine_tracks(), self.cursors.mine_track, delta);
                 }
+                // **A list of one has nowhere to step**, so there is no cursor for this
+                // sub-tab to own — see [`UpgradeTab::Boost`]. Spelled out rather than
+                // left to a catch-all: an empty arm here says *this list has one row*,
+                // where a `_` would say *some of these sub-tabs were not thought about*.
+                UpgradeTab::Boost => {}
             },
             // The ladder is `1..=LEVEL_CAP`, contiguous and one-based, so the step is
             // over indices and the level is that index plus one. Routed through
@@ -2095,7 +2165,7 @@ mod tests {
         crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
         style::Color,
     };
-    use skylode_core::{game::Input, pickaxe::PickaxeTier, save};
+    use skylode_core::{game::Input, pickaxe::PickaxeTier, save, tunables::BOOST_COST};
 
     use super::*;
     // Both belong to the loop, which lives in `session` now — so they are imported
@@ -3490,13 +3560,15 @@ mod tests {
         app.update(Action::NextSubTab);
         assert_eq!(app.cursors.upgrade_tab, UpgradeTab::Mines);
         app.update(Action::NextSubTab);
+        assert_eq!(app.cursors.upgrade_tab, UpgradeTab::Boost);
+        app.update(Action::NextSubTab);
         assert_eq!(
             app.cursors.upgrade_tab,
             UpgradeTab::Pickaxe,
             "the sub-tab bar did not wrap"
         );
         app.update(Action::PrevSubTab);
-        assert_eq!(app.cursors.upgrade_tab, UpgradeTab::Mines, "nor backwards");
+        assert_eq!(app.cursors.upgrade_tab, UpgradeTab::Boost, "nor backwards");
 
         // The ladder too. A fresh run stands on rung 0, so `↑` comes out at the last
         // rung — a maxed Netherite pickaxe, which the cursor may point at freely: it
@@ -3615,6 +3687,139 @@ mod tests {
             whole_frame(&render_to_buffer(&app)).contains("Not enough"),
             "a penniless buy-max did not name the shortage"
         );
+    }
+
+    // --- The boost sub-tab (UI.md §5.4.4) ---
+
+    /// What one charge is actually quoted in.
+    ///
+    /// **Compressed units, not the raw figure [`BOOST_COST`] states**, and the
+    /// difference is [`economy::Cost::single`]: it puts the 300 through
+    /// `CostLine::from_raw_total`, which normalises any total past
+    /// [`RAW_PER_COMPRESSED`](skylode_core::tunables::RAW_PER_COMPRESSED) into the
+    /// larger denomination. Derived here rather than written as `3`, so a re-balance of
+    /// the tunable moves the fixtures with it.
+    const CHARGE_UNITS: u32 = BOOST_COST / 100;
+
+    /// A run holding `units` Compressed Redstone, on the Boost sub-tab.
+    fn boost_shopper(units: u32) -> App {
+        let mut app = veteran(&[(
+            r#""inventory":{}"#,
+            &format!(r#""inventory":{{"compressed_redstone":{units}}}"#),
+        )]);
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = UpgradeTab::Boost;
+        app
+    }
+
+    /// `Enter` buys exactly one charge and says how many are now banked.
+    ///
+    /// The reserve is the thing asserted rather than the toast alone: a charge that
+    /// debited the ore without landing anywhere would still print the same sentence.
+    #[test]
+    fn buying_a_charge_debits_the_redstone_and_banks_it() {
+        let mut app = boost_shopper(CHARGE_UNITS + 1);
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.boost_charges(), 1);
+        assert_eq!(
+            app.state
+                .player()
+                .get_inventory()
+                .count(Item::Compressed(Material::Redstone)),
+            1,
+            "the till took the wrong amount"
+        );
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Bought a boost charge — 1 held"),
+            "the purchase was not announced with the reserve"
+        );
+    }
+
+    /// **`M` empties the purse, and that is the decision rather than the bug.** The
+    /// boost is the one uncapped sink in the economy, so "as far as possible" here
+    /// stops at the Redstone and nowhere else — see [`App::buy_boost_charges`].
+    #[test]
+    fn buy_max_takes_every_charge_the_redstone_covers() {
+        let mut app = boost_shopper(CHARGE_UNITS * 3 + 1);
+
+        app.update(Action::BuyMax);
+
+        assert_eq!(app.state.boost_charges(), 3);
+        assert_eq!(
+            app.state
+                .player()
+                .get_inventory()
+                .count(Item::Compressed(Material::Redstone)),
+            1,
+            "buy-max stopped somewhere other than the purse"
+        );
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Bought 3 boost charges — 3 held"),
+            "the count came from the request rather than from the run"
+        );
+    }
+
+    /// A refusal changes nothing and names the ore, exactly as the three paid tracks do.
+    #[test]
+    fn a_charge_no_redstone_covers_is_refused_without_spending() {
+        let mut app = boost_shopper(CHARGE_UNITS - 1);
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.boost_charges(), 0);
+        assert_eq!(
+            app.state
+                .player()
+                .get_inventory()
+                .count(Item::Compressed(Material::Redstone)),
+            CHARGE_UNITS - 1,
+            "a refused purchase still took ore"
+        );
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Not enough Redstone"),
+            "the refusal did not name the ore"
+        );
+    }
+
+    /// **The price is quoted in Compressed units, so the `compress first` loop is on
+    /// this purchase's path and not beside it.** A player who has mined four hundred
+    /// Redstone and never compressed any of it is wealthy and refused — and without the
+    /// [`App::remember_refusal`] call the Inventory screen would have nothing to point
+    /// at when `c` walks them there.
+    #[test]
+    fn raw_redstone_that_was_never_compressed_arms_the_conversion_loop() {
+        // Wealth without the shape: 400 raw covers a 300-raw price, but the till is
+        // quoted in Compressed units and converts nothing on the player's behalf.
+        let mut app = veteran(&[(r#""inventory":{}"#, r#""inventory":{"redstone":400}"#)]);
+        app.screen = Screen::Upgrades;
+        app.cursors.upgrade_tab = UpgradeTab::Boost;
+
+        app.update(Action::Confirm);
+
+        assert_eq!(app.state.boost_charges(), 0);
+        assert!(
+            app.refused.is_some(),
+            "the conversion loop was not armed for a boost"
+        );
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Compress first"),
+            "the refusal sent the player mining instead of converting"
+        );
+    }
+
+    /// The one-row list has nothing to step, and `↑↓` there must leave the other three
+    /// sub-tabs' cursors exactly where they were.
+    #[test]
+    fn the_boost_list_has_no_cursor_to_move() {
+        let mut app = upgrading(UpgradeTab::Boost);
+        let before = app.cursors;
+
+        app.update(Action::CursorDown);
+        app.update(Action::CursorUp);
+
+        assert_eq!(app.cursors, before, "a list of one moved something");
     }
 
     // --- The tier-jump dip (UI.md §6.7) ---
