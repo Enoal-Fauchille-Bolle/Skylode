@@ -1234,7 +1234,7 @@ which the frame already drew as `▸` apart from `●` and which phase 7 simply 
                          │     Quit                   │
                          └────────────────────────────┘
 
-                            Lv 23  ·  Diamond Pickaxe
+                     Lv 23 · Diamond Eff V · Prestige II
                                last played 3h ago
 
 
@@ -1247,7 +1247,19 @@ which the frame already drew as `▸` apart from `●` and which phase 7 simply 
 `Continue` and the two summary lines are absent on a fresh install. Hardcoded
 chrome, save-derived summary (§2.3).
 
-Eight things the implementation settled:
+Nine things the implementation settled:
+
+- **The headline is three figures, and one of them can be absent.** `Lv 23 · Diamond
+  Eff V · Prestige II` — the level, the pickaxe *rung* (§5.4's own label, so the title
+  and the Upgrades ladder never name the same pickaxe differently), and the prestige
+  rank. **The rank segment is dropped at rank 0**, which is every run before its first
+  prestige: `Prestige 0` would spend the line's third slot on something the player has
+  not done. That is the opposite call from the Stats panel, which prints `rank 0`
+  happily — a panel is a readout of every figure and this is a headline. Past the
+  numerals the rank reads `Prestige 16`, not `?`, since a prestige rank has no cap
+  (`format::prestige_rank`). The confirmation box below prints the *same* line from the
+  same function, so a `New game` quotes back the run in the words the player was
+  already reading.
 
 - **`Settings` is not drawn yet.** It is phase 9's screen, and a row that highlights
   and does nothing teaches the player that the caret is decorative. The row returns
@@ -1285,7 +1297,7 @@ Eight things the implementation settled:
   this fixes was internal: the `▸` in the confirmation box below is drawn by `modal`, so
   it was already accented, while the `▸` in the menu one row above it was not — two
   carets, two colours, one screen. The summary keeps the hierarchy `theme::marked_row`
-  applies everywhere else: `Lv 23 · Diamond Pickaxe` plain, `last played 3h ago` muted.
+  applies everywhere else: the headline plain, `last played 3h ago` muted.
   The *"nowhere to save"* warning takes **no** colour, because §4.4 says a hue doubles a
   glyph and that sentence has none — colouring it would make it the one place in the
   interface where a colour carries a meaning by itself.
@@ -1294,7 +1306,7 @@ Eight things the implementation settled:
                  ┌ Start a new game? ─────────────────────────┐
                  │                                            │
                  │  There is already a run here:              │
-                 │  Lv 23  ·  Diamond Pickaxe                 │
+                 │  Lv 23 · Diamond Eff V · Prestige II       │
                  │                                            │
                  │  Starting over writes over it.             │
                  │                                            │
