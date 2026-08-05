@@ -42,7 +42,7 @@ use crate::{
     },
     screen::Screen,
     theme,
-    toast::{TOAST_TTL, Toasts, Tone},
+    toast::{Salience, TOAST_TTL, Toasts, Tone},
     view::{CompressHint, UpgradeDetail, View},
 };
 
@@ -669,6 +669,7 @@ impl App {
                             self.toasts.push(
                                 format!("Free upgrades {state}"),
                                 Tone::Neutral,
+                                Salience::Normal,
                                 TOAST_TTL,
                             );
                         }
@@ -738,9 +739,16 @@ impl App {
                 let events = self.state.dev_add_experience(amount);
                 // The level-ups are announced in the game's own words, one toast each,
                 // and this row's own sentence is the experience it granted.
+                // The salience is forwarded rather than fixed at `Normal`, and this is
+                // the one keypress path where that matters: a level granted from the
+                // menu is the same announcement a swing would have raised, so it has
+                // to be as uncoverable here as it is there. It is also the only place
+                // a `Major` can meet a keypress toast at all — which is what lets
+                // `Toasts::current` pin a level-up without swallowing an answer the
+                // player is waiting for.
                 for event in &events {
-                    let (text, tone) = announce::of(event);
-                    self.toasts.push(text, tone, TOAST_TTL);
+                    let (text, tone, salience) = announce::of(event);
+                    self.toasts.push(text, tone, salience, TOAST_TTL);
                 }
                 format!("+{} xp", grouped(amount))
             }
@@ -763,7 +771,8 @@ impl App {
         // action. The flag it used to raise lives in `Session` now, and reaching up
         // into the loop to raise it again would be saying twice what the key already
         // said once.
-        self.toasts.push(message, Tone::Success, TOAST_TTL);
+        self.toasts
+            .push(message, Tone::Success, Salience::Normal, TOAST_TTL);
     }
 
     /// Rewinds the offline mark by `by` and resumes, returning what was credited.
@@ -910,6 +919,7 @@ impl App {
                         multiplier(prestige::multiplier_permille(rank))
                     ),
                     Tone::Success,
+                    Salience::Normal,
                     TOAST_TTL,
                 );
             }
@@ -999,7 +1009,8 @@ impl App {
             ),
             Conversion::Decompress => format!("Nothing to decompress — no Compressed {name} held"),
         };
-        self.toasts.push(refusal, Tone::Refusal, TOAST_TTL);
+        self.toasts
+            .push(refusal, Tone::Refusal, Salience::Normal, TOAST_TTL);
     }
 
     /// Performs the conversion the dialog is set to, announces it, and closes.
@@ -1041,7 +1052,7 @@ impl App {
             }
             Err(refusal) => (refusal.to_string(), Tone::Refusal),
         };
-        self.toasts.push(message, tone, TOAST_TTL);
+        self.toasts.push(message, tone, Salience::Normal, TOAST_TTL);
         self.modal = None;
     }
 
@@ -1137,7 +1148,7 @@ impl App {
             ),
             _ => (self.free_purchase_label(), Tone::Success),
         };
-        self.toasts.push(message, tone, TOAST_TTL);
+        self.toasts.push(message, tone, Salience::Normal, TOAST_TTL);
     }
 
     /// How many free steps a [`Reach`] asks for on a track whose rungs are independent.
@@ -1282,8 +1293,12 @@ impl App {
             pickaxe.enchants().get_level(EnchantType::Efficiency),
         );
         self.refused = None;
-        self.toasts
-            .push(format!("Bought {label}"), Tone::Success, TOAST_TTL);
+        self.toasts.push(
+            format!("Bought {label}"),
+            Tone::Success,
+            Salience::Normal,
+            TOAST_TTL,
+        );
     }
 
     /// Records the compress-first hint for the rung a chain stopped at, if any.
@@ -1346,6 +1361,7 @@ impl App {
         self.toasts.push(
             format!("Bought {} {}", kind.name(), roman(level)),
             Tone::Success,
+            Salience::Normal,
             TOAST_TTL,
         );
     }
@@ -1400,6 +1416,7 @@ impl App {
         self.toasts.push(
             format!("{} {what} → level {level}", kind.name()),
             Tone::Success,
+            Salience::Normal,
             TOAST_TTL,
         );
     }
@@ -1463,7 +1480,7 @@ impl App {
                 Tone::Refusal,
             ),
         };
-        self.toasts.push(message, tone, TOAST_TTL);
+        self.toasts.push(message, tone, Salience::Normal, TOAST_TTL);
     }
 
     /// Toasts whatever a core purchase refused with, verbatim.
@@ -1477,8 +1494,12 @@ impl App {
     /// [`CoreError`]: skylode_core::error::CoreError
     fn announce_core_refusal(&mut self, outcome: Result<(), skylode_core::error::CoreError>) {
         if let Err(refusal) = outcome {
-            self.toasts
-                .push(refusal.to_string(), Tone::Refusal, TOAST_TTL);
+            self.toasts.push(
+                refusal.to_string(),
+                Tone::Refusal,
+                Salience::Normal,
+                TOAST_TTL,
+            );
         }
     }
 
@@ -1638,11 +1659,15 @@ impl App {
         match self.state.claim_level(level) {
             Ok(reward) => {
                 let message = format!("Claimed Lv {level} — {}", announce::payout(&reward.payout));
-                self.toasts.push(message, Tone::Success, TOAST_TTL);
+                self.toasts
+                    .push(message, Tone::Success, Salience::Normal, TOAST_TTL);
             }
-            Err(refusal) => self
-                .toasts
-                .push(refusal.to_string(), Tone::Neutral, TOAST_TTL),
+            Err(refusal) => self.toasts.push(
+                refusal.to_string(),
+                Tone::Neutral,
+                Salience::Normal,
+                TOAST_TTL,
+            ),
         }
     }
 
@@ -1677,7 +1702,7 @@ impl App {
         } else {
             Tone::Success
         };
-        self.toasts.push(message, tone, TOAST_TTL);
+        self.toasts.push(message, tone, Salience::Normal, TOAST_TTL);
     }
 
     /// Slides the selected mine's richness dial one step, silently at its bounds.
@@ -1726,8 +1751,12 @@ impl App {
         match self.state.select_mine(self.cursors.mine) {
             Ok(()) => self.screen = Screen::Mine,
             Err(refusal) => {
-                self.toasts
-                    .push(refusal.to_string(), Tone::Refusal, TOAST_TTL);
+                self.toasts.push(
+                    refusal.to_string(),
+                    Tone::Refusal,
+                    Salience::Normal,
+                    TOAST_TTL,
+                );
             }
         }
     }
@@ -1789,12 +1818,17 @@ impl App {
         }
 
         for event in &events {
-            let (text, tone) = announce::of(event);
+            let (text, tone, salience) = announce::of(event);
             // `push_at` and not `push`: a toast raised by a step must expire three
             // seconds after the instant that step ran, and the prune two lines below
             // is measured against that same `now`. Reading the clock twice inside one
             // `advance` is how a toast gets pruned in the same breath it is raised.
-            self.toasts.push_at(text, tone, TOAST_TTL, now);
+            //
+            // **Everything is still pushed, including what will never be drawn.** This
+            // loop is what feeds §5.5's History, and a step's news being `Silent` is a
+            // statement about the slot rather than about the record — filtering here
+            // would empty the history of exactly the events a run is mostly made of.
+            self.toasts.push_at(text, tone, salience, TOAST_TTL, now);
 
             // **The same event, consumed twice and independently** (UI.md §7). The toast
             // above says *what* fired; this says *where*, and neither waits for the
@@ -1950,12 +1984,21 @@ impl App {
     /// Draws the standing save-failure banner, one row above the footer.
     ///
     /// **It yields the slot to a toast rather than competing for it**, which is the
-    /// behaviour the whole design turns on: `Mine refilled` covers the banner for its
-    /// three seconds and the banner is back the moment that expires. Nothing schedules
-    /// that return — the banner is a *state* asked at draw time, so it reappears simply
-    /// by still being true. [`Toasts::showing`] is the one question it asks, and it is
-    /// the same search `Toasts::render` makes, so the two cannot disagree about whether
-    /// the slot is taken.
+    /// behaviour the whole design turns on: `Bought Efficiency V` covers the banner for
+    /// its three seconds and the banner is back the moment that expires. Nothing
+    /// schedules that return — the banner is a *state* asked at draw time, so it
+    /// reappears simply by still being true. [`Toasts::showing`] is the one question it
+    /// asks, and it is the same search `Toasts::render` makes, so the two cannot
+    /// disagree about whether the slot is taken.
+    ///
+    /// **And it only yields to something that is actually drawn.** The example above was
+    /// `Mine refilled` until that announcement went [`Salience::Silent`]: because
+    /// `showing` shares `current`, chatter nobody could read was nonetheless holding the
+    /// slot, and this row — the gravest line in the interface — was in practice invisible
+    /// for every frame of a late run. Not a change to this function; a change to what the
+    /// question it asks now means.
+    ///
+    /// [`Salience::Silent`]: crate::toast::Salience::Silent
     ///
     /// **One row and not the toast's three.** The toast box is drawn over the screen
     /// with `Clear`, so a permanent one would keep three rows of the mine grid hidden
@@ -2157,10 +2200,15 @@ mod tests {
 
         // 2. A toast arrives and takes the slot. Its three seconds outrank a condition
         //    that will still be true afterwards.
-        app.toasts
-            .push_at("Mine refilled".to_owned(), Tone::Neutral, TOAST_TTL, start);
+        app.toasts.push_at(
+            "Bought Efficiency V".to_owned(),
+            Tone::Success,
+            Salience::Normal,
+            TOAST_TTL,
+            start,
+        );
         let covered = whole_frame(&render_at(&app, start));
-        assert!(covered.contains("Mine refilled"), "{covered}");
+        assert!(covered.contains("Bought Efficiency V"), "{covered}");
         assert!(
             !covered.contains("Save failing"),
             "the banner drew over a live toast: {covered}"
@@ -2411,10 +2459,14 @@ mod tests {
     #[test]
     fn a_toast_is_drawn_over_the_screen_underneath() {
         let mut app = session();
-        app.toasts
-            .push("Mine refilled".to_owned(), Tone::Neutral, TOAST_TTL);
+        app.toasts.push(
+            "Bought Efficiency V".to_owned(),
+            Tone::Success,
+            Salience::Normal,
+            TOAST_TTL,
+        );
         let frame = whole_frame(&render_to_buffer(&app));
-        assert!(frame.contains("Mine refilled"), "{frame}");
+        assert!(frame.contains("Bought Efficiency V"), "{frame}");
     }
 
     /// A toast leaves the **screen** once its moment has passed, and stays in the log.
@@ -2428,8 +2480,13 @@ mod tests {
     fn a_toast_leaves_the_screen_once_its_moment_has_passed_and_stays_in_the_log() {
         let start = Instant::now();
         let mut app = session();
-        app.toasts
-            .push_at("Excavator!".to_owned(), Tone::Success, TOAST_TTL, start);
+        app.toasts.push_at(
+            "Excavator!".to_owned(),
+            Tone::Success,
+            Salience::Normal,
+            TOAST_TTL,
+            start,
+        );
 
         let live = whole_frame(&render_at(&app, start + SIM_PERIOD));
         assert!(live.contains("Excavator!"), "{live}");
@@ -2801,11 +2858,20 @@ mod tests {
         assert!(app.advance(first), "a step ran without asking for a frame");
     }
 
+    /// The wire from `Vec<GameEvent>` to the buffer, end to end — and the proof that
+    /// [`Salience::Silent`] means *undrawn* rather than *dropped*.
+    ///
+    /// This test used to assert the opposite of its second half: a refill appeared on
+    /// the frame, because every event took the slot. It is the announcement that costs
+    /// the least to provoke, and it is also the one that made the slot useless — the
+    /// grid the sentence describes is what the player is already watching, and it fires
+    /// every time that grid empties. So the wire is still asserted, on the record where
+    /// §5.5 reads it, and the screen is asserted *clear*.
     #[test]
-    fn a_tick_that_makes_news_raises_a_toast_saying_so() {
-        // The wire from `Vec<GameEvent>` to the overlay, end to end. An instamining
-        // pickaxe empties the starter grid in a couple of hundred swings, and the
-        // refill is the announcement that costs the least to provoke.
+    fn a_refill_reaches_the_history_and_never_the_slot() {
+        // An instamining pickaxe empties the starter grid in a couple of hundred
+        // swings. Efficiency alone and no spatial enchant, so the refill is the only
+        // event a swing here can raise.
         let mut app = veteran(&[
             (r#""tier":"Wooden""#, r#""tier":"Netherite""#),
             (r#""enchants":{}"#, r#""enchants":{"Efficiency":15}"#),
@@ -2823,8 +2889,21 @@ mod tests {
             }
         }
 
+        let logged: Vec<String> = app
+            .toasts
+            .log(Instant::now())
+            .map(|(_, text)| text.to_string())
+            .collect();
+        assert!(
+            logged.iter().any(|line| line == "Mine refilled"),
+            "the refill never reached the buffer at all: {logged:?}"
+        );
+
         let frame = whole_frame(&render_to_buffer(&app));
-        assert!(frame.contains("Mine refilled"), "{frame}");
+        assert!(
+            !frame.contains("Mine refilled"),
+            "a silent announcement took the slot: {frame}"
+        );
     }
 
     #[test]
@@ -2847,8 +2926,12 @@ mod tests {
         let plain = whole_frame(&render_to_buffer(&session()));
 
         let mut app = session();
-        app.toasts
-            .push("Mine refilled".to_owned(), Tone::Neutral, TOAST_TTL);
+        app.toasts.push(
+            "Bought Efficiency V".to_owned(),
+            Tone::Success,
+            Salience::Normal,
+            TOAST_TTL,
+        );
         let toasted = whole_frame(&render_to_buffer(&app));
 
         // The toast borrows cells for a frame; without one the frame is untouched.
@@ -3858,8 +3941,12 @@ mod tests {
         let mut app = session();
         app.screen = Screen::Stats;
         for index in 0..4 {
-            app.toasts
-                .push(format!("entry {index}"), Tone::Neutral, TOAST_TTL);
+            app.toasts.push(
+                format!("entry {index}"),
+                Tone::Neutral,
+                Salience::Normal,
+                TOAST_TTL,
+            );
         }
 
         assert_eq!(app.cursors.history, 0, "the session opened part-way down");
@@ -3902,8 +3989,12 @@ mod tests {
     fn the_history_cursor_only_moves_on_the_screen_that_owns_it() {
         let mut app = session();
         for index in 0..4 {
-            app.toasts
-                .push(format!("entry {index}"), Tone::Neutral, TOAST_TTL);
+            app.toasts.push(
+                format!("entry {index}"),
+                Tone::Neutral,
+                Salience::Normal,
+                TOAST_TTL,
+            );
         }
 
         for screen in Screen::ALL {
@@ -4903,7 +4994,14 @@ mod dev_tests {
     }
 
     /// A dev level-up is announced in the game's own words, because it goes through the
-    /// same [`announce::of`] the tick's events do.
+    /// same [`announce::of`] the tick's events do — **salience included**.
+    ///
+    /// **The one place in the game where a `Major` meets a keypress toast**, and the
+    /// level-up wins: the row's own `+1 000 xp` is `Normal`, and it is a receipt for
+    /// something the person who opened the dev menu already knows they did. Both are in
+    /// the log, so nothing is lost. Elsewhere the two cannot collide at all — XP comes
+    /// only from swings, and a swing means `Space` is held rather than a key that
+    /// announces.
     #[test]
     fn giving_experience_announces_the_levels_it_crosses() {
         let mut app = on_row(DevRow::Experience);
@@ -4914,7 +5012,18 @@ mod dev_tests {
             "a thousand experience bought no level"
         );
         assert!(app.toasts.len() > 1, "only the row's own toast was raised");
-        assert!(said(&app).contains("+1 000 xp"), "{}", said(&app));
+
+        let logged: Vec<String> = app
+            .toasts
+            .log(Instant::now())
+            .map(|(_, text)| text.to_string())
+            .collect();
+        assert!(
+            logged.iter().any(|line| line == "+1 000 xp"),
+            "the row's own sentence was never raised: {logged:?}"
+        );
+        // Drawn: the level, and not the experience that bought it.
+        assert!(said(&app).contains("Level "), "{}", said(&app));
     }
 
     #[test]

@@ -56,7 +56,7 @@ use crate::{
     keymap,
     overlay::{offline, save_recovery, splash, too_small},
     persist::{self, PersistError, SaveSlots},
-    toast::{TOAST_TTL, Tone},
+    toast::{Salience, TOAST_TTL, Tone},
 };
 
 /// The shortest gap between two draws — a **ceiling on the redraw rate**, not a
@@ -776,8 +776,12 @@ impl Session {
             // `App::render_save_banner` draws.
             Err(error) => {
                 if !was_failing {
-                    app.toasts
-                        .push(format!("Save failed: {error}"), Tone::Refusal, TOAST_TTL);
+                    app.toasts.push(
+                        format!("Save failed: {error}"),
+                        Tone::Refusal,
+                        Salience::Normal,
+                        TOAST_TTL,
+                    );
                 }
                 // Rewritten on every failure, not only the first: a disk that goes from
                 // "permission denied" to "no space left" is telling the player
@@ -786,8 +790,12 @@ impl Session {
             }
             Ok(()) => {
                 if was_failing {
-                    app.toasts
-                        .push("Saving works again".to_owned(), Tone::Success, TOAST_TTL);
+                    app.toasts.push(
+                        "Saving works again".to_owned(),
+                        Tone::Success,
+                        Salience::Normal,
+                        TOAST_TTL,
+                    );
                 }
                 // The state clears. A toast never could — nothing leaves that buffer —
                 // which is the whole reason the condition is not kept in it.
@@ -1134,6 +1142,7 @@ impl Session {
             app.toasts.push(
                 "Restored from the backup save".to_owned(),
                 Tone::Neutral,
+                Salience::Normal,
                 TOAST_TTL,
             );
         }
@@ -1143,6 +1152,7 @@ impl Session {
             app.toasts.push(
                 "No save file: this session will not be kept".to_owned(),
                 Tone::Refusal,
+                Salience::Normal,
                 TOAST_TTL,
             );
         }

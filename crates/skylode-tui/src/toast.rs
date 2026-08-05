@@ -14,6 +14,13 @@
 //! left that a keypress raises are the refusals, which no step can produce because
 //! nothing was asked of the rules.
 //!
+//! **Which is why the slot is rationed by [`Salience`] and not by recency.** The tick
+//! speaks far more often than the keyboard — several times a second in a late run — so
+//! "newest wins" handed the one slot to whatever was most repetitive and erased the one
+//! announcement worth reading. A step's news now says how loud it is: the blast and the
+//! refill go [`Silent`](Salience::Silent) because the grid is already showing them, and
+//! a level-up goes [`Major`](Salience::Major) and cannot be covered while it lasts.
+//!
 //! **Nothing is ever dropped for being old, and that is the other half of *one buffer,
 //! two renderings*.** This used to be a queue that forgot: a toast past its three
 //! seconds was removed, which left the Stats history nothing to read. Expiry is now a
@@ -104,6 +111,50 @@ impl Tone {
     }
 }
 
+/// How much of the one slot an announcement deserves.
+///
+/// **A second axis, and it is not derivable from [`Tone`].** The tone answers *what
+/// verdict*; this answers *is it worth interrupting for*, and the two cross: `Neutral`
+/// covers both `Nuke — 200 blocks` (the player is watching the blast anyway) and
+/// `Entered the Iron Mine` (an answer to a key they just pressed), while `Success`
+/// covers both `Excavator!` and `Level 23`. Ranking by tone would therefore be wrong in
+/// both directions at once.
+///
+/// **The defect it fixes is an inversion.** The slot used to go to the *newest*
+/// announcement, so it was won by whatever spoke most often — and in a late run that is
+/// the refill and the procs, firing several times a second. The rarest and most
+/// actionable line in the game, a level-up with an errand attached, was reliably erased
+/// within a frame or two of being raised.
+///
+/// **No [`Default`]**, for the reason [`Tone`] has none: every call site names its own,
+/// so a new announcement cannot arrive at a level nobody chose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Salience {
+    /// Never drawn; kept for the history alone.
+    ///
+    /// For news the screen is **already showing by other means**: a blast has its
+    /// flash and its emptied cells, a refill has a grid visibly filling back up, an
+    /// Excavator has the count in the inventory. Announcing those in the slot spends
+    /// the one thing the interface has for interrupting on the one thing that needs no
+    /// interruption.
+    ///
+    /// It is *silent*, not *dropped* — the entry still goes into the buffer, so §5.5's
+    /// History reads exactly what it always did. That is what keeps *one buffer, two
+    /// renderings* true: without this level the only way to quieten the screen would be
+    /// a second buffer, and then the two could disagree.
+    Silent,
+    /// Drawn for its window, and replaced by the next [`Normal`](Salience::Normal) or
+    /// [`Major`](Salience::Major) to arrive.
+    ///
+    /// The ordinary case: a purchase, a refusal, a conversion — an answer to a key the
+    /// player just pressed, which the *next* key is entitled to supersede.
+    Normal,
+    /// Drawn for its whole window, and nothing below it can take the slot away.
+    ///
+    /// Reserved for a level-up, and the reservation is the whole feature.
+    Major,
+}
+
 /// A single announcement, the news it carries, and the two instants that bound it.
 ///
 /// It stores an expiry rather than a remaining duration so that expiry is a
@@ -125,6 +176,7 @@ impl Tone {
 struct Toast {
     text: Rc<str>,
     tone: Tone,
+    salience: Salience,
     at: Instant,
     expires_at: Instant,
 }
@@ -181,8 +233,8 @@ impl Toasts {
     /// instant. Everything on the tick's side goes through
     /// [`push_at`](Toasts::push_at) instead, where the instant is already in hand and
     /// a second reading of the clock could disagree with the one the step ran against.
-    pub fn push(&mut self, text: String, tone: Tone, ttl: Duration) {
-        self.push_at(text, tone, ttl, Instant::now());
+    pub fn push(&mut self, text: String, tone: Tone, salience: Salience, ttl: Duration) {
+        self.push_at(text, tone, salience, ttl, Instant::now());
     }
 
     /// The same, told what time it is.
@@ -191,10 +243,18 @@ impl Toasts {
     /// announcement is never removed for being old — that is the whole of *one buffer,
     /// two renderings* — so the cap is what bounds it instead, and dropping the oldest
     /// is what keeps [`log`](Toasts::log)'s newest-first ranks stable under it.
-    pub fn push_at(&mut self, text: String, tone: Tone, ttl: Duration, now: Instant) {
+    pub fn push_at(
+        &mut self,
+        text: String,
+        tone: Tone,
+        salience: Salience,
+        ttl: Duration,
+        now: Instant,
+    ) {
         self.items.push_back(Toast {
             text: Rc::from(text),
             tone,
+            salience,
             at: now,
             expires_at: now + ttl,
         });
@@ -226,14 +286,46 @@ impl Toasts {
 
     /// The announcement [`render`](Toasts::render) would draw, if there is one.
     ///
-    /// **A search backwards** rather than a look at the last entry, because `ttl` is
-    /// the caller's to choose: a short-lived announcement pushed after a long-lived one
-    /// would otherwise blank the screen while something was still owed its seconds.
+    /// **Two searches and not one, because recency is the wrong tie-break on its own.**
+    /// The first pass looks for a live [`Major`](Salience::Major); only if there is none
+    /// does the second take the newest live announcement of any other level. So a
+    /// level-up holds its three seconds against a refill that lands a frame later, which
+    /// is the inversion [`Salience`] exists to undo.
+    ///
+    /// **Both walk backwards**, so within one level the newest still wins — and the walk
+    /// is backwards rather than a look at the last entry because `ttl` is the caller's to
+    /// choose: a short-lived announcement pushed after a long-lived one would otherwise
+    /// blank the screen while something was still owed its seconds.
+    ///
+    /// **A `Major` cannot swallow an answer the player is waiting for**, and that falls
+    /// out of the game rather than being arranged here. The only `Major` is a level-up;
+    /// XP comes from swings and the auto-miner grants none, so a level is crossed only
+    /// while `Space` is held — with the player's hands on the one key that raises no
+    /// announcement of its own. The keypresses that *do* raise one live on screens where
+    /// no swing is happening. The dev menu is the single path that can collide, and it
+    /// is behind two gates.
+    ///
+    /// Written as two `find`s rather than one `max_by_key`: the tie-break would then rest
+    /// on which of several equal maxima that adapter returns, which is a documented
+    /// guarantee this rule should not have to be read against.
     fn current(&self, now: Instant) -> Option<&Toast> {
-        self.items.iter().rev().find(|toast| toast.expires_at > now)
+        let live = |toast: &Toast| toast.expires_at > now && toast.salience != Salience::Silent;
+        self.items
+            .iter()
+            .rev()
+            .find(|toast| live(toast) && toast.salience == Salience::Major)
+            .or_else(|| self.items.iter().rev().find(|toast| live(toast)))
     }
 
     /// Whether an announcement is occupying its slot at `now`.
+    ///
+    /// **[`Salience::Silent`] fixed a defect here without this function changing.** The
+    /// question is "is the slot taken", and it is answered by
+    /// [`current`](Toasts::current) — so news that is never drawn no longer claims the
+    /// slot. Before, the procs and the refill kept this `true` for practically every
+    /// frame of a late run, which meant the banner below was hidden by announcements that
+    /// were not being shown either: the gravest line in the interface, suppressed by
+    /// chatter nobody could read.
     ///
     /// **Asked by whatever else wants that slot**, which today is the standing
     /// save-failure banner in [`App::render`](crate::app::App::render). It shares
@@ -249,7 +341,10 @@ impl Toasts {
     /// `area`, over whatever is already there.
     ///
     /// Only one is shown: stacking them would reintroduce the layout cost the overlay
-    /// exists to avoid, and the full record is Stats' job anyway.
+    /// exists to avoid, and the full record is Stats' job anyway. **Which one** is
+    /// [`current`](Toasts::current)'s answer, and since that is ranked by
+    /// [`Salience`] rather than by arrival, "only one" no longer means "only the
+    /// loudest-mouthed".
     ///
     /// **This is where a toast expires, and expiring is no longer something that
     /// happens *to* the buffer.** A `prune` used to delete the entry, which is why the
@@ -331,6 +426,134 @@ mod tests {
             .join("\n")
     }
 
+    /// **[`Salience::Silent`] is a statement about the slot, not about the record.**
+    /// The same split expiry already makes — undrawn, and kept — which is what lets the
+    /// procs and the refill go quiet without emptying §5.5's History of the events a
+    /// run is mostly made of.
+    #[test]
+    fn a_silent_announcement_is_never_drawn_and_is_still_logged() {
+        let now = Instant::now();
+        let mut toasts = Toasts::new();
+        toasts.push_at(
+            "Mine refilled".to_owned(),
+            Tone::Neutral,
+            Salience::Silent,
+            TOAST_TTL,
+            now,
+        );
+
+        assert_eq!(drawn(&toasts, now).trim(), "");
+        let kept: Vec<Rc<str>> = toasts.log(now).map(|(_, text)| text).collect();
+        assert_eq!(&*kept[0], "Mine refilled");
+    }
+
+    /// **The inversion this whole feature undoes.** A level-up followed a frame later by
+    /// a refill is exactly the late-run sequence that made the slot useless: newest-wins
+    /// erased the one line carrying an errand, and did it with a sentence about a grid
+    /// the player was already looking at.
+    #[test]
+    fn a_major_holds_the_slot_against_everything_raised_after_it() {
+        let now = Instant::now();
+        let mut toasts = Toasts::new();
+        toasts.push_at(
+            "Level 23 — claim on 6".to_owned(),
+            Tone::Success,
+            Salience::Major,
+            TOAST_TTL,
+            now,
+        );
+        toasts.push_at(
+            "Mine refilled".to_owned(),
+            Tone::Neutral,
+            Salience::Silent,
+            TOAST_TTL,
+            now,
+        );
+        toasts.push_at(
+            "Bought Efficiency V".to_owned(),
+            Tone::Success,
+            Salience::Normal,
+            TOAST_TTL,
+            now,
+        );
+
+        let frame = drawn(&toasts, now);
+        assert!(frame.contains("Level 23"), "{frame}");
+        assert!(!frame.contains("Bought"), "{frame}");
+    }
+
+    /// The pin lasts exactly as long as the announcement does. Past its window the slot
+    /// goes back to whatever is still owed its seconds — a `Major` holds the slot, it
+    /// does not own it.
+    #[test]
+    fn an_expired_major_stops_holding_the_slot() {
+        let now = Instant::now();
+        let mut toasts = Toasts::new();
+        toasts.push_at(
+            "Level 23".to_owned(),
+            Tone::Success,
+            Salience::Major,
+            Duration::ZERO,
+            now,
+        );
+        toasts.push_at(
+            "Bought Efficiency V".to_owned(),
+            Tone::Success,
+            Salience::Normal,
+            TOAST_TTL,
+            now,
+        );
+
+        let frame = drawn(&toasts, now);
+        assert!(frame.contains("Bought"), "{frame}");
+        assert!(!frame.contains("Level 23"), "{frame}");
+    }
+
+    /// Within one level the newest still wins — the ranking replaces recency only
+    /// *across* levels. Two levels crossed in one swing must show the one just reached.
+    #[test]
+    fn the_newest_major_wins_among_majors() {
+        let now = Instant::now();
+        let mut toasts = Toasts::new();
+        toasts.push_at(
+            "Level 23".to_owned(),
+            Tone::Success,
+            Salience::Major,
+            TOAST_TTL,
+            now,
+        );
+        toasts.push_at(
+            "Level 24".to_owned(),
+            Tone::Success,
+            Salience::Major,
+            TOAST_TTL,
+            now,
+        );
+
+        let frame = drawn(&toasts, now);
+        assert!(frame.contains("Level 24"), "{frame}");
+        assert!(!frame.contains("Level 23"), "{frame}");
+    }
+
+    /// **The save banner's defect, fixed without [`Toasts::showing`] changing a line.**
+    /// It asks "is the slot taken", and silent news does not take it — so the gravest
+    /// row in the interface stops being hidden by chatter that was not being drawn
+    /// either.
+    #[test]
+    fn silent_news_does_not_claim_the_slot_the_save_banner_wants() {
+        let now = Instant::now();
+        let mut toasts = Toasts::new();
+        toasts.push_at(
+            "Explosive — 9 blocks".to_owned(),
+            Tone::Neutral,
+            Salience::Silent,
+            TOAST_TTL,
+            now,
+        );
+
+        assert!(!toasts.showing(now), "a silent announcement took the slot");
+    }
+
     /// **The change this module exists to make.** An announcement past its three
     /// seconds leaves the screen and stays in the buffer — that is *one buffer, two
     /// renderings*, and the defect it fixes is a History panel with nothing to show.
@@ -338,7 +561,13 @@ mod tests {
     fn an_expired_announcement_leaves_the_screen_and_stays_in_the_log() {
         let now = Instant::now();
         let mut toasts = Toasts::new();
-        toasts.push_at("expired".to_owned(), Tone::Neutral, Duration::ZERO, now);
+        toasts.push_at(
+            "expired".to_owned(),
+            Tone::Neutral,
+            Salience::Normal,
+            Duration::ZERO,
+            now,
+        );
 
         assert!(!drawn(&toasts, now).contains("expired"));
         let kept: Vec<Rc<str>> = toasts.log(now).map(|(_, text)| text).collect();
@@ -356,10 +585,17 @@ mod tests {
         toasts.push_at(
             "lasting".to_owned(),
             Tone::Neutral,
+            Salience::Normal,
             Duration::from_secs(60),
             now,
         );
-        toasts.push_at("gone".to_owned(), Tone::Neutral, Duration::ZERO, now);
+        toasts.push_at(
+            "gone".to_owned(),
+            Tone::Neutral,
+            Salience::Normal,
+            Duration::ZERO,
+            now,
+        );
 
         let frame = drawn(&toasts, now);
         assert!(frame.contains("lasting"), "{frame}");
@@ -370,8 +606,20 @@ mod tests {
     fn the_newest_toast_is_the_one_rendered() {
         let now = Instant::now();
         let mut toasts = Toasts::new();
-        toasts.push_at("older".to_owned(), Tone::Neutral, TOAST_TTL, now);
-        toasts.push_at("newer".to_owned(), Tone::Neutral, TOAST_TTL, now);
+        toasts.push_at(
+            "older".to_owned(),
+            Tone::Neutral,
+            Salience::Normal,
+            TOAST_TTL,
+            now,
+        );
+        toasts.push_at(
+            "newer".to_owned(),
+            Tone::Neutral,
+            Salience::Normal,
+            TOAST_TTL,
+            now,
+        );
 
         let frame = drawn(&toasts, now);
         assert!(frame.contains("newer"), "{frame}");
@@ -394,7 +642,13 @@ mod tests {
         let now = Instant::now();
         let mut toasts = Toasts::new();
         for index in 0..HISTORY_CAP + 10 {
-            toasts.push_at(format!("entry {index}"), Tone::Neutral, TOAST_TTL, now);
+            toasts.push_at(
+                format!("entry {index}"),
+                Tone::Neutral,
+                Salience::Normal,
+                TOAST_TTL,
+                now,
+            );
         }
 
         assert_eq!(toasts.items.len(), HISTORY_CAP);
@@ -409,10 +663,17 @@ mod tests {
     fn the_log_reads_newest_first_and_carries_each_age() {
         let start = Instant::now();
         let mut toasts = Toasts::new();
-        toasts.push_at("older".to_owned(), Tone::Neutral, TOAST_TTL, start);
+        toasts.push_at(
+            "older".to_owned(),
+            Tone::Neutral,
+            Salience::Normal,
+            TOAST_TTL,
+            start,
+        );
         toasts.push_at(
             "newer".to_owned(),
             Tone::Neutral,
+            Salience::Normal,
             TOAST_TTL,
             start + Duration::from_secs(90),
         );
@@ -453,7 +714,7 @@ mod tests {
         ] {
             let now = Instant::now();
             let mut toasts = Toasts::new();
-            toasts.push_at("news".to_owned(), tone, TOAST_TTL, now);
+            toasts.push_at("news".to_owned(), tone, Salience::Normal, TOAST_TTL, now);
 
             let mut terminal = match Terminal::new(TestBackend::new(20, 5)) {
                 Ok(terminal) => terminal,
