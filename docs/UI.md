@@ -1756,18 +1756,18 @@ add when a preference is genuinely contested — not a way of declining to decid
 │ Anywhere                             ││  a solid colour  an intact cell; the │
 │  Tab  ⇧Tab     next / previous screen││                  colour is the       │
 │  1 … 6         jump to a screen      ││                  material            │
-│  ← →           adjust the value under││  a stippled cell the cell of value — │
-│                the cursor            ││                  stippled in every   │
+│  ← →           adjust what's selected││  a stippled cell the cell of value — │
+│  Esc           back to the mine      ││                  stippled in every   │
 │  s             Settings              ││                  colour mode         │
 │  ?             this help             ││  · : #           the cell you are    │
-│  q             back to the title     ││                  breaking, filling up│
-│                screen                ││  nothing at all  already broken      │
-│                                      ││                                      │
-│ On this screen — Upgrades            ││ Marks                                │
-│  ⇧←  ⇧→        switch sub-tab        ││  ✓   you can buy it                  │
-│  ↑ ↓           select a row          ││  ~   you hold the ore but not the    │
-│  Enter         buy up to the cursor  ││      denomination — compress first   │
-│  M             buy as many as you can││  ✗   not enough ore                  │
+│  q             back to title screen  ││                  breaking, filling up│
+│                                      ││  nothing at all  already broken      │
+│ On this screen — Upgrades            ││                                      │
+│  ⇧←  ⇧→        switch sub-tab        ││ Marks                                │
+│  ↑ ↓           select a row          ││  ✓   you can buy it                  │
+│  Enter         buy up to the cursor  ││  ~   you hold the ore but not the    │
+│  M             buy as many as you can││      denomination — compress first   │
+│  c             compress what is short││  ✗   not enough ore                  │
 │                                      ││  ●   where you are now               │
 │ Mining                               ││                                      │
 │  Space         hold to mine. Settings││  On Levels and on Stats, ✓ reads     │
@@ -1993,11 +1993,28 @@ graph LR
     Preview -. "Esc" .-> Stats
     Set -. "Esc" .-> Splash
     Help -. "Esc or ?" .-> ring
+    ring -. "Esc, from any screen" .-> Mine
 ```
 
-**`Mines -> Enter -> Mine` is the only screen-to-screen jump**, and it earns the
-exception: picking a mine and then pressing `1` to go look at it is a chore with no
-decision in it.
+**Two screen-to-screen edges, and they differ in kind.** `Mines -> Enter -> Mine`
+_decides_ something, and that is what earns it the exception: picking a mine and then
+pressing `1` to go look at it is a chore with no decision in it. `Esc` decides
+nothing — it only moves the eye — which is precisely why it can be pressed without
+thinking. **No screen owns any state**: every cursor, sub-tab and scroll position
+belongs to the session rather than to the tab showing it, so leaving a screen costs
+nothing and coming back restores exactly what was left.
+
+**`Esc` therefore reads one sentence everywhere: _back out of what is in front of
+me_.** Inside a modal that is the modal; on a tab it is the tab, and backing out of a
+tab lands on Mine, because Mine is where the game is. The two are not two bindings but
+one gesture resolved in layers — a modal is offered every key first, so the first `Esc`
+closes the box and only the second leaves the tab. On the Mine screen there is nothing
+in front of you and the key does nothing, which is the same treatment `Esc` gets on the
+Splash: ignored where there is nothing to back out of, rather than given a second
+meaning.
+
+**It is not `q`.** `q` puts the run down and writes it; `Esc` moves the eye and touches
+nothing. Nothing destructive is on either key, but only one of them ends a session.
 
 **`q` goes to the Splash, not out of the process.** Nothing destructive is one
 keystroke away, which is why there is no quit confirmation.
@@ -2203,6 +2220,7 @@ never switches a sub-tab, and the sub-tab key is the configurable binding
 | --- | --- | --- |
 | `Tab` / `Shift+Tab` | ring forward / back | ratatui `Tabs` |
 | `1`..`6` | jump to screen N | six tabs since the Levels view (§5.7.5) |
+| `Esc` | back to the Mine screen | **global, not shown** in footers, like `s` and `q`; lives in Help. Inside a modal it closes the modal instead — the box is offered every key first (§8.1) |
 | `?` | open Help | **shown in every footer** — the only place the hidden bindings below are discoverable |
 | `s` | open Settings | **global, not shown** in footers; lives in Help |
 | `q` | quit to Splash | **global, not shown** in footers, exactly like `s`; lives in Help. The process itself exits only from Splash → Quit |
@@ -2298,6 +2316,16 @@ than binding `c` in place (§6.4). No two bindings fight.
   above is what pays for it — `b` is a *screen-local* binding on the one screen that
   owns it, which is exactly what a footer is for, where `q` is a global and would have
   been an exception.
+- **`Esc` is a global on the same terms, and it cost nothing to add.** It was bound
+  nowhere on the six screens — only modals answered it — so making it the way back to
+  Mine (§8.1) collides with no binding and spends no footer columns: it joins `s` and
+  `q` as a global shown **only in Help**, on the rule above. Two consequences worth
+  writing down. The layering with a modal needs no special case, because the resolution
+  order already gives an open box first refusal on every key — the first `Esc` closes
+  it, the second leaves the tab. And the price is paid inside Help rather than in a
+  footer: the Keys pane is exactly 21 rows and Upgrades fills all of them, so the row
+  was bought by rewording `← →` from _adjust the value under the cursor_, which wrapped
+  onto a second line, to _adjust what's selected_, which does not.
 - **`p` opens the prestige preview, contextual to Stats, and it is shown in Stats'
   footer.** The focus-model alternative is rejected on cost: Stats would need a
   notion of _which panel is focused_ — a navigation concept the game uses **exactly
