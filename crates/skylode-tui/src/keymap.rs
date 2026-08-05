@@ -235,6 +235,18 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
         KeyCode::Char('q') => return Some(Action::ToTitle),
         // `?` is global and printed in every footer, so it opens Help from anywhere.
         KeyCode::Char('?') => return Some(Action::OpenHelp),
+        // **Back to the Mine screen** (`docs/UI.md` §8.1), and deliberately *not*
+        // guarded on which screen we are on: `Esc` reads the same sentence on all six
+        // tabs, and on Mine it lands where the player already is. A guard would make it
+        // an unbound key on one screen out of six, which is a rule with an exception
+        // where a rule would do.
+        //
+        // Here rather than in a screen's `map_key` for `Tab`'s reason: a screen that
+        // later claimed `Esc` would shadow it, and the whole value of the binding is
+        // that it never has to be looked up. The modal capture above is what keeps the
+        // two meanings of the key — *close this box*, *leave this tab* — one gesture
+        // resolved in layers instead of two bindings fighting.
+        KeyCode::Esc => return Some(Action::ToMine),
         KeyCode::Tab => return Some(Action::NextScreen),
         KeyCode::BackTab => return Some(Action::PrevScreen),
         KeyCode::Char(digit @ '1'..='6') => {
@@ -356,6 +368,42 @@ mod tests {
         );
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(resolve(&app, ctrl_c), Some(Action::Quit));
+    }
+
+    /// **Every tab, Mine included**, and the last one is the point rather than an
+    /// oversight: the binding is not gated on the screen, so `Esc` decodes to the same
+    /// intent on all six and the Mine screen answers it by already being there. A
+    /// resolver that returned `None` there would leave one screen where the key is
+    /// unbound, and an unbound key is one a screen can later claim.
+    #[test]
+    fn esc_returns_to_the_mine_screen_from_every_tab() {
+        for screen in Screen::ALL {
+            let mut app = session();
+            app.screen = screen;
+            assert_eq!(
+                resolve(&app, press(KeyCode::Esc)),
+                Some(Action::ToMine),
+                "esc is shadowed on {screen:?}"
+            );
+        }
+    }
+
+    /// The layering, asserted at the seam that produces it.
+    ///
+    /// `Esc` means *close this box* and *leave this tab*, and nothing decides between
+    /// them: the modal branch is simply above the globals, so the first press never
+    /// reaches the second meaning. Were the order reversed, a player closing the
+    /// prestige preview would find themselves on the Mine screen with the box still up.
+    #[test]
+    fn esc_closes_a_modal_before_it_leaves_the_screen() {
+        let mut app = session();
+        app.screen = Screen::Upgrades;
+        app.modal = Some(Modal::Help);
+        assert_eq!(resolve(&app, press(KeyCode::Esc)), Some(Action::CloseModal));
+
+        // And with nothing stacked, the same key means the other half.
+        app.modal = None;
+        assert_eq!(resolve(&app, press(KeyCode::Esc)), Some(Action::ToMine));
     }
 
     #[test]
@@ -601,6 +649,7 @@ mod tests {
             KeyCode::Char('q'),
             KeyCode::Char('?'),
             KeyCode::Char('1'),
+            KeyCode::Esc,
         ] {
             assert_eq!(
                 resolve(&app, of_kind(code, KeyEventKind::Release)),

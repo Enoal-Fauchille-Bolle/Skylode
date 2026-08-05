@@ -429,6 +429,11 @@ impl App {
                     self.screen = screen;
                 }
             }
+            // `Esc`. One assignment and nothing else — no cursor reset, because the
+            // cursors are exactly what the player expects to find again, and no modal
+            // to clear, because a stacked one would have consumed the gesture in
+            // `update_modal` above.
+            Action::ToMine => self.screen = Screen::Mine,
             // Recorded, not acted on. `update` has no clock — that is the property
             // every test of it relies on — so the instant is stamped by `advance`,
             // which is called immediately after this returns.
@@ -2461,6 +2466,58 @@ mod tests {
         let mut app = session();
         app.update(Action::SelectScreen(99));
         assert_eq!(app.screen, Screen::Mine);
+    }
+
+    #[test]
+    fn esc_walks_back_to_the_mine_screen_from_every_tab() {
+        for screen in Screen::ALL {
+            let mut app = session();
+            app.screen = screen;
+            app.update(Action::ToMine);
+            assert_eq!(app.screen, Screen::Mine, "esc left {screen:?} standing");
+        }
+    }
+
+    /// **The two meanings of `Esc`, one after the other rather than at once.**
+    ///
+    /// The keymap gives a stacked modal first refusal, so the box closes on the first
+    /// press and the tab is still there behind it; only the second press leaves. A
+    /// reducer that acted on both at once would take the player off the screen they
+    /// were reading the moment they dismissed a dialog on it.
+    #[test]
+    fn the_first_esc_closes_the_box_and_the_second_leaves_the_screen() {
+        let mut app = session();
+        app.screen = Screen::Upgrades;
+        app.modal = Some(Modal::Help);
+
+        app.update(Action::CloseModal);
+        assert!(app.modal.is_none());
+        assert_eq!(
+            app.screen,
+            Screen::Upgrades,
+            "closing a box changed the tab"
+        );
+
+        app.update(Action::ToMine);
+        assert_eq!(app.screen, Screen::Mine);
+    }
+
+    /// **The claim the whole binding rests on**, so it is pinned rather than assumed:
+    /// leaving a screen costs nothing, because the cursors live on [`App`] and not on
+    /// the screens. That is what makes `Esc` cheap enough to press reflexively — a
+    /// player who wanders back to the Levels roadmap finds their rung where they left
+    /// it, fifty rows from the top.
+    #[test]
+    fn leaving_a_screen_with_esc_keeps_its_cursor() {
+        let mut app = session();
+        app.screen = Screen::Levels;
+        app.update(Action::CursorDown);
+        app.update(Action::CursorDown);
+        let rung = app.cursors.level;
+
+        app.update(Action::ToMine);
+        app.update(Action::SelectScreen(Screen::Levels.index()));
+        assert_eq!(app.cursors.level, rung, "the roadmap forgot where it was");
     }
 
     #[test]

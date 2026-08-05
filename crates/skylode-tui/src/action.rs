@@ -44,6 +44,32 @@ pub enum Action {
     PrevScreen,
     /// Jump straight to the tab at this zero-based index (the `1`..`6` keys).
     SelectScreen(usize),
+    /// Back out of the tab in front of you and return to the Mine screen (`Esc`).
+    ///
+    /// **Not [`SelectScreen(0)`](Action::SelectScreen), though it lands in the same
+    /// place**, for the reason [`GoCompress`](Action::GoCompress) is not
+    /// `SelectScreen(2)`: that variant names a *tab* — it is what the digit keys
+    /// produce, and its index comes from the keycap — while this one names a
+    /// *journey*, and the destination is a property of the game rather than of the
+    /// key. A player pressing `1` is choosing among six; a player pressing `Esc` is
+    /// leaving, and the Mine screen is merely where leaving goes.
+    ///
+    /// **Not [`ToTitle`](Action::ToTitle) with a nearer destination either.** That one
+    /// puts the *run* down and the session writes it to disk on the way out; this one
+    /// moves the eye and nothing else — no save, no state touched, not even a cursor,
+    /// since every list cursor lives in [`Cursors`](crate::cursor::Cursors) and
+    /// survives leaving the screen it belongs to. Which is what makes the gesture cheap
+    /// enough to be reflexive: there is nothing to lose by pressing it.
+    ///
+    /// It carries no target and is **not gated on the current screen**, so pressing it
+    /// *from* Mine is a no-op rather than a second meaning — the same treatment
+    /// [`MenuAction::Cancel`] gets on the frames that have nothing to back out of. One
+    /// key, one sentence, on all six tabs.
+    ///
+    /// The layering with a stacked modal costs no code at all: [`crate::keymap`]'s
+    /// rule 2 gives a modal first refusal on every key, so the first `Esc` closes the
+    /// box and only the second is decoded to this. `docs/UI.md` §8.1.
+    ToMine,
     /// The mine key says it is down (`Space` on the Mine screen).
     ///
     /// **It announces a key, not a swing**, and the difference is the whole of

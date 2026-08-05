@@ -446,9 +446,15 @@ mod tests {
             KeyCode::Char('M'),
             KeyCode::Home,
             KeyCode::Char('A'),
+            // A global rather than any screen's, and in the table for exactly that
+            // reason: `Esc` returns to the Mine screen from all six, so the column
+            // that matters is the one full of `None`. A screen that claimed it would
+            // shadow the global in `keymap`'s rule 6 and lose the way back, on that
+            // screen only — the quietest way this binding could break.
+            KeyCode::Esc,
         ];
         // What each screen answers, in the order of `keys` above.
-        let claimed = |screen: Screen| -> [Option<Action>; 10] {
+        let claimed = |screen: Screen| -> [Option<Action>; 11] {
             match screen {
                 Screen::Mines => [
                     Some(Action::CursorUp),
@@ -456,6 +462,7 @@ mod tests {
                     Some(Action::AdjustLeft),
                     Some(Action::AdjustRight),
                     Some(Action::Confirm),
+                    None,
                     None,
                     None,
                     None,
@@ -473,6 +480,7 @@ mod tests {
                     None,
                     None,
                     Some(Action::Compress),
+                    None,
                     None,
                     None,
                     None,
@@ -499,6 +507,7 @@ mod tests {
                     Some(Action::BuyMax),
                     None,
                     None,
+                    None,
                 ],
                 // **`Home` and `A` are the Levels screen's alone**, which is what the
                 // two columns added for them are here to pin: `A` collects a whole
@@ -515,11 +524,12 @@ mod tests {
                     None,
                     Some(Action::JumpToCurrent),
                     Some(Action::ClaimAll),
+                    None,
                 ],
                 // Mine takes only `Space`, which `keymap` resolves above this table;
                 // Stats is phase 7's remaining screen. `None` is "not mine", which
                 // lets `keymap` fall through instead of swallowing the key.
-                _ => [const { None }; 10],
+                _ => [const { None }; 11],
             }
         };
         for screen in Screen::ALL {

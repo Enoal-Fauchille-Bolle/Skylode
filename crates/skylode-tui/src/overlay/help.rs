@@ -30,13 +30,20 @@ use crate::{config::Config, screen::Screen, theme};
 /// choice was between dropping a `the` and dropping a key from the list. Twenty-three
 /// columns is what the label column leaves a value here, and the longer form is
 /// twenty-four — so it wrapped, at the cost of a whole row, to say nothing more.
+///
+/// **`Esc` was paid for the same way, and the trade is worth naming.** Its row came
+/// from rewording `← →`, which used to spend a second line on `the cursor` — so the
+/// block is nine rows before and after, and Upgrades still fits its pane exactly. The
+/// alternative was to leave the binding off this list, and that is the one thing this
+/// block cannot afford: UI.md §9 makes Help *the* place the unshown globals are
+/// discoverable, so a global missing here is a key nobody finds.
 const GLOBALS: [&str; 9] = [
     "",
     "Anywhere",
     " Tab  ⇧Tab     next / previous screen",
     " 1 … 6         jump to a screen",
-    " ← →           adjust the value under",
-    "               the cursor",
+    " ← →           adjust what's selected",
+    " Esc           back to the mine",
     " s             Settings",
     " ?             this help",
     " q             back to title screen",
@@ -166,7 +173,15 @@ fn contextual(screen: Screen, config: &Config) -> Vec<String> {
             " M             buy as many as you can".to_owned(),
             // The §8.4 return leg. Listed under Upgrades and not under Inventory
             // because it is pressed *here* — the same letter, one screen earlier.
-            " c             go compress what is short".to_owned(),
+            //
+            // **`compress` and not `go compress`, which is a word bought back.** The
+            // longer form is twenty-five columns against the twenty-three the label
+            // leaves, and a `Paragraph` clips the overflow *in silence* — this line
+            // read `go compress what is sho` for as long as it existed. The verb of
+            // motion is the part that goes, because it is the part the reader can
+            // infer: a key that compresses from a screen with nothing to compress on
+            // it is evidently a journey.
+            " c             compress what is short".to_owned(),
         ],
         Screen::Stats => owned(&[
             " ↑ ↓           scroll the history",
@@ -226,6 +241,25 @@ mod tests {
         assert!(
             upgrades.contains(last),
             "the Keys pane overflows on the screen with the most bindings: {upgrades}"
+        );
+        // And the newest global is still *in* the block rather than merely counted in
+        // it: an `Esc` that fell off this pane would be a key with nowhere left to be
+        // found, since §9 shows it in no footer.
+        assert!(
+            upgrades.contains("back to the mine"),
+            "the way back is missing from the Keys pane: {upgrades}"
+        );
+
+        // **The pane clips sideways as silently as it clips downwards**, and this is
+        // the only assertion that catches it. The `c` line read `go compress what is
+        // sho` from the day it was written until the day someone printed the frame:
+        // every test above it looks for a substring, and a substring of the *front* of
+        // a line is still found when the back of it has been cut off. So the longest
+        // line on the busiest screen is asserted whole, and asserted here, beside the
+        // vertical budget it is the horizontal twin of.
+        assert!(
+            upgrades.contains("compress what is short"),
+            "the Keys pane clips its widest line: {upgrades}"
         );
     }
 
