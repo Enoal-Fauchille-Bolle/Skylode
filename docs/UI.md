@@ -67,6 +67,55 @@ summary, terminal-too-small, and save recovery.
 current screen, costing **zero permanent layout rows**, with the full history in
 Stats. One buffer, two renderings.
 
+#### 2.2.1 Salience: which announcement gets the one slot
+
+There is **one** slot, and the rule that filled it used to be *newest wins*. That
+handed it to whatever spoke most often, and what speaks most often is the tick: in a
+late run the refill and the procs fire several times a second, so a level-up — the
+rarest line in the game and the only one carrying an errand (`claim on 6`) — was
+reliably erased within a frame or two of being raised. Frequency was beating
+importance, which is the wrong way round.
+
+So a third property rides beside the text and the tone, decided in `announce::of` and
+nowhere else:
+
+| Level | Drawn? | Who | Why |
+| --- | --- | --- | --- |
+| **Silent** | never | spatial procs, the Excavator, the mine refill | the screen is already saying it |
+| **Normal** | yes, until superseded | purchases, refusals, conversions, a lapsed boost | an answer to a key, which the next key may supersede |
+| **Major** | yes, and nothing covers it | a level-up | it ends in an instruction, not a receipt |
+
+**Silent is undrawn, not dropped.** The entry still enters the buffer, so §5.5's
+History reads exactly what it always did — which is what keeps *one buffer, two
+renderings* true. Filtering at the push would have emptied the history of the events a
+run is mostly made of, and the alternative, a second buffer, is the thing that
+arrangement exists to avoid.
+
+**The test for Silent is "is the screen already showing this".** A blast has its flash
+and its cleared cells (§7); a refill has a grid visibly filling back up; an Excavator's
+payout is a count in the inventory. Those three are also, by a wide margin, the most
+frequent — an Excavator at its ceiling rolls 5 % of a swing and a held `Space` swings
+twenty times a second, so it alone lands about once a second. They were spending the
+interface's only interruption on the three things needing none.
+
+**Salience is not derivable from tone, and the two must not be merged.** `Neutral`
+covers both a Nuke the player is watching and `Entered the Iron Mine`, an answer they
+are waiting for; `Success` covers both `Excavator!` and `Level 23`. A ranking read off
+the hue would be wrong in both directions at once.
+
+**A `Major` cannot swallow an answer the player is waiting for**, and that falls out of
+the game rather than being arranged. The only `Major` is a level-up; XP comes from
+swings and the auto-miner grants none, so a level is crossed only while `Space` is held
+— with the player's hands on the one key that announces nothing. The keys that *do*
+announce live on screens where no swing is happening. The dev menu is the single path
+that can collide, and there the level-up deliberately wins over the row's own `+1 000
+xp` receipt.
+
+**It fixed §6.4.1's banner without touching it.** `Toasts::showing` asks "is the slot
+taken"; silent news does not take it, so the standing save-failure row stops being
+suppressed by chatter that was not being drawn either. Before, the gravest line in the
+interface was hidden for practically every frame of a late run.
+
 ### 2.3 The bootstrap rule
 
 Config lives inside the save, and the save may be missing or untrusted. Therefore:
@@ -1337,7 +1386,9 @@ The split it settles into:
 - **It yields the slot and takes it back.** A live toast covers the banner for its three
   seconds; when the toast expires the banner is simply true again, so it reappears with
   nothing having scheduled its return. Both ask `Toasts::showing` — one search, so the
-  two cannot disagree about whether the slot is taken.
+  two cannot disagree about whether the slot is taken. Since §2.2.1, a `Silent`
+  announcement does not take it: the banner was in practice invisible for every frame of
+  a late run, suppressed by procs and refills that were not being drawn either.
 
 **One row and not the toast's three.** The toast box is drawn over the screen with
 `Clear`, so a permanent one would keep three rows of the mine grid hidden for as long as
@@ -1695,10 +1746,15 @@ timing SYSTEMS pins. If a second proc fires inside the window, the newer overlay
 wins per cell — no queue, no compositing rules; the last blast to claim a cell owns
 its colour.
 
-**The toast is untouched and uncoupled.** The toast says _what_ (`Nuke — 200
-blocks`), the flash says _where_. They are produced by the same `Event` and consume
-it independently, and neither waits for the other: the toast's 3 s window and the
-flash's 200 ms have nothing to say to each other.
+**The toast is uncoupled, and — as of the salience pass — silent.** The two readers
+are still produced by the same `Event` and still consume it independently, neither
+waiting for the other: the toast's 3 s window and the flash's 200 ms have nothing to
+say to each other. What changed is that the *where* turned out to carry the *what*. A
+painted Nuke square is not mistakable for a Jackhammer line, so the sentence was the
+redundant half — and it was arriving several times a second, which made it the half
+that owned the one slot. The blast's announcement is now `Salience::Silent`: worded
+as before, kept in the buffer as before, read by §5.5's History as before, and never
+drawn. See §2.2.1.
 
 **It stays out of the core entirely, and the split is clean.** The core's `Event`
 carries **which cells** — deterministic data the seeded PRNG already produced, and
