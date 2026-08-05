@@ -52,11 +52,15 @@ use crate::tunables::RAW_PER_COMPRESSED;
 /// [`serde(default)`](https://serde.rs/field-attrs.html#default) can fill in is the
 /// one change that does *not* need a bump, because an old file already answers for
 /// it.
-pub const SAVE_VERSION: u32 = 2;
+pub const SAVE_VERSION: u32 = 3;
 
 /// The schema that had no `auto_raw_credited`, and therefore the last one whose ore
 /// could not be audited. See [`migrate`].
 const VERSION_WITHOUT_AUTO_TOTAL: u32 = 1;
+
+/// The last schema whose [`Boost`](crate::boost::Boost) carried only a remainder,
+/// with no record of what it had been granted. See [`migrate`].
+const VERSION_WITHOUT_BOOST_TOTAL: u32 = 2;
 
 /// The key the version is written under, named once so the reader and the writer
 /// cannot disagree about it.
@@ -164,15 +168,28 @@ pub fn from_json<C: DeserializeOwned>(text: &str) -> Result<Save<C>, SaveError> 
 /// successor. Written as one step per version rather than one function per *pair*
 /// of versions, which would grow as the square of the schema's age.
 ///
-/// There is one step: `1 → 2`, which gives a document the `auto_raw_credited` counter
-/// that [`GameState`]'s ore audit reads. Anything claiming a version below 1 claims a
+/// There are two steps. `1 → 2` gives a document the `auto_raw_credited` counter that
+/// [`GameState`]'s ore audit reads; `2 → 3` gives a running boost the `granted_ticks`
+/// total its gauge is a fraction of. Anything claiming a version below 1 claims a
 /// schema no build ever wrote, and that is a refusal rather than a migration.
+///
+/// **The second step is `<=` where the first is `==`**, and the difference is which
+/// question each is answering. `grandfather_auto_total` reconstructs a field for the
+/// one version that lacked it, and a v1 file that has just run through it now *has*
+/// that field — asking again would overwrite a value the previous step computed.
+/// `grandfather_boost_total` is downstream of it: a v1 file needs it just as much as a
+/// v2 one, because neither ever wrote the field. Chained steps are the reason to keep
+/// each condition honest about the whole range it covers rather than only its own
+/// predecessor.
 fn migrate(mut save: Value, from: u32) -> Result<Value, SaveError> {
     if from < VERSION_WITHOUT_AUTO_TOTAL {
         return Err(SaveError::UnknownVersion { version: from });
     }
     if from == VERSION_WITHOUT_AUTO_TOTAL {
         grandfather_auto_total(&mut save);
+    }
+    if from <= VERSION_WITHOUT_BOOST_TOTAL {
+        grandfather_boost_total(&mut save);
     }
     Ok(save)
 }
@@ -236,6 +253,57 @@ fn grandfather_auto_total(save: &mut Value) {
     if let Some(state) = save.get_mut("state").and_then(Value::as_object_mut) {
         state.insert(AUTO_TOTAL_FIELD.to_owned(), Value::from(held));
     }
+}
+
+/// The two fields [`grandfather_boost_total`] reads and writes, named for
+/// [`AUTO_TOTAL_FIELD`]'s reason: a typo compiles, and surfaces as a *damaged save*
+/// on the one build that has to read the file.
+const BOOST_REMAINING_FIELD: &str = "remaining_ticks";
+const BOOST_TOTAL_FIELD: &str = "granted_ticks";
+
+/// Gives a version-2 document's running boost a `granted_ticks` equal to what it has
+/// left.
+///
+/// **Why the field appeared at all.** Charges stack by addition, so a boost fired
+/// into twice is sixty seconds long; a gauge measured against the thirty-second
+/// constant then reads full for the whole first charge. The denominator has to be the
+/// boost's own total, and no version-2 file records it.
+///
+/// **Equality is the only honest reconstruction, and it is also a safe one.** The
+/// information is simply absent — a v2 boost leaves no trace of how many charges went
+/// into it — so nothing can be recovered, only chosen. Setting the total to the
+/// remainder says *this boost is as full as it will ever be*: the gauge reopens at
+/// 100 % and drains correctly over whatever is actually left, and the player loses at
+/// most the knowledge that the bar should have started part-way down. The two
+/// alternatives are both worse in the way [`grandfather_auto_total`]'s are. **Zero**
+/// would fail [`Boost::validate`](crate::boost::Boost) on the spot — more left than
+/// granted — and refuse a file the migration was written to rescue, which is the one
+/// thing a migration must never do. **The constant** would be a guess that is wrong
+/// for every stack and right only by coincidence for a single charge, and it can
+/// land *below* the remainder, so it fails the same check on exactly the saves it
+/// was meant to serve.
+///
+/// **A `null` boost is the common case and needs nothing.** The field lives inside
+/// the boost object, so a save written with none has no object to repair — which is
+/// also why this cannot be a plain `serde(default)`: the default would have to read
+/// its sibling to be right, and serde never shows a field its neighbours.
+///
+/// Reads defensively and gives up quietly, per the last paragraph of
+/// [`grandfather_auto_total`].
+fn grandfather_boost_total(save: &mut Value) {
+    let Some(boost) = save
+        .get_mut("state")
+        .and_then(|state| state.get_mut("active_boost"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+
+    let remaining = boost
+        .get(BOOST_REMAINING_FIELD)
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    boost.insert(BOOST_TOTAL_FIELD.to_owned(), Value::from(remaining));
 }
 
 /// Why a save could not be written or read.
@@ -317,8 +385,10 @@ impl std::error::Error for SaveError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boost::Boost;
     use crate::game::Input;
     use crate::mine_kind::MineKind;
+    use crate::tunables::BOOST_MULTIPLIER;
     use std::time::{Duration, SystemTime};
 
     /// Stands in for the front-end's real configuration: this module is generic
@@ -427,7 +497,7 @@ mod tests {
         assert_eq!(
             written(&state),
             concat!(
-                r#"{"version":2,"state":{"#,
+                r#"{"version":3,"state":{"#,
                 r#""player":{"pickaxe":{"tier":"Wooden","enchants":{}},"level":1,"#,
                 r#""experience":0,"inventory":{},"prestige":0,"xp_carry":0},"#,
                 r#""mine":{"kind":"Stone","size_level":0,"richness_level":0,"#,
@@ -440,6 +510,13 @@ mod tests {
                 // empty set is the *truth* about such a file rather than a default
                 // covering for missing information — those runs were paid at the tick.
                 r#""unclaimed":[],"#,
+                // **`null`, which is why version 3's field does not appear here.**
+                // `granted_ticks` lives *inside* the boost, so a run that has fired
+                // none writes nothing new and this document is byte-identical to the
+                // version-2 one but for the number at the front. That is the whole
+                // hazard the `2 → 3` migration answers: the golden save cannot show
+                // the change, so only `a_version_two_save_with_a_boost_running_still_loads`
+                // stands between the bump and a file this test says nothing about.
                 r#""active_boost":null,"auto_common_progress":0,"auto_value_progress":0,"#,
                 r#""yield_carry":[],"rng":{"seed":[234,216,29,114,93,38,16,78,137,156,"#,
                 r#"59,248,66,206,120,46,186,211,3,218,153,151,210,194,18,2,86,172,115,"#,
@@ -468,6 +545,14 @@ mod tests {
                 // a `0` would be *false* of an older file, and false in the direction
                 // that accuses an honest save of holding ore it could not have earned.
                 r#""auto_raw_credited":0,"#,
+                // Version 3 added `granted_ticks` and took a bump for the same
+                // reason `auto_raw_credited` did — files exist now. What is worth
+                // recording is why `serde(default)` was refused a *third* time, on a
+                // ground the two notes above do not cover: a default here would have
+                // to equal a **sibling field** to be right, and serde never shows a
+                // field its neighbours. `0` is not merely uninformative, it is the
+                // one value `Boost::validate` refuses, so the shortcut would turn an
+                // honest save into a damaged one.
                 r#""last_seen":1000},"#,
                 r#""config":{"palette":"dim","ascii_only":true}}"#,
             )
@@ -523,6 +608,118 @@ mod tests {
         match from_json::<Preferences>(&text) {
             Ok(save) => assert!(save.state.validate().is_ok()),
             Err(error) => unreachable!("a version-1 save must survive the bump: {error}\n{text}"),
+        }
+    }
+
+    /// A version-2 document whose boost was still running, built the only way it can
+    /// be: write today's document and put the old boost shape back into it.
+    ///
+    /// **The remainder is deliberately longer than one charge.** 900 ticks is 45
+    /// seconds, which no single charge can produce — it is a stack — and it is what
+    /// makes the fixture discriminating. Had the migration guessed
+    /// [`BOOST_DURATION_TICKS`](crate::tunables::BOOST_DURATION_TICKS) instead of the
+    /// remainder, the total would land *below* what the boost has left, and
+    /// [`Boost::validate`](crate::boost::Boost) would refuse the file. A thirty-second
+    /// fixture would pass under either rule and prove nothing.
+    fn a_version_two_document_with_a_boost_of(remaining: u32) -> String {
+        let text = written(&a_run());
+        assert!(
+            text.contains(r#""active_boost":null"#),
+            "the fixture assumes the played run fires no boost: {text}"
+        );
+
+        text.replacen(
+            &format!(r#""{VERSION_FIELD}":{SAVE_VERSION}"#),
+            &format!(r#""{VERSION_FIELD}":{VERSION_WITHOUT_BOOST_TOTAL}"#),
+            1,
+        )
+        .replacen(
+            r#""active_boost":null"#,
+            // The version-2 shape: a multiplier and a remainder, and no third field.
+            &format!(
+                r#""active_boost":{{"multiplier":{BOOST_MULTIPLIER},"{BOOST_REMAINING_FIELD}":{remaining}}}"#
+            ),
+            1,
+        )
+    }
+
+    /// **The `2 → 3` migration's whole reason.** A boost was running when the file was
+    /// written, and a version-2 document has no room to say how long it had been
+    /// granted for. Without the step the file does not merely lose a number — it fails
+    /// to parse, and the front-end shows a *damaged save* recovery screen for a
+    /// perfectly good run.
+    #[test]
+    fn a_version_two_save_with_a_boost_running_still_loads() {
+        let text = a_version_two_document_with_a_boost_of(900);
+
+        let save = match from_json::<Preferences>(&text) {
+            Ok(save) => save,
+            Err(error) => unreachable!("a version-2 save must survive the bump: {error}\n{text}"),
+        };
+
+        let boost = match save.state.active_boost() {
+            Some(boost) => boost,
+            None => unreachable!("the migration dropped the boost instead of completing it"),
+        };
+        assert_eq!(boost.remaining_ticks(), 900, "the remainder was rewritten");
+        assert_eq!(
+            boost.granted_ticks(),
+            900,
+            "the total must equal the remainder: the gauge reopens full and drains \
+             over what is actually left, which is the only reconstruction the file \
+             supports"
+        );
+    }
+
+    /// The other half, and without it the test above proves nothing: the same boost in
+    /// a **version-3** document is refused. A file claiming today's schema must carry
+    /// today's fields, so the load above is the migration doing work rather than serde
+    /// quietly defaulting the gap away — which is exactly what `serde(default)` would
+    /// have done, and would have handed the gauge a total of zero.
+    #[test]
+    fn the_same_boost_in_a_current_save_is_refused() {
+        let text = a_version_two_document_with_a_boost_of(900).replacen(
+            &format!(r#""{VERSION_FIELD}":{VERSION_WITHOUT_BOOST_TOTAL}"#),
+            &format!(r#""{VERSION_FIELD}":{SAVE_VERSION}"#),
+            1,
+        );
+
+        assert!(matches!(
+            from_json::<Preferences>(&text),
+            Err(SaveError::Unreadable(_))
+        ));
+    }
+
+    /// A version-1 file needs the boost step as much as a version-2 one — neither
+    /// schema ever wrote the field — which is why that step's condition is `<=` and
+    /// not `==`. The two migrations chain, and this is the only test that walks both.
+    #[test]
+    fn a_version_one_save_with_a_boost_running_walks_both_steps() {
+        let text = a_version_two_document_with_a_boost_of(900).replacen(
+            &format!(r#""{VERSION_FIELD}":{VERSION_WITHOUT_BOOST_TOTAL}"#),
+            &format!(r#""{VERSION_FIELD}":{VERSION_WITHOUT_AUTO_TOTAL}"#),
+            1,
+        );
+        // The `1 → 2` step *inserts* `auto_raw_credited`, so the field today's writer
+        // already put there has to come out or the document would carry it twice.
+        let key = format!(r#""{AUTO_TOTAL_FIELD}":"#);
+        let at = match text.find(&key) {
+            Some(at) => at,
+            None => unreachable!("the field the first bump added is not there: {text}"),
+        };
+        let end = match text[at..].find(',') {
+            Some(comma) => at + comma + 1,
+            None => unreachable!("the field the first bump added is the last one: {text}"),
+        };
+        let text = format!("{}{}", &text[..at], &text[end..]);
+
+        match from_json::<Preferences>(&text) {
+            Ok(save) => assert_eq!(
+                save.state.active_boost().map(Boost::granted_ticks),
+                Some(900),
+                "the boost step was skipped for a file that predates it too"
+            ),
+            Err(error) => unreachable!("a version-1 save must survive both: {error}\n{text}"),
         }
     }
 

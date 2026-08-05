@@ -1036,6 +1036,11 @@ pub struct BoostView {
     /// The multiplier it applies to mining power, e.g. `1.5`.
     pub multiplier: f64,
     /// How full the countdown gauge is, in `0.0..=1.0`.
+    ///
+    /// **A fraction of what this boost was granted, not of one charge's duration.**
+    /// The range holds by construction rather than by the gauge clamping it — see
+    /// [`boost_view`] for why the denominator has to come from the boost itself once
+    /// charges can stack.
     pub ratio: f32,
 }
 
@@ -1303,9 +1308,13 @@ impl View {
                 richness_max: MAX_RICHNESS_LEVEL,
                 value_percent: mine.value_weight_percent(),
             },
-            boost: state
-                .active_boost()
-                .map(|boost| boost_view(boost.remaining_ticks(), boost.multiplier())),
+            boost: state.active_boost().map(|boost| {
+                boost_view(
+                    boost.remaining_ticks(),
+                    boost.granted_ticks(),
+                    boost.multiplier(),
+                )
+            }),
             boost_charges: state.boost_charges(),
             haul: haul_view(kind, player.get_inventory()),
             mine_kind: kind,
@@ -1495,7 +1504,7 @@ fn enchant_roster(levels: &[(EnchantType, u8)]) -> String {
     }
 }
 
-/// The Boost gauge's figures, from a running boost's two numbers.
+/// The Boost gauge's figures, from a running boost's three numbers.
 ///
 /// **Takes the numbers and not the [`Boost`](skylode_core::boost::Boost)**, for
 /// [`pickaxe_summary`]'s reason
@@ -1510,14 +1519,36 @@ fn enchant_roster(levels: &[(EnchantType, u8)]) -> String {
 /// fire toast needed the same conversion — one implementation, two readers, rather than
 /// a gauge and a toast free to disagree about when a boost ends.
 ///
-/// The ratio is against [`BOOST_DURATION_TICKS`] and can exceed 1 — firing a second
-/// charge *extends* the timer rather than refreshing it — which the gauge clamps, so an
-/// over-long boost reads as a full bar instead of panicking `LineGauge`.
-fn boost_view(remaining: u32, multiplier: f32) -> BoostView {
+/// **The ratio is against `granted`, the boost's own total — not against
+/// [`BOOST_DURATION_TICKS`].** The constant is one charge's worth, and charges
+/// *stack by addition*, so it is the right denominator for exactly the first charge
+/// and wrong for every boost built out of two or more: a sixty-second boost measured
+/// against thirty seconds sits at a clamped 100 % for its whole first half, which is
+/// a gauge that stops answering the only question it is asked. Dividing by the total
+/// the core now carries makes the bar open full, fall to empty, and step *up*
+/// visibly when another charge lands.
+///
+/// Rounding the constant up to the next multiple was the version that needed no core
+/// change, and it is worse than the bug: crossing back under thirty seconds drops the
+/// denominator with it, so the bar leaps from half to full **while draining**.
+///
+/// The result is in `0.0..=1.0` by construction — the core refuses a boost with more
+/// left than it was granted. The `ratio` helper in `screen::mine` still clamps, and
+/// that is not a duplicate check: it is `LineGauge`'s panic guard, which has to hold
+/// whatever arithmetic happens up here.
+///
+/// A `granted` of zero cannot reach this — the tick sweeps a lapsed boost off the
+/// state before anything projects it — but `0 / 0` is `NaN`, and one branch is
+/// cheaper than an argument about who else might call it later.
+fn boost_view(remaining: u32, granted: u32, multiplier: f32) -> BoostView {
     BoostView {
         seconds: boost_seconds(remaining),
         multiplier: f64::from(multiplier),
-        ratio: remaining as f32 / BOOST_DURATION_TICKS as f32,
+        ratio: if granted == 0 {
+            0.0
+        } else {
+            remaining as f32 / granted as f32
+        },
     }
 }
 
@@ -3710,25 +3741,54 @@ mod tests {
     }
 
     #[test]
-    fn a_boost_rounds_its_countdown_up_and_measures_against_the_full_duration() {
+    fn a_stacked_boost_measures_against_its_own_granted_time() {
         // **`div_ceil`, not `/`.** One tick left is a boost the player still holds,
         // and flooring would print `0s` for a twentieth of a second — the gauge
         // announcing an expiry that has not happened.
-        let one_tick = boost_view(1, BOOST_MULTIPLIER);
+        let one_tick = boost_view(1, BOOST_DURATION_TICKS, BOOST_MULTIPLIER);
         assert_eq!(one_tick.seconds, 1);
 
-        let full = boost_view(BOOST_DURATION_TICKS, BOOST_MULTIPLIER);
+        let full = boost_view(BOOST_DURATION_TICKS, BOOST_DURATION_TICKS, BOOST_MULTIPLIER);
         assert_eq!(
             u64::from(full.seconds),
             u64::from(BOOST_DURATION_TICKS) / TICKS_PER_SECOND
         );
         assert!((full.ratio - 1.0).abs() < f32::EPSILON);
 
-        // Firing a second charge *extends* rather than refreshes, so the ratio can
-        // exceed one. It is left that way here and clamped at the gauge, which is
-        // the one place that must never be handed an out-of-range value.
-        let extended = boost_view(2 * BOOST_DURATION_TICKS, BOOST_MULTIPLIER);
-        assert!(extended.ratio > 1.0);
+        // Two charges fired at once: sixty seconds, and the bar opens full rather
+        // than at a clamped 200 %.
+        let stacked = boost_view(
+            2 * BOOST_DURATION_TICKS,
+            2 * BOOST_DURATION_TICKS,
+            BOOST_MULTIPLIER,
+        );
+        assert_eq!(u64::from(stacked.seconds), 60);
+        assert!((stacked.ratio - 1.0).abs() < f32::EPSILON);
+
+        // The case the old constant denominator got wrong, and the reason this test
+        // was renamed: halfway through a two-charge boost the bar must read half.
+        // Against `BOOST_DURATION_TICKS` it read 1.0, so the gauge sat pinned at full
+        // for the entire first charge and only started moving in the second half.
+        let halfway = boost_view(
+            BOOST_DURATION_TICKS,
+            2 * BOOST_DURATION_TICKS,
+            BOOST_MULTIPLIER,
+        );
+        assert_eq!(u64::from(halfway.seconds), 30);
+        assert!(
+            (halfway.ratio - 0.5).abs() < f32::EPSILON,
+            "a 60 s boost with 30 s left read {}",
+            halfway.ratio,
+        );
+
+        // Never out of range, so `LineGauge`'s clamp is a guard and not a repair.
+        for remaining in [0, 1, BOOST_DURATION_TICKS, 3 * BOOST_DURATION_TICKS] {
+            let ratio = boost_view(remaining, 3 * BOOST_DURATION_TICKS, BOOST_MULTIPLIER).ratio;
+            assert!(
+                (0.0..=1.0).contains(&ratio),
+                "{remaining} ticks gave {ratio}"
+            );
+        }
     }
 
     #[test]

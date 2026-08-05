@@ -170,6 +170,26 @@ mod tests {
         }
     }
 
+    /// Swaps the hex digit at `at` for a different one, leaving the field still
+    /// *readable* as hex.
+    ///
+    /// **Not [`flip`], and the difference is the whole point of the test that calls
+    /// this.** A hex digit's low bit is not always another hex digit: `f ^ 1` is `g`
+    /// and `a ^ 1` is a backtick, so flipping a signature is a coin toss between the
+    /// two refusals — a *wrong* mac two times in sixteen becomes a *malformed* one,
+    /// and the test starts asserting the opposite of what it says it asserts. Which
+    /// side it lands on depends on the payload, so it changes under any edit that
+    /// moves a byte of the save. Replacing the digit makes the distinction the test
+    /// draws hold for every key and every run.
+    fn reseat_digit(text: &str, at: usize) -> String {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes[at] = if bytes[at] == b'0' { b'1' } else { b'0' };
+        match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(error) => unreachable!("a hex digit for a hex digit stays UTF-8: {error}"),
+        }
+    }
+
     /// Where `needle` starts in `text`.
     ///
     /// The two flip tests aim by name rather than by offset, because the offsets that
@@ -215,12 +235,12 @@ mod tests {
     #[test]
     fn one_flipped_byte_in_the_mac_breaks_the_seal() {
         let sealed = seal(PAYLOAD);
-        // The low bit of a hex digit stays a hex digit — `a` to `b`, `0` to `1` — so
-        // what this produces is a wrong signature and not a malformed one, which is
-        // what separates the two refusals.
+        // A hex digit for a *different* hex digit, so what this produces is a wrong
+        // signature and not a malformed one — the distinction that separates the two
+        // refusals. See [`reseat_digit`] for why flipping a bit here does not hold.
         let at = at(&sealed, r#""mac":""#) + r#""mac":""#.len();
         assert!(matches!(
-            open(&flip(&sealed, at)),
+            open(&reseat_digit(&sealed, at)),
             Err(PersistError::Tampered)
         ));
     }

@@ -3635,6 +3635,45 @@ mod tests {
             Some(2 * BOOST_DURATION_TICKS - 1),
             "the second charge restarted the clock instead of adding to it"
         );
+        assert_eq!(
+            state.active_boost().map(Boost::granted_ticks),
+            Some(2 * BOOST_DURATION_TICKS),
+            "the stack grew but the total it is measured against did not"
+        );
+    }
+
+    /// A boost that lapsed leaves no total behind for the next one to inherit.
+    ///
+    /// This is the claim [`Boost`]'s docs make for keeping the total *inside* the
+    /// struct — the tick drops the boost, so the counter resets by dying rather than
+    /// by anyone remembering to zero it. Asserted here and not in `boost`, because
+    /// the sweep that makes it true belongs to [`tick`](GameState::tick): the module
+    /// below cannot observe its own disposal.
+    #[test]
+    fn a_boost_fired_after_one_lapsed_starts_from_a_fresh_total() {
+        let mut state = state();
+        state.boost_charges = 2;
+        assert!(state.fire_boost().is_ok());
+        assert!(state.fire_boost().is_ok());
+        assert_eq!(
+            state.active_boost().map(Boost::granted_ticks),
+            Some(2 * BOOST_DURATION_TICKS)
+        );
+
+        for _ in 0..2 * BOOST_DURATION_TICKS {
+            state.tick(IDLE);
+        }
+        assert!(state.active_boost().is_none(), "the boost never lapsed");
+
+        state.boost_charges = 1;
+        assert!(state.fire_boost().is_ok());
+
+        assert_eq!(
+            state.active_boost().map(Boost::granted_ticks),
+            Some(BOOST_DURATION_TICKS),
+            "the new boost inherited the old stack's total, so its gauge would open \
+             half full"
+        );
     }
 
     /// The reserve outlives the boost it did not light. A charge bought before a

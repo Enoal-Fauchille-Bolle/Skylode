@@ -618,9 +618,17 @@ mod tests {
         assert_eq!(read(slots.backup()).state.last_seen(), NOW);
     }
 
-    /// One byte, in the signature. A hex digit's low bit is another hex digit, so this
-    /// is a *wrong* mac rather than a malformed one — the difference between
-    /// [`PersistError::Tampered`] and [`PersistError::Damaged`].
+    /// One byte, in the signature: a *wrong* mac rather than a malformed one, which is
+    /// the difference between [`PersistError::Tampered`] and [`PersistError::Damaged`].
+    ///
+    /// **The digit is replaced, not bit-flipped**, and the earlier version of this test
+    /// did flip it — on the false premise that a hex digit's low bit is another hex
+    /// digit. `f ^ 1` is `g`, `a ^ 1` is a backtick, so two starting digits in sixteen
+    /// turn the file malformed and the assertion below into its own opposite. Which
+    /// digit the mac starts with is a function of the payload, so the test held only
+    /// until something moved a byte of the save — the `SAVE_VERSION` bump to 3 is what
+    /// finally landed it on `f`. `envelope`'s own `reseat_digit` carries the same
+    /// reasoning, and it was wrong there too — passing on the luck of its payload.
     #[test]
     fn one_flipped_byte_in_the_mac_is_refused() {
         let (_dir, slots) = slots();
@@ -632,7 +640,7 @@ mod tests {
             None => unreachable!("a written save carries a mac: {text}"),
         };
         let mut bytes = text.into_bytes();
-        bytes[at] ^= 1;
+        bytes[at] = if bytes[at] == b'0' { b'1' } else { b'0' };
         if let Err(error) = fs::write(slots.primary(), bytes) {
             unreachable!("the fixture should be writable: {error}");
         }

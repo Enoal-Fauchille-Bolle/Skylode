@@ -365,6 +365,23 @@ there is no boost — so both gauges read `—` on an empty bar rather than `0%`
 panel likewise drops the `×1.0 boost → 25.0` clause when nothing multiplies, and
 prints `Fortune —` and `Ench —` rather than a level of zero.
 
+**The `Boost` bar is a fraction of what the running boost was *granted*, not of one
+charge's thirty seconds.** Charges stack by addition, so two fired together make a
+sixty-second boost — and against a fixed thirty-second denominator that reads as a
+clamped full bar for the whole first charge, with the gauge only beginning to move
+halfway through. `Boost::granted_ticks` is the core counter that fixes it: the bar
+opens full, falls to empty over whatever the boost actually holds, and steps *up*
+visibly when another charge lands mid-run. Rounding the constant up to the next
+multiple was the version that needed no core change, and it is worse than the bug —
+crossing back under thirty seconds takes the denominator down with it, so the bar
+leaps from half to full **while draining**.
+
+**The label is deliberately not widened to say so.** `Boost  45s / 60s  ×2.50   3 held`
+is the version that states the denominator in words, and it costs five columns the
+32-column budget above does not have. The division of labour is the ordinary one: the
+bar carries the proportion, the label carries the exact seconds, and a `LineGauge`
+that clips in silence is not a place to spend columns for a fact already drawn.
+
 **The empty *reserve* is the one absence in this game that is named and not dashed**,
 and the exception is deliberate. `—` is right for the countdown, where nothing running
 is nothing to measure; it is wrong for the reserve, because a player who has never seen

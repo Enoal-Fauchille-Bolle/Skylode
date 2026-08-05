@@ -99,7 +99,11 @@ game-state struct. The fields, derived from the mechanics:
   every boost in the game is identical, so nothing else distinguishes them), plus
   any running boost and its remaining timer. The reserve is a field of its own
   because level-up grants charges the player has not fired: dropping it would make a
-  reload eat every charge earned and not yet spent.
+  reload eat every charge earned and not yet spent. A running boost carries **two**
+  timers, not one — what it has left and what it was granted — because charges stack
+  by addition and a gauge needs the second to be a fraction of anything. See
+  [UI.md](UI.md#51-mine) §5.1 for what the pair draws, and `SAVE_VERSION` 3 below for
+  what it cost.
 - the **carries**: the auto-miner's unpaid fractions of a common and a value cell,
   and the prestige multiplier's unpaid fraction of each item. They look like
   bookkeeping and are not: dropping them turns a fractional rate into a floor, which
@@ -160,6 +164,24 @@ have slept through", which is no ceiling at all. It took `SAVE_VERSION` to 2, an
 `1 → 2` migration **grandfathers** rather than defaulting to zero: a version-1 file
 cannot say what its auto-miner paid out, and a `0` would be false in the direction that
 accuses an honest save.
+
+**`SAVE_VERSION` 3 is `granted_ticks`**, the second timer on a running boost, and its
+`2 → 3` migration grandfathers by the same doctrine: a version-2 boost is given a total
+equal to what it has left, so the gauge reopens full and drains over whatever remains.
+The two rejected values are rejected the same way — the field is a *missing fact* and
+not an *absence*, so nothing may default it. Zero is the sharper case here, because it
+does not merely mislead: `Boost::validate` refuses a boost holding more time than it was
+granted, so a `serde(default)` would turn every mid-boost save into a **damaged** one.
+The thirty-second constant fails for the same reason on any stack. And `serde` could not
+have helped even in principle, since a default that had to equal a *sibling* field is
+one serde never gives a way to write.
+
+The bump is also the case that shows the two versions are not the same kind of change.
+`auto_raw_credited` altered the document every save writes; `granted_ticks` lives inside
+`active_boost`, so a run that has fired no charge writes a version-3 file byte-identical
+to the version-2 one but for the number at the front. **The golden save cannot see it** —
+its fixture has no boost running — which is why the migration's own tests, rather than
+the pinned document, are what stand between the bump and a file nothing checks.
 
 **What it does not catch, and cannot.** A tamperer holding the key can raise the
 counters alongside the purse and satisfy all three; nothing inside a file can prove a

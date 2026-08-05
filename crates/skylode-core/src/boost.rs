@@ -52,12 +52,34 @@ use serde::{Deserialize, Serialize};
 /// the ambient clock read the core's determinism contract forbids. Ticks are also
 /// what the save can carry without a unit conversion: a reloaded run resumes the
 /// countdown on the integer it left off at.
+///
+/// ## Why there are two counters and not one
+///
+/// [`remaining_ticks`](Boost::remaining_ticks) alone answers *how long is left*,
+/// which is what the countdown prints. A **gauge** asks a second question — how
+/// long is left *out of how much* — and [`extend`](Boost::extend) is what makes the
+/// denominator impossible to infer: a boost that has been fired into twice is sixty
+/// seconds long, not thirty, so measuring it against
+/// [`BOOST_DURATION_TICKS`](crate::tunables::BOOST_DURATION_TICKS) reports a bar
+/// pinned at full for the whole first charge.
+///
+/// [`granted_ticks`](Boost::granted_ticks) is therefore the boost's own total, and
+/// it lives here rather than on the front-end for a reason that is not tidiness:
+/// **it resets itself**. The tick drops an expired boost off the game state
+/// entirely, so the struct dies with its total inside it and the next charge starts
+/// from a fresh one. A counter kept beside the gauge would need a caller to
+/// remember to zero it, on a code path that runs once every few minutes and would
+/// be wrong in silence.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Boost {
     /// The factor mining power is multiplied by while this boost runs.
     multiplier: f32,
     /// Ticks left before it lapses; `0` means expired.
     remaining_ticks: u32,
+    /// Every tick this boost was ever granted, across all the charges fired into
+    /// it — the denominator [`remaining_ticks`](Boost::remaining_ticks) is a
+    /// fraction of. Never decreases while the boost lives.
+    granted_ticks: u32,
 }
 
 impl Boost {
@@ -85,6 +107,10 @@ impl Boost {
         Self {
             multiplier,
             remaining_ticks: ticks,
+            // A boost opens having been granted exactly what it has left, so the
+            // gauge reads full on the tick it is fired. The two counters part
+            // company on the first `tick` and again on every `extend`.
+            granted_ticks: ticks,
         }
     }
 
@@ -115,6 +141,19 @@ impl Boost {
         self.remaining_ticks
     }
 
+    /// Every tick this boost was granted, charges stacked included — what
+    /// [`remaining_ticks`](Boost::remaining_ticks) is a fraction *of*.
+    ///
+    /// The pair is what a progress bar needs and a countdown does not, which is why
+    /// this accessor exists at all: `remaining` is the number a label prints, and
+    /// `remaining / granted` is the number a gauge fills to. A front-end dividing by
+    /// [`BOOST_DURATION_TICKS`](crate::tunables::BOOST_DURATION_TICKS) instead is
+    /// right for exactly one charge and wrong for every stack — see the type's own
+    /// docs for why the total cannot be inferred from outside.
+    pub fn granted_ticks(&self) -> u32 {
+        self.granted_ticks
+    }
+
     /// Whether the boost has lapsed — the predicate phase 7's sweep drops it on.
     pub fn is_expired(&self) -> bool {
         self.remaining_ticks == 0
@@ -131,11 +170,21 @@ impl Boost {
     /// and a non-finite one would poison `break_progress` on the first swing and
     /// leave a mine that can never be dug.
     ///
+    /// **The third state is the one the two counters make possible.** More left than
+    /// was ever granted cannot arise from [`new`](Boost::new) or
+    /// [`extend`](Boost::extend) — both move the pair together — but a file writes
+    /// the fields apart, and the result is a gauge asked to fill past full. Refused
+    /// here rather than clamped at the draw, so the front-end keeps its promise that
+    /// the ratio is a ratio.
+    ///
     /// See [`Mine::validate`](crate::mine::Mine) for why the message is a plain
     /// string.
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
         if !self.multiplier.is_finite() || self.multiplier < 1.0 {
             return Err("a boost multiplies mining power by something that is not a speed-up");
+        }
+        if self.remaining_ticks > self.granted_ticks {
+            return Err("a boost has more time left than it was ever granted");
         }
         Ok(())
     }
@@ -175,8 +224,17 @@ impl Boost {
     /// `saturating_add` for [`tick`](Boost::tick)'s reason run the other way: a
     /// `u32` overflow would wrap a very long stack back to a very short boost, so a
     /// player who banked charges all run would fire them and get nothing.
+    ///
+    /// **Both counters move, and that is the whole of the gauge's correctness.**
+    /// Growing the numerator alone leaves the bar measured against a total the boost
+    /// outgrew, which reads as full until the stack has burnt back down to one
+    /// charge. Saturating both keeps `remaining <= granted` true even at the
+    /// ceiling: saturation is monotone, so the larger of the two arrives there first
+    /// and the invariant [`validate`](Boost::validate) checks cannot be broken from
+    /// inside the rules.
     pub(crate) fn extend(&mut self, ticks: u32) {
         self.remaining_ticks = self.remaining_ticks.saturating_add(ticks);
+        self.granted_ticks = self.granted_ticks.saturating_add(ticks);
     }
 }
 
@@ -248,6 +306,44 @@ mod tests {
             BOOST_MULTIPLIER,
             "stacking must buy time, never a stronger multiplier"
         );
+        assert_eq!(
+            boost.granted_ticks(),
+            2 * BOOST_DURATION_TICKS,
+            "the total must grow with the stack, or the gauge measures a two-charge \
+             boost against one charge and reads full for the first thirty seconds"
+        );
+    }
+
+    /// The invariant the gauge rests on, asserted across the whole life of a boost
+    /// rather than at one moment: a bar filled to `remaining / granted` is a
+    /// proportion only while the numerator stays under the denominator.
+    #[test]
+    fn a_boost_never_has_more_left_than_it_was_granted() {
+        let mut boost = Boost::new(BOOST_MULTIPLIER, BOOST_DURATION_TICKS);
+        let mut seen_full = false;
+        let mut seen_partial = false;
+
+        for step in 0..3 * BOOST_DURATION_TICKS {
+            // A second charge lands mid-run, which is the case that used to break
+            // the ratio: the numerator jumped and the denominator did not.
+            if step == BOOST_DURATION_TICKS / 2 {
+                boost.extend(BOOST_DURATION_TICKS);
+            }
+            assert!(
+                boost.remaining_ticks() <= boost.granted_ticks(),
+                "at step {step}: {} left of {} granted",
+                boost.remaining_ticks(),
+                boost.granted_ticks(),
+            );
+            seen_full |= boost.remaining_ticks() == boost.granted_ticks();
+            seen_partial |= boost.remaining_ticks() < boost.granted_ticks();
+            boost.tick();
+        }
+
+        // Both sides of the invariant were actually exercised: a `<=` that only ever
+        // saw equality would pass on a boost whose counters never separated.
+        assert!(seen_full, "the boost was never observed at full");
+        assert!(seen_partial, "the boost was never observed part-spent");
     }
 
     /// Extending past `u32::MAX` must stay at `u32::MAX`. Wrapping would turn a
@@ -260,6 +356,11 @@ mod tests {
         boost.extend(BOOST_DURATION_TICKS);
 
         assert_eq!(boost.remaining_ticks(), u32::MAX);
+        // Both counters, and not just the one the countdown prints. Saturating the
+        // total alone would be harmless; saturating the remainder alone would leave
+        // more left than was granted, which is the state `validate` refuses.
+        assert_eq!(boost.granted_ticks(), u32::MAX);
+        assert!(boost.validate().is_ok());
     }
 
     /// Every boost the rules can build passes, which is what makes the validator a
@@ -289,5 +390,26 @@ mod tests {
         // `multiplier()` already returns for a lapsed boost, so refusing it would
         // refuse a state the game itself reports.
         assert!(Boost::new(1.0, BOOST_DURATION_TICKS).validate().is_ok());
+    }
+
+    /// The third state a file can write and the rules cannot reach. Built as a
+    /// struct literal on purpose: `new` and `extend` move both counters together, so
+    /// there is no sequence of calls that produces this — which is exactly why the
+    /// check has to exist for the one input that does not go through them.
+    #[test]
+    fn a_boost_with_more_left_than_it_was_granted_is_refused() {
+        let impossible = Boost {
+            multiplier: BOOST_MULTIPLIER,
+            remaining_ticks: 2 * BOOST_DURATION_TICKS,
+            granted_ticks: BOOST_DURATION_TICKS,
+        };
+
+        assert!(impossible.validate().is_err());
+        // Equal is the legitimate boundary — it is a boost on the tick it was fired.
+        assert!(
+            Boost::new(BOOST_MULTIPLIER, BOOST_DURATION_TICKS)
+                .validate()
+                .is_ok()
+        );
     }
 }
