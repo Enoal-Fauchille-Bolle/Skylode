@@ -1373,6 +1373,22 @@ mod tests {
         assert!(!frame.contains("0 held"), "{frame}");
     }
 
+    /// **A single charge is singular**, which is the third arm of the same match and
+    /// the one a fixture set to three never reaches. `1 charges` is the kind of thing
+    /// that survives a whole project because it only appears in one state.
+    #[test]
+    fn one_banked_charge_reads_in_the_singular() {
+        let mut view = View::sample();
+        view.upgrades.active = UpgradeTab::Boost;
+        if let UpgradeDetail::Boost(detail) = &mut view.upgrades.boost.detail {
+            detail.reserve = 1;
+        }
+        let frame = whole_frame(&render_view(&view));
+
+        assert!(frame.contains("1 charge, unfired"), "{frame}");
+        assert!(!frame.contains("1 charges"), "{frame}");
+    }
+
     #[test]
     fn each_sub_tab_names_its_own_purchase_in_the_footer() {
         let footer = |buffer: &Buffer| {

@@ -42,7 +42,7 @@ use crate::{
     announce,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     flash::{FlashStage, Flashes},
-    format::{MAXED, duration_hm, grouped, roman, rung_label, shown_rung},
+    format::{MAXED, boost_seconds, duration_hm, grouped, roman, rung_label, shown_rung},
     palette::ColourMode,
     toast::Toasts,
 };
@@ -1158,6 +1158,20 @@ pub struct View {
     pub mine_panel: MinePanelView,
     /// The Redstone boost gauge, or [`None`] when no boost is running.
     pub boost: Option<BoostView>,
+    /// Charges banked and unfired — what `b` has to spend.
+    ///
+    /// **Beside [`boost`](View::boost) and not inside it**, and the two shapes say two
+    /// different things on purpose. `Option<BoostView>` means *a boost either runs or
+    /// does not exist*; the reserve is at its most interesting in exactly the case that
+    /// `None` covers, since a player with three charges and nothing running is a player
+    /// with a key to press. Folding the count into `BoostView` would make it
+    /// unreachable precisely when it matters.
+    ///
+    /// A `u32` and not a formatted string, unlike most of what this screen draws: the
+    /// gauge label has three shapes for it — running, idle with charges, idle with none
+    /// — and choosing between them is a rendering decision that belongs where the
+    /// column budget is known.
+    pub boost_charges: u32,
     /// The Haul strip: what the standing mine produces, and how much is held.
     pub haul: HaulView,
     /// Which of the twelve mines the grid below belongs to — the only thing that
@@ -1292,6 +1306,7 @@ impl View {
             boost: state
                 .active_boost()
                 .map(|boost| boost_view(boost.remaining_ticks(), boost.multiplier())),
+            boost_charges: state.boost_charges(),
             haul: haul_view(kind, player.get_inventory()),
             mine_kind: kind,
             // Cloned, not borrowed. A borrow would put a lifetime parameter on
@@ -1374,6 +1389,10 @@ impl View {
                 multiplier: 1.5,
                 ratio: 0.68,
             }),
+            // Both halves at once, which is the state the label has least room for:
+            // a boost running *and* charges banked behind it. The fixture is where the
+            // counted frame is measured, so it should carry the widest case.
+            boost_charges: 3,
             // The Iron mine drops Iron from both its cells, so the strip has one
             // segment — the wireframe's own case. `sample_two_material_haul` below
             // is the other one, for the tests that need it.
@@ -1485,22 +1504,18 @@ fn enchant_roster(levels: &[(EnchantType, u8)]) -> String {
 /// this crate at all, since no legal sequence of public calls reaches a boost from a
 /// level-1 run. `from_state` unwraps the boost; this formats it.
 ///
-/// `div_ceil` on the seconds, because this is a **countdown**: one tick left is a
-/// boost the player still has, and flooring would show `0s` for a twentieth of a
-/// second before the gauge vanished. The ratio is against
-/// [`BOOST_DURATION_TICKS`] and can exceed 1 — firing a second charge *extends* the
-/// timer rather than refreshing it — which the gauge clamps, so an over-long boost
-/// reads as a full bar instead of panicking `LineGauge`.
+/// The seconds go through [`boost_seconds`], which is where the `div_ceil` and its
+/// argument live: this is a **countdown**, so flooring would print `0s` for a
+/// twentieth of a second while the boost was still multiplying. It moved there when the
+/// fire toast needed the same conversion — one implementation, two readers, rather than
+/// a gauge and a toast free to disagree about when a boost ends.
+///
+/// The ratio is against [`BOOST_DURATION_TICKS`] and can exceed 1 — firing a second
+/// charge *extends* the timer rather than refreshing it — which the gauge clamps, so an
+/// over-long boost reads as a full bar instead of panicking `LineGauge`.
 fn boost_view(remaining: u32, multiplier: f32) -> BoostView {
-    // Widened, divided, then narrowed. `TICKS_PER_SECOND` is a `u64` because the
-    // offline accrual multiplies by it across days, while a tick counter is a `u32`;
-    // dividing in the wider type and converting back keeps the whole thing total,
-    // where a cast either way would be the compiler taking the programmer's word for
-    // it. The `unwrap_or` is unreachable — a `u32` of ticks over twenty is always a
-    // `u32` of seconds — and is here because this crate's lints leave no `unwrap`.
-    let seconds = u64::from(remaining).div_ceil(TICKS_PER_SECOND);
     BoostView {
-        seconds: u32::try_from(seconds).unwrap_or(u32::MAX),
+        seconds: boost_seconds(remaining),
         multiplier: f64::from(multiplier),
         ratio: remaining as f32 / BOOST_DURATION_TICKS as f32,
     }
@@ -3826,6 +3841,31 @@ mod tests {
                 _ => assert!(note.is_empty(), "{kind:?} said {note:?}"),
             }
         }
+    }
+
+    /// **Both halves of the boost are projected, and from the run rather than each
+    /// other.** The reserve is the number `b` spends and the shop adds to, and it is
+    /// the one that survives a boost lapsing — so a projection that read it off
+    /// `active_boost` would report nothing in exactly the state where the player has
+    /// charges waiting and none running.
+    #[test]
+    fn the_reserve_is_projected_whether_or_not_a_boost_is_running() {
+        let mut state = GameState::new(0x5B1_0DE, std::time::UNIX_EPOCH);
+        state.dev_grant_boost_charges(3);
+
+        let idle = projected(&state);
+        assert_eq!(idle.boost_charges, 3);
+        assert!(idle.boost.is_none(), "nothing was fired");
+
+        if let Err(refusal) = state.fire_boost() {
+            unreachable!("a granted charge must be spendable: {refusal:?}");
+        }
+        let running = projected(&state);
+        assert_eq!(
+            running.boost_charges, 2,
+            "the fired charge is still counted"
+        );
+        assert!(running.boost.is_some());
     }
 
     #[test]

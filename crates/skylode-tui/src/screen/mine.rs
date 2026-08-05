@@ -48,8 +48,20 @@ const NOTHING: &str = "—";
 const GRID_PANEL_WIDTH: u16 = 42;
 
 /// Width every status-gauge label is padded to, so the three bars start on the
-/// same column however long each label is (the longest, XP, is 26).
-const GAUGE_LABEL_WIDTH: usize = 28;
+/// same column however long each label is.
+///
+/// **32 and no longer 28, and the four columns came off the bars deliberately.** The
+/// Boost label is the longest of the three now that it carries the reserve, and its
+/// worst realistic case — ten charges banked and fired at once — is
+/// `" Boost  300s  ×2.50   10 held"`, 29 columns. The two panels beside the grid are
+/// full at four content lines apiece, so the label was the only place left; a
+/// `Paragraph` and a `LineGauge` both *clip in silence*, so a label that outgrew this
+/// would not fail, it would quietly stop saying how many charges the player holds.
+///
+/// The cost is a `docs/UI.md` §5.1 departure: the counted frame drew its bars four
+/// columns wider. A bar is a proportion and reads the same at 48 columns as at 52; a
+/// truncated number does not.
+const GAUGE_LABEL_WIDTH: usize = 32;
 
 /// Blank rows kept between the gauges and the footer.
 ///
@@ -317,14 +329,38 @@ fn gauges(frame: &mut Frame, area: Rect, view: &View) {
     gauge(
         frame,
         boost_area,
-        &match &view.boost {
-            Some(boost) => format!(" Boost  {}s  ×{:.2}", boost.seconds, boost.multiplier),
-            None => format!(" Boost  {NOTHING}"),
-        },
+        &boost_label(view),
         view.boost
             .as_ref()
             .map_or(0.0, |b| ratio(f64::from(b.ratio))),
     );
+}
+
+/// The Boost gauge's label: what is running, and what is left to fire.
+///
+/// **Two independent facts on one row, which is why the reserve is not simply appended
+/// to the countdown.** A boost that runs and a charge that is banked are unrelated —
+/// the player can have either, both or neither — so the label is a product of two
+/// halves rather than a ladder of four hand-written sentences.
+///
+/// **The empty reserve says `no charges` rather than falling silent**, and that is the
+/// one place this readout departs from the screen's own *"an absence is a dash"* rule.
+/// The dash is right for the countdown, where nothing running is nothing to measure;
+/// it is wrong for the reserve, because a player who has never seen the word does not
+/// know the footer's `b  boost` refers to anything they can obtain. The word is what
+/// makes the key mean something before the first charge is granted.
+fn boost_label(view: &View) -> String {
+    let running = match &view.boost {
+        Some(boost) => format!("{}s  ×{:.2}", boost.seconds, boost.multiplier),
+        // Not `0s`: a countdown at zero claims a boost is a twentieth of a second from
+        // ending, where the truth is that none is running at all.
+        None => NOTHING.to_owned(),
+    };
+    let reserve = match view.boost_charges {
+        0 => "no charges".to_owned(),
+        held => format!("{} held", grouped(held)),
+    };
+    format!(" Boost  {running}   {reserve}")
 }
 
 /// The Break gauge's label: `Break  61%  Iron Block`, or a dash with no target.
@@ -452,7 +488,10 @@ mod tests {
     use skylode_core::{mine_kind::MineKind, tunables::LEVEL_CAP};
 
     use super::*;
-    use crate::{flash::FlashStage, view::TargetView};
+    use crate::{
+        flash::FlashStage,
+        view::{BoostView, TargetView},
+    };
 
     /// Renders the Mine screen alone into an 80×24 buffer.
     ///
@@ -556,6 +595,21 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The one row of `view` that contains `needle`, whole.
+    ///
+    /// **A row and not the frame**, for the gauges specifically: the Boost label and
+    /// the Pickaxe panel both print a multiplier, so a frame-wide `contains` cannot say
+    /// which of the two it found. Anchoring on the row is what lets a test assert that
+    /// two facts sit on the *same* line.
+    fn gauge_row(view: &View, needle: &str) -> String {
+        let frame = whole_frame(&render_view(view, 80, 24));
+        frame
+            .lines()
+            .find(|line| line.contains(needle))
+            .unwrap_or_default()
+            .to_owned()
     }
 
     #[test]
@@ -872,6 +926,114 @@ mod tests {
         assert!(!frame.contains("boost →"), "the arrow survived: {frame}");
         assert!(frame.contains("Boost  —"), "{frame}");
         assert!(!frame.contains("Boost  0s"), "{frame}");
+    }
+
+    /// **The countdown and the reserve are independent, and the label says both.**
+    /// A boost that runs and a charge that is banked have nothing to do with each
+    /// other — the player can have either, both or neither — so the four states are
+    /// asserted as a product rather than as four sentences someone wrote out.
+    #[test]
+    fn the_boost_gauge_states_the_countdown_and_the_reserve_separately() {
+        let with = |boost, charges| {
+            let view = View {
+                boost,
+                boost_charges: charges,
+                ..View::sample()
+            };
+            gauge_row(&view, " Boost ")
+        };
+        // Rebuilt per call rather than cloned: `BoostView` is plain data with no
+        // `Copy`, and a `clone()` in a test reads as though the value mattered.
+        let running = || {
+            Some(BoostView {
+                seconds: 12,
+                multiplier: 1.5,
+                ratio: 0.68,
+            })
+        };
+
+        let both = with(running(), 3);
+        assert!(both.contains("Boost  12s  ×1.50"), "{both}");
+        assert!(both.contains("3 held"), "{both}");
+
+        let idle = with(None, 3);
+        assert!(idle.contains("Boost  —"), "{idle}");
+        assert!(
+            idle.contains("3 held"),
+            "the reserve vanished with the boost: {idle}"
+        );
+
+        let running_only = with(running(), 0);
+        assert!(running_only.contains("Boost  12s"), "{running_only}");
+        assert!(running_only.contains("no charges"), "{running_only}");
+    }
+
+    /// **An empty reserve is named, not dashed**, and it is the one readout on this
+    /// screen that departs from *"an absence is an em dash"*. A player who has never
+    /// seen the word does not know the footer's `b  boost` refers to something they
+    /// can obtain, so `—` there would leave the key meaning nothing.
+    #[test]
+    fn an_empty_reserve_is_named_rather_than_dashed() {
+        let view = View {
+            boost: None,
+            boost_charges: 0,
+            ..View::sample()
+        };
+        let row = gauge_row(&view, " Boost ");
+
+        assert!(row.contains("no charges"), "{row}");
+        assert!(
+            !row.contains("0 held"),
+            "a zero stood in for an absence: {row}"
+        );
+    }
+
+    /// **The worst realistic label still fits the padded width**, which is the whole
+    /// reason [`GAUGE_LABEL_WIDTH`] moved from 28 to 32. A `LineGauge` clips its label
+    /// in silence, so an overflow would not fail — it would quietly stop saying how
+    /// many charges are banked, in exactly the state where the number is largest.
+    #[test]
+    fn the_longest_boost_label_is_not_clipped_by_the_bar() {
+        let view = View {
+            // Ten charges banked and fired at once: five minutes at the game's own
+            // multiplier, which is the longest countdown the rules can produce from a
+            // run's ten level-up grants.
+            boost: Some(BoostView {
+                seconds: 300,
+                multiplier: 2.5,
+                ratio: 1.0,
+            }),
+            boost_charges: 10,
+            ..View::sample()
+        };
+        let row = gauge_row(&view, " Boost ");
+
+        assert!(row.contains("Boost  300s  ×2.50"), "{row}");
+        assert!(row.contains("10 held"), "the reserve was clipped: {row}");
+        // And the bar still starts where the other two do, or the three would step.
+        // And the three bars still start on the same column, which is the only reason
+        // the labels are padded at all. Compared against the other two rather than
+        // against [`GAUGE_LABEL_WIDTH`] itself: `LineGauge` puts its own separator
+        // between label and bar, and a test that hardcoded that offset would be
+        // asserting ratatui's spacing instead of this screen's alignment.
+        // **Counted in `chars` and not with `str::find`**, which answers in *bytes*:
+        // the Boost label carries a `×`, two bytes in UTF-8, so a byte offset reports
+        // this row one column further right than the two beside it and the test fails
+        // on an alignment that is in fact correct.
+        let bar_start = |row: &str| row.chars().position(|c| c == '█' || c == '░');
+        let frame = whole_frame(&render_view(&view, 80, 24));
+        let rows: Vec<&str> = frame
+            .lines()
+            .filter(|line| {
+                line.contains(" Break ") || line.contains(" XP ") || line.contains(" Boost ")
+            })
+            .collect();
+        assert_eq!(rows.len(), 3, "the gauge band lost a row: {frame}");
+        let starts: Vec<Option<usize>> = rows.iter().map(|row| bar_start(row)).collect();
+        assert!(
+            starts.windows(2).all(|pair| pair[0] == pair[1]),
+            "the longest label pushed its bar out of line: {starts:?}"
+        );
     }
 
     /// At the level cap the XP gauge reads `maxed` on a **full** bar.
