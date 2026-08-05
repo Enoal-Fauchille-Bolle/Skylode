@@ -721,6 +721,39 @@ pub struct MineListRow {
     pub current: bool,
 }
 
+/// One of a mine's two blocks, and what it costs *this* pickaxe to break.
+///
+/// **The pair travels together for the reason [`TargetView`] gives for its own**: a
+/// bare `[Option<u32>; 2]` beside a screen that re-derives the blocks would let a
+/// tick count be printed against the wrong rock, and nothing in either file would
+/// notice. One type, both facts, paired at the point they are computed.
+///
+/// **There is deliberately no hardness field.** [`Block::hardness`] is a pure
+/// function of the block, so the pane asks it at the moment of drawing — the same
+/// argument [`TargetView`] makes for refusing a stored name. `ticks` cannot be had
+/// that way: it depends on the pickaxe, which the screen only sees widened to
+/// [`f64`] for display.
+#[derive(Clone, Copy, Debug)]
+pub struct BlockCostView {
+    /// The block itself — the pane's source for both its name and its hardness.
+    pub block: Block,
+    /// Ticks it takes at the player's **unboosted** power, or [`None`] when the
+    /// pickaxe's tier refuses it outright.
+    ///
+    /// **Unboosted on purpose.** A boost is thirty seconds long, and this screen
+    /// exists to compare twelve mines; a number that changes by itself and changes
+    /// back cannot be compared. The boosted product has a home already, on the Mine
+    /// screen's Pickaxe panel, where it describes the swing being taken.
+    ///
+    /// **[`None`] is a refusal, not a very large number.** Below a block's
+    /// [`min_pickaxe_tier`](skylode_core::block::Block::min_pickaxe_tier) the answer
+    /// is *no*, never *slowly* — Skylode has no second regime for the wrong tool —
+    /// so the arithmetic `ticks_to_break` would still happily do is a price the rules
+    /// would never let the player pay. The pane prints
+    /// [`NOTHING`] for it, as the dip modal does.
+    pub ticks: Option<u32>,
+}
+
 /// The detail pane of the selected mine (UI.md §5.2).
 ///
 /// **Two pre-formatted lines went away here**, and for the reason the whole `View`
@@ -733,6 +766,13 @@ pub struct MineListRow {
 /// percentage under the bar cannot disagree with the bar.
 #[derive(Clone, Debug)]
 pub struct MineDetail {
+    /// The mine's two blocks with their break costs — **common first, then value**,
+    /// the order the pane has always named them in.
+    ///
+    /// An array and not two named fields, so the pane draws its two rows from one
+    /// loop: the alternative is the same `format!` written twice, which is how two
+    /// rows of one table drift apart.
+    pub blocks: [BlockCostView; 2],
     /// What this mine is still waiting on — the two `✓`/`✗` of the pane's gate rows.
     pub lock: MineLock,
     /// Grid size, as `(width, height)`.
@@ -1598,7 +1638,26 @@ fn mines_view(state: &GameState, cursors: Cursors) -> MinesView {
 
     let selected = cursors.mine;
     let mine = state.mine(selected);
+    // The cost of the selected mine's two blocks, weighed here rather than in the
+    // screen for two reasons. The power is the core's own `f32` at this point —
+    // [`PickaxeView::power`] is widened to `f64` for the Mine screen's boost product,
+    // and narrowing it back would be a cast that buys nothing. And the tier gate is a
+    // *rule*, asked of [`Pickaxe::can_mine`], which is the read model's job to resolve
+    // rather than the renderer's to re-implement.
+    let pickaxe = player.get_pickaxe();
+    let cost = |block: Block| BlockCostView {
+        block,
+        // Flattened, because the two refusals mean the same thing to the screen: a
+        // tier too low and a power that buys no progress both leave the pane with no
+        // tick count to print, and nesting them would make the renderer unwrap a
+        // distinction it has nothing to do with.
+        ticks: pickaxe
+            .can_mine(block)
+            .then(|| block.ticks_to_break(pickaxe.mining_power()))
+            .flatten(),
+    };
     let detail = MineDetail {
+        blocks: [cost(selected.common_block()), cost(selected.value_block())],
         lock: player.mine_lock(selected),
         size: mine.map_or_else(|| Mine::size_for_level(0), Mine::get_size),
         size_level: mine.map_or(0, Mine::get_size_level),
@@ -2816,6 +2875,14 @@ fn sample_mines() -> MinesView {
     /// The save §5 is drawn against, and the only two numbers a lock depends on.
     const LEVEL: u32 = 23;
     const TIER: PickaxeTier = PickaxeTier::Diamond;
+    /// The power the same save mines at — [`View::sample`]'s own `25.0`, a Diamond
+    /// with Efficiency IV.
+    ///
+    /// Written down rather than read off a [`Pickaxe`], because this fixture builds a
+    /// *read model* and never a run: there is no pickaxe here to ask. Keeping it
+    /// beside [`TIER`] is what stops the pane from quoting a break time some other
+    /// pickaxe would take.
+    const POWER: f32 = 25.0;
 
     // `(kind, size, richness ceiling)` in display order. Every lock is *derived*
     // from the pair above rather than written down, so the fixture cannot claim a
@@ -2846,10 +2913,24 @@ fn sample_mines() -> MinesView {
     })
     .collect();
 
+    // The tier gate spelled out rather than asked of `Pickaxe::can_mine`, for the
+    // reason `POWER` is a constant: the fixture has no pickaxe. It is the same
+    // comparison, against the same tier every lock above is derived from.
+    let cost = |block: Block| BlockCostView {
+        block,
+        ticks: (TIER >= block.min_pickaxe_tier())
+            .then(|| block.ticks_to_break(POWER))
+            .flatten(),
+    };
+
     MinesView {
         rows,
         selected: MineKind::Obsidian,
         detail: MineDetail {
+            blocks: [
+                cost(MineKind::Obsidian.common_block()),
+                cost(MineKind::Obsidian.value_block()),
+            ],
             lock: MineKind::Obsidian.lock(LEVEL, TIER),
             size: (8, 5),
             size_level: 3,
@@ -3641,6 +3722,40 @@ mod tests {
             distinct.len() >= 2,
             "the grid came out uniform: {distinct:?}"
         );
+    }
+
+    #[test]
+    fn a_mines_two_blocks_are_costed_against_the_pickaxe_that_would_dig_them() {
+        // A fresh run carries a bare Wooden pickaxe: power 2.0, and the tier that
+        // opens Stone and nothing beyond it. That is what makes one run answer both
+        // halves — the Stone mine is costed, the Iron mine is refused.
+        let state = fresh_run();
+        let looking_at = |kind| Cursors::new(kind, 0, state.player().get_level());
+
+        let stone = mines_view(&state, looking_at(MineKind::Stone)).detail;
+        assert_eq!(
+            stone.blocks[0].block,
+            Block::Stone,
+            "the common block first"
+        );
+        assert_eq!(
+            stone.blocks[1].block,
+            Block::Cobblestone,
+            "then the value one"
+        );
+        // `ceil(30 × 1.5 / 2.0)` and `ceil(30 × 2.0 / 2.0)` — computed through
+        // `Block::ticks_to_break`, so the pane and `Mine::dig` cannot disagree about
+        // how long a swing takes.
+        assert_eq!(stone.blocks[0].ticks, Some(23));
+        assert_eq!(stone.blocks[1].ticks, Some(30));
+
+        let iron = mines_view(&state, looking_at(MineKind::Iron)).detail;
+        assert_eq!(iron.blocks[0].block, Block::IronOre);
+        // Iron Ore's `min_pickaxe_tier` is Stone, so this is the first rock a fresh
+        // run may not touch. A refusal is total, never a slowdown — which is why the
+        // answer is `None` and not the 45 ticks the arithmetic would happily give.
+        assert_eq!(iron.blocks[0].ticks, None);
+        assert_eq!(iron.blocks[1].ticks, None);
     }
 
     #[test]

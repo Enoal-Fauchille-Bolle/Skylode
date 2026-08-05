@@ -413,25 +413,25 @@ exchange rate the game does not have.
 0---------1---------2---------3---------4---------5---------6---------7---------
  1 Mine │ [2 Mines] │ 3 Inventory │ 4 Upgrades │ 5 Stats       Prestige II  ×1.2
 ┌─ Mines ────────────────────────────┐┌─ Obsidian Mine ────────────────────────┐
-│ Overworld                ✓         ││ Obsidian  +  Crying Obsidian           │
-│   Stone          20 x 10   R 9     ││                                        │
-│   Coal            18 x 9   R 7     ││ World      Nether        Lv 15  ✓      │
-│   Iron            12 x 7   R 0     ││ Gate       Diamond pickaxe      ✓      │
-│   Gold            10 x 6   R 2     ││ Size       8 x 5 = 40    level 3       │
-│   Lapis            8 x 5   R 1     ││ Blocks     31 / 40                     │
-│   Redstone         6 x 4   R 0     ││ Richness   level 6 / 9                 │
-│   Emerald          6 x 4   R 0     ││                                        │
-│   Diamond          8 x 5   R 1     ││ Dial   ◄ ██████████████░░░░░░░░ ►      │
-│ Nether                   Lv 15  ✓  ││        Crying 64%   Obsidian 36%       │
-│   Quartz           8 x 5   R 3     ││                                        │
-│   Ancient Debris   6 x 4   R 0     ││        free, reversible, any time      │
-│ ▸ Obsidian         8 x 5   R 6     ││                                        │
-│ End                      Lv 30  ✗  ││ The enhancement past Netherite eats    │
-│   End           locked   Netherite ││ both of them, so this dial has an      │
+│ Overworld                ✓         ││ Obsidian         hard 50.0   60 ticks  │
+│   Stone          20 x 10   R 9     ││ Crying Obsidian  hard 50.0   60 ticks  │
+│   Coal            18 x 9   R 7     ││                                        │
+│   Iron            12 x 7   R 0     ││ World      Nether        Lv 15  ✓      │
+│   Gold            10 x 6   R 2     ││ Gate       Diamond pickaxe      ✓      │
+│   Lapis            8 x 5   R 1     ││ Size       8 x 5 = 40    level 3       │
+│   Redstone         6 x 4   R 0     ││ Blocks     31 / 40                     │
+│   Emerald          6 x 4   R 0     ││ Richness   level 6 / 9                 │
+│   Diamond          8 x 5   R 1     ││                                        │
+│ Nether                   Lv 15  ✓  ││ Dial   ◄ ██████████████░░░░░░░░ ►      │
+│   Quartz           8 x 5   R 3     ││        Crying 64%   Obsidian 36%       │
+│   Ancient Debris   6 x 4   R 0     ││                                        │
+│ ▸ Obsidian         8 x 5   R 6     ││        free, reversible, any time      │
+│ End                      Lv 30  ✗  ││                                        │
+│   End           locked   Netherite ││ The enhancement past Netherite eats    │
+│                                    ││ both of them, so this dial has an      │
 │                                    ││ optimum, not a maximum.                │
 │                                    ││                                        │
 │                                    ││ ← →  move the dial                     │
-│                                    ││                                        │
 │                                    ││                                        │
 └────────────────────────────────────┘└────────────────────────────────────────┘
  ↑↓  select     Enter  mine it     ← →  richness dial     Tab  next screen
@@ -514,6 +514,28 @@ above is left as drawn.
   nine others the materials are equal, so the frame's rule would print
   `Stone  +  Stone`. The blocks never coincide, and they are the more useful pair:
   `Iron Ore  +  Iron Block`, the second worth nine of the first.
+- **That line is now two rows, and each block carries its hardness and its break
+  time.** It is the one place in the game either number is shown, and they answer two
+  different questions: `hard 50.0` is the block's own constant and never moves, so it
+  is what compares one mine against another, while `60 ticks` is what *this* pickaxe
+  pays today and drops with every Efficiency level. One without the other leaves the
+  player either unable to compare or unable to act. Both are core reads that already
+  existed — `Block::hardness` and `Block::ticks_to_break`, the latter `pub` precisely
+  so a front-end could quote a cost in something the player feels (§6.7 states the
+  tier-jump dip the same way).
+  The tick count is quoted at **unboosted** power: a figure that changes by itself for
+  thirty seconds and changes back cannot be compared across twelve mines, and the
+  boosted product already has a home on the Mine screen's Pickaxe panel.
+  A block the pickaxe's **tier** refuses reads `—` rather than the arithmetic the
+  formula would still happily do — below `min_pickaxe_tier` the answer is *no*, never
+  *slowly*, so a number there would quote a price the rules never let the player pay.
+  The hardness still prints beside it: that is a fact about the rock, not about the
+  pickaxe. Reachable in a real run, since the End's two blocks want Netherite.
+  The row is 38 columns at its widest, against the 38 the pane leaves clear — the
+  longest block name is fifteen (`Crying Obsidian`, `Netherite Block`), hardness tops
+  out at `50.0`, and no tick count can pass three digits, a Wooden pickaxe's `2.0`
+  against a hardness of `50.0` being `750`. The extra row is paid for out of the
+  pane's spare ones; the note under the dial is unchanged.
 - **The bar is filled by the rung, not by the value-weight curve** — and this reverses
   the entry above it, which read "the bar is filled by the value-weight *curve*, not
   by the setting". That was the honest reading of a different question, and it made the

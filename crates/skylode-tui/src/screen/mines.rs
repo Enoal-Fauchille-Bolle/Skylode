@@ -41,7 +41,7 @@ use crate::{
     format::{justified, shown_rung},
     screen::panel,
     theme,
-    view::{MineDetail, MineListRow, View},
+    view::{BlockCostView, MineDetail, MineListRow, View},
 };
 
 /// The list panel's share of the row, against [`DETAIL_WEIGHT`] — and still the 38
@@ -73,6 +73,15 @@ const DIAL_LOCKED: char = '·';
 /// Columns kept clear on the right of the list, so a size or a `✓` does not abut
 /// the border the way the frame keeps them apart.
 const LIST_MARGIN: usize = 2;
+
+/// Width the block-name column of the pane's two top rows is padded to.
+///
+/// **Seventeen because the longest block name in the game is fifteen** — `Crying
+/// Obsidian` and `Netherite Block` tie — and two columns is the gap that keeps a name
+/// off the number beside it. Named rather than written into the format string,
+/// because the number is an argument about the block table and not a taste in
+/// spacing: a thirteenth block with a longer name is what would move it.
+const NAME_COLUMN: usize = 17;
 
 /// Draws the list, the detail pane, and the footer.
 pub fn render(frame: &mut Frame, area: Rect, view: &View) {
@@ -243,6 +252,45 @@ fn width_of(inner: Rect) -> usize {
     (inner.width as usize).saturating_sub(LIST_MARGIN)
 }
 
+/// One of the pane's two top rows: a block, its hardness, and what it costs to break.
+///
+/// **A block, not a material.** On the three two-material mines the two read the same
+/// either way — `Obsidian` above `Crying Obsidian`, the frame's own pair — but on the
+/// nine others the materials are equal, so a material row would say `Stone` twice.
+/// The blocks never coincide, and they are the more useful pair besides: `Iron Ore`
+/// over `Iron Block` is what the grid actually holds, and the second is worth nine of
+/// the first.
+///
+/// **Two numbers, because they answer two different questions.** Hardness is the
+/// block's own constant and never moves, so it is what compares two mines; the tick
+/// count is what *this* pickaxe pays today, and every Efficiency level lowers it. One
+/// without the other leaves the player either unable to compare or unable to act.
+/// Hardness is asked of the block at the moment of drawing rather than carried in the
+/// view, since it is a pure function of it — the same argument the Mine screen's
+/// `break_label` makes for reading the block's name off the grid.
+///
+/// **The row is 38 columns at its widest, which is exactly the budget** —
+/// `1 + NAME_COLUMN + "hard " + 4 + 2 + 9` — and every term of that is bounded:
+/// hardness is at most `50.0`, and a tick count cannot pass three digits, since the
+/// weakest pickaxe in the game (Wooden, `base_power` 2.0) against the hardest block
+/// (50.0) is `750`. A `Paragraph` clips in silence, so the bound is asserted by
+/// `the_block_rows_fit_the_pane_at_the_reference_size` rather than trusted.
+fn block_row(entry: BlockCostView) -> Line<'static> {
+    // The number column is three wide in both arms, so the dash of a block this
+    // pickaxe may not touch lands where its count would have been. Right-aligning the
+    // *cell* instead would park the dash under the `s` of `ticks`, which reads as a
+    // missing unit rather than a missing number.
+    let cost = match entry.ticks {
+        Some(ticks) => format!("{ticks:>3} ticks"),
+        None => format!("{:>3}", crate::view::NOTHING),
+    };
+    Line::from(format!(
+        " {:<NAME_COLUMN$}hard {:>4.1}  {cost}",
+        entry.block.name(),
+        entry.block.hardness(),
+    ))
+}
+
 /// The detail pane: the selected mine's materials, gates, size, and the dial.
 fn detail(frame: &mut Frame, area: Rect, view: &View) {
     let selected = view.mines.selected;
@@ -255,17 +303,8 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
     let (width, height) = (u32::from(detail.size.0), u32::from(detail.size.1));
     let total = width * height;
     let mut lines = vec![
-        // The two **blocks**, not the two materials. On the three two-material mines
-        // they read the same either way — `Obsidian  +  Crying Obsidian`, the frame's
-        // own line — but on the nine others the materials are equal, so this line
-        // would say `Stone  +  Stone`. The blocks never coincide, and they are the
-        // more useful pair besides: `Iron Ore  +  Iron Block` is what the grid holds,
-        // and the second is worth nine of the first.
-        Line::from(format!(
-            " {}  +  {}",
-            selected.common_block().name(),
-            selected.value_block().name(),
-        )),
+        block_row(detail.blocks[0]),
+        block_row(detail.blocks[1]),
         Line::from(""),
         // Both carry a `✓`/`✗` of their own, so both go through `marked`.
         theme::marked(&format!(" World      {}", world_line(selected, detail))),
@@ -400,7 +439,7 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
-    use skylode_core::pickaxe::PickaxeTier;
+    use skylode_core::{block::Block, pickaxe::PickaxeTier};
 
     use super::*;
 
@@ -491,9 +530,9 @@ mod tests {
     #[test]
     fn the_detail_pane_describes_the_selected_mine() {
         let frame = whole_frame(&render_screen());
-        // Title, materials (derived), the two gates, size, blocks, richness.
+        // Title, the two blocks (derived), the two gates, size, blocks, richness.
         assert!(frame.contains("Obsidian Mine"), "{frame}");
-        assert!(frame.contains("Obsidian  +  Crying Obsidian"), "{frame}");
+        assert!(frame.contains("Crying Obsidian"), "{frame}");
         assert!(
             row_with(&frame, "Gate").contains("Diamond pickaxe"),
             "{frame}"
@@ -504,6 +543,81 @@ mod tests {
         assert!(
             row_with(&frame, "Richness").contains("ceiling 7/10"),
             "{frame}"
+        );
+    }
+
+    #[test]
+    fn the_detail_pane_prints_each_block_with_its_hardness_and_tick_cost() {
+        let frame = whole_frame(&render_screen());
+        // Matched on `hard`, not on the mine's name: `Obsidian` is also the pane's
+        // title and a list row, and the count is half the assertion — two rows and
+        // never one, whatever the mine.
+        let rows: Vec<&str> = frame.lines().filter(|row| row.contains("hard ")).collect();
+        assert_eq!(rows.len(), 2, "one row per block, always: {frame}");
+
+        // Common block first, value block second — the order the pane names them in.
+        assert!(!rows[0].contains("Crying"), "{frame}");
+        assert!(rows[1].contains("Crying Obsidian"), "{frame}");
+        for row in &rows {
+            assert!(row.contains("hard 50.0"), "{row:?}");
+            // Derived, not fixture text: `ceil(30 × 50.0 / 25.0)`, at the Diamond
+            // Efficiency IV the whole §5 save is drawn at.
+            assert!(row.contains("60 ticks"), "{row:?}");
+        }
+    }
+
+    #[test]
+    fn a_block_the_pickaxe_may_not_break_shows_no_tick_count() {
+        // The End's two blocks want a Netherite pickaxe, and the §5 save carries a
+        // Diamond. The hardness is still a fact about the rock and still prints; the
+        // break time is a fact about a swing the rules refuse, and does not.
+        let mut view = View::sample();
+        view.mines.detail.blocks = [
+            BlockCostView {
+                block: Block::Endstone,
+                ticks: None,
+            },
+            BlockCostView {
+                block: Block::Amethyst,
+                ticks: None,
+            },
+        ];
+        let frame = whole_frame(&render_view(&view));
+
+        let row = row_with(&frame, "End Stone");
+        assert!(row.contains("hard 10.0"), "{row:?}");
+        assert!(row.contains(crate::view::NOTHING), "{row:?}");
+        // Not `0 ticks`, and not a very large count either: the word itself is gone,
+        // because there is no number for it to be the unit of.
+        assert!(!row.contains("ticks"), "{row:?}");
+    }
+
+    #[test]
+    fn the_block_rows_fit_the_pane_at_the_reference_size() {
+        // The widest row the game can produce: a fifteen-column name, the hardest
+        // block in the table, and the largest tick count reachable — a Wooden
+        // pickaxe's power of 2.0 against a hardness of 50.0 is 750, and nothing in
+        // the game is slower than that.
+        let worst = BlockCostView {
+            block: Block::NetheriteBlock,
+            ticks: Some(750),
+        };
+        let mut view = View::sample();
+        view.mines.detail.blocks = [worst, worst];
+        let frame = whole_frame(&render_view(&view));
+
+        let row = row_with(&frame, "Netherite Block");
+        assert!(
+            row.contains("hard 50.0") && row.contains("750 ticks"),
+            "{row:?}"
+        );
+        // A `Paragraph` clips in silence, so an overflowing row would lose its tail
+        // without failing anything. What proves it fits is the margin still being
+        // there: `LIST_MARGIN` clear columns, then the pane's border.
+        let margin = format!("{:LIST_MARGIN$}│", "");
+        assert!(
+            row.ends_with(&margin),
+            "the row reaches the pane's border: {row:?}"
         );
     }
 
