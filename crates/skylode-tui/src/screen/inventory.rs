@@ -65,7 +65,7 @@ fn table(frame: &mut Frame, area: Rect, view: &View) {
     frame.render_widget(block, area);
 
     let mut lines = vec![
-        Line::from(row("   ", "Material", "Compressed", "Raw"))
+        Line::from(row("   ", "Material", "Raw", "Compressed"))
             .style(Style::default().fg(theme::MUTED)),
     ];
     for item in &view.inventory.rows {
@@ -84,8 +84,8 @@ fn table(frame: &mut Frame, area: Rect, view: &View) {
         lines.push(theme::marked(&row(
             mark,
             item.material.name(),
-            &grouped(item.compressed),
             &grouped(item.raw),
+            &grouped(item.compressed),
         )));
     }
     frame.render_widget(Paragraph::new(lines), inner);
@@ -94,9 +94,9 @@ fn table(frame: &mut Frame, area: Rect, view: &View) {
 /// One table row: a three-column mark, a left material, two right-aligned counts.
 ///
 /// The header passes plain words through the same widths as the numbers, so its
-/// `Compressed`/`Raw` labels sit right-aligned over the columns they name.
-fn row(mark: &str, material: &str, compressed: &str, raw: &str) -> String {
-    format!("{mark}{material:<16}{compressed:>12}{raw:>12}")
+/// `Raw`/`Compressed` labels sit right-aligned over the columns they name.
+fn row(mark: &str, material: &str, raw: &str, compressed: &str) -> String {
+    format!("{mark}{material:<16}{raw:>12}{compressed:>12}")
 }
 
 /// The Compress panel: the selected material in both denominations, the two
@@ -127,8 +127,8 @@ fn compress(frame: &mut Frame, area: Rect, view: &View) {
     let mut lines = vec![
         Line::from(format!(" {name}")),
         Line::from(""),
-        Line::from(format!(" Held     {} Compressed", grouped(item.compressed))),
-        Line::from(format!("          {} Raw", grouped(item.raw))),
+        Line::from(format!(" Held     {} Raw", grouped(item.raw))),
+        Line::from(format!("          {} Compressed", grouped(item.compressed))),
         Line::from(format!(" Value    {} {name}", grouped(value))),
         Line::from(""),
         Line::from(format!(" c   compress  {RAW_PER_COMPRESSED} raw → 1")),
@@ -233,11 +233,11 @@ mod tests {
     #[test]
     fn the_table_has_its_header_and_the_fifteen_materials() {
         let frame = whole_frame(&render_screen());
+        assert!(row_with(&frame, "Material").contains("Raw"), "{frame}");
         assert!(
             row_with(&frame, "Material").contains("Compressed"),
             "{frame}"
         );
-        assert!(row_with(&frame, "Material").contains("Raw"), "{frame}");
         // First and last of the closed fifteen, with a grouped count between them.
         assert!(row_with(&frame, "Stone").contains("4 508"), "{frame}");
         assert!(frame.contains("Amethyst"), "{frame}");
@@ -272,7 +272,7 @@ mod tests {
         assert_eq!(view.inventory.rows.len(), 15);
         for row in &view.inventory.rows {
             assert_eq!(
-                (row.compressed, row.raw),
+                (row.raw, row.compressed),
                 (0, 0),
                 "{} is held in a run that has mined nothing",
                 row.material.name()
@@ -347,8 +347,8 @@ mod tests {
     #[test]
     fn the_compress_panel_details_the_selected_material() {
         let frame = whole_frame(&render_screen());
-        assert!(frame.contains("Held     2 Compressed"), "{frame}");
         assert!(frame.contains("480 Raw"), "{frame}");
+        assert!(frame.contains("Held     2 Compressed"), "{frame}");
         // Value = 480 + 2 × 100 = 680, in the common denomination.
         assert!(frame.contains("Value    680 Iron"), "{frame}");
         // Compressible now = 480 / 100 = 4, derived from the raw pile.
