@@ -134,17 +134,21 @@ pub fn render(frame: &mut Frame, area: Rect, screen: Screen, config: &Config) {
     );
 }
 
-/// The bindings unique to `screen` — the "On this screen" block, empty on Mine,
-/// whose only key (`Space`) already lives under Mining.
+/// The bindings unique to `screen` — the "On this screen" block.
 ///
 /// This is the one place the config binding surfaces: Upgrades' `switch sub-tab`
 /// line is drawn from `config`, not from the hardcoded default.
+///
+/// **Mine's block used to be empty**, on the argument that its only key was `Space` and
+/// `Space` already had a home under Mining. `b` has no such home: it is not a way of
+/// mining, it is a thing spent while mining, and the block it would otherwise have to
+/// join describes a key the player holds down.
 fn contextual(screen: Screen, config: &Config) -> Vec<String> {
     // Owned lines rather than `&'static str`, because the Upgrades arm interpolates
     // the config binding — so the whole set is `String` and the arms stay uniform.
     let owned = |lines: &[&str]| lines.iter().map(|l| (*l).to_owned()).collect();
     match screen {
-        Screen::Mine => Vec::new(),
+        Screen::Mine => owned(&[" b             fire a boost charge"]),
         Screen::Mines => owned(&[
             " ↑ ↓           select a mine",
             " Enter         mine it",
@@ -243,11 +247,16 @@ mod tests {
         assert!(help(Screen::Levels, &Config::default()).contains("jump to your level"));
     }
 
+    /// **Mine now has both blocks, and the pair is the assertion.** `Space` stays under
+    /// Mining, where it is findable from every screen; `b` is on this screen and only
+    /// this one, so it belongs in the contextual block. Losing either half would leave
+    /// a player with a charge they cannot find the key for, or with a mine key that
+    /// vanishes the moment they open Help from the Inventory.
     #[test]
-    fn the_mine_screen_has_no_contextual_block_only_mining() {
-        // Mine's one key is Space, which lives under Mining; so no "On this screen".
+    fn the_mine_screen_lists_the_boost_key_and_keeps_mining_findable() {
         let frame = help(Screen::Mine, &Config::default());
-        assert!(!frame.contains("On this screen"), "{frame}");
+        assert!(frame.contains("On this screen — Mine"), "{frame}");
+        assert!(frame.contains("fire a boost charge"), "{frame}");
         assert!(frame.contains("hold to mine"), "{frame}");
     }
 

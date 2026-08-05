@@ -381,7 +381,12 @@ fn gauge(frame: &mut Frame, area: Rect, label: &str, ratio: f64) {
 /// screen, and the whole point of giving the chrome a de-emphasised colour is that
 /// the rows above it can then be read without competition.
 fn footer(frame: &mut Frame, area: Rect) {
-    let line = " Space  mine     Tab  next screen     ?  help";
+    // `b` earns its slot on the rule §9 states for `q`: a footer shows the bindings the
+    // *screen* owns, and this is the only screen that owns this one. It is also the
+    // only place it is advertised outside Help — the Upgrades pane that sells a charge
+    // names the key, but a player who was granted one by a level-up never sees that
+    // pane.
+    let line = " Space  mine     b  boost     Tab  next screen     ?  help";
     frame.render_widget(
         Paragraph::new(line).style(Style::default().fg(theme::MUTED)),
         area,
@@ -408,9 +413,9 @@ fn ratio(value: f64) -> f64 {
     }
 }
 
-/// `Space` swings the pickaxe (UI.md §9); nothing else is bound here.
+/// `Space` swings the pickaxe and `b` fires a boost charge (UI.md §9).
 ///
-/// **Only the press half lives here.** The release is answered in
+/// **Only the press half of `Space` lives here.** The release is answered in
 /// [`keymap::resolve`](crate::keymap::resolve), which is the only place that still
 /// knows a key's *kind* — this function is handed a bare key, so a release arriving
 /// here would be indistinguishable from a press and would read as a second swing.
@@ -420,13 +425,30 @@ fn ratio(value: f64) -> f64 {
 /// [`App::advance`](crate::app::App::advance) from the instant this last arrived.
 /// Auto-repeat is what keeps that instant fresh while the key is down, and it is why
 /// a held `Space` needs no timer of its own here.
+///
+/// **`b` needs none of that**, and the contrast is worth keeping in view: a boost is
+/// an *event*, not a state the terminal has to be interrogated about. One press, one
+/// charge, one window the tick counts down on its own.
+///
+/// **A held `b` therefore fires repeatedly**, and that is not guarded against because
+/// it cannot be: under the legacy encoding an auto-repeat is byte-for-byte a fresh
+/// press, which is the same fact `Space` is built on. What keeps it harmless is the
+/// stacking rule — a second charge *adds* its window rather than replacing it, so a
+/// leaned-on key spends the reserve early but destroys none of it.
 pub fn map_key(key: KeyEvent) -> Option<Action> {
-    (key.code == KeyCode::Char(' ')).then_some(Action::MinePressed)
+    match key.code {
+        KeyCode::Char(' ') => Some(Action::MinePressed),
+        KeyCode::Char('b') => Some(Action::FireBoost),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Modifier};
+    use ratatui::{
+        Terminal, backend::TestBackend, buffer::Buffer, crossterm::event::KeyModifiers,
+        style::Modifier,
+    };
     use skylode_core::{mine_kind::MineKind, tunables::LEVEL_CAP};
 
     use super::*;
@@ -623,11 +645,39 @@ mod tests {
             .map(|x| sym(&buffer, x, 23))
             .collect::<String>();
         assert!(last.contains("Space  mine"), "{last:?}");
+        // The one place `b` is advertised outside Help, and the only footer that owns
+        // it — a charge granted by a level-up is otherwise a number with no key.
+        assert!(last.contains("b  boost"), "{last:?}");
         assert!(last.contains("?  help"), "{last:?}");
         assert!(
             !last.contains(" q "),
             "a global key leaked into the footer: {last:?}"
         );
+    }
+
+    /// The screen's two keys, and nothing else claimed.
+    ///
+    /// **`b` is decoded here and not in [`crate::keymap`]**, which is what keeps it off
+    /// the other five screens: a screen that does not claim a key declines it, and the
+    /// global table never had it. The unbound letter is checked in the same test because
+    /// "this screen answers `b`" and "this screen swallows the alphabet" are one line
+    /// apart in the implementation.
+    #[test]
+    fn the_mine_screen_claims_space_and_b_and_declines_the_rest() {
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert_eq!(
+            map_key(key(KeyCode::Char(' '))),
+            Some(Action::MinePressed),
+            "the mine key stopped answering"
+        );
+        assert_eq!(map_key(key(KeyCode::Char('b'))), Some(Action::FireBoost));
+        assert_eq!(
+            map_key(key(KeyCode::Char('B'))),
+            None,
+            "the shift is not it"
+        );
+        assert_eq!(map_key(key(KeyCode::Char('z'))), None);
+        assert_eq!(map_key(key(KeyCode::Enter)), None);
     }
 
     /// The two-material strip prints both segments, and no composite total.

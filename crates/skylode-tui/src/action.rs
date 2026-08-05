@@ -167,6 +167,26 @@ pub enum Action {
     /// `match` shrink to match, so nothing downstream needs a runtime guard.
     #[cfg(debug_assertions)]
     OpenDevMenu,
+    /// Spend a banked boost charge (`b` on the Mine screen).
+    ///
+    /// **A variant of its own rather than a [`Confirm`](Action::Confirm) the screen
+    /// interprets**, for [`OpenPrestige`](Action::OpenPrestige)'s reason turned inside
+    /// out: that one opens a modal, this one spends something outright, and *neither*
+    /// screen has a list for `Enter` to act on in the first place. A `Confirm` on the
+    /// Mine screen would be a gesture whose meaning came from nowhere.
+    ///
+    /// **Contextual to Mine, and not global.** The charge only pays off while the
+    /// player is swinging — a thirty-second window fired from the Inventory screen is
+    /// thirty seconds spent looking at a table — and Mine is the one screen that draws
+    /// the gauge the boost appears on. `docs/UI.md` §9; the footer advertises it there
+    /// and nowhere else.
+    ///
+    /// It carries no count, for the reason no list gesture carries a row: firing *one*
+    /// is the whole act. Firing a second while the first still runs is legal and adds
+    /// its window to the one running — the core refuses only an empty reserve — and the
+    /// interface deliberately asks no confirmation, because an addition cannot cost the
+    /// player time the way a refresh would.
+    FireBoost,
     /// Open the prestige preview (`p` on the Stats screen).
     ///
     /// A variant of its own rather than a [`Confirm`](Action::Confirm) the screen

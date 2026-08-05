@@ -16,6 +16,7 @@ use ratatui::{
     widgets::{Clear, Paragraph, Tabs},
 };
 use skylode_core::{
+    boost::Boost,
     economy::{self, Affordability, Shortfall},
     enchant::EnchantType,
     error::CoreError,
@@ -34,7 +35,10 @@ use crate::{
     config::Config,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     flash::Flashes,
-    format::{denominations, grouped, multiplier, prestige_rank, roman, rung_label, shown_rung},
+    format::{
+        boost_seconds, denominations, grouped, multiplier, prestige_rank, roman, rung_label,
+        shown_rung,
+    },
     overlay::{
         Conversion, Modal, compression, dip, help,
         prestige::{self as prestige_overlay, CONFIRM_WORD},
@@ -501,6 +505,14 @@ impl App {
             Action::OpenPrestige => {
                 if self.screen == Screen::Stats {
                     self.modal = Some(Modal::PrestigePreview);
+                }
+            }
+            // Guarded on the screen for the reason every contextual gesture here is:
+            // the reducer is where a gesture's meaning is settled, and a guard living
+            // only in the keymap moves the day the binding does.
+            Action::FireBoost => {
+                if self.screen == Screen::Mine {
+                    self.fire_boost();
                 }
             }
             // Nothing outside the confirm's field takes text, and `update_modal` has
@@ -1431,6 +1443,49 @@ impl App {
         );
     }
 
+    /// Spends one banked charge, and says which of the two things just happened.
+    ///
+    /// **Whether a boost was already running is asked *before* the call, and it has to
+    /// be.** [`GameState::fire_boost`] leaves the run in the same shape either way — a
+    /// boost with some ticks on it — so afterwards there is nothing left to distinguish
+    /// *started* from *extended*. Reading the state first is the only way the sentence
+    /// can be about what the keypress did.
+    ///
+    /// **No confirmation before adding to a running boost**, though `docs/DECISIONS.md`
+    /// leaves the interface free to ask for one. The modal it describes was reasoned
+    /// about when a second charge *replaced* the first, where firing at 25 of 30
+    /// seconds left cost the player 25 seconds; charges stack by addition now, so the
+    /// only thing an early fire spends is the choice of when. A confirm whose only
+    /// sensible answer is yes is a keypress.
+    ///
+    /// The figure is read off the run rather than added up here, on
+    /// [`buy_boost_charges`](App::buy_boost_charges)' rule: `47s` is what the gauge
+    /// beside the toast is about to draw, and a total composed from
+    /// `BOOST_DURATION_TICKS` would drift from it by however long the tick has been
+    /// running.
+    ///
+    /// [`GameState::fire_boost`]: skylode_core::game::GameState::fire_boost
+    fn fire_boost(&mut self) {
+        let was_running = self.state.active_boost().is_some();
+        if let Err(refusal) = self.state.fire_boost() {
+            self.announce_core_refusal(Err(refusal));
+            return;
+        }
+
+        let running = self.state.active_boost();
+        let seconds = boost_seconds(running.map_or(0, Boost::remaining_ticks));
+        let message = if was_running {
+            format!("Boost extended — {seconds}s")
+        } else {
+            format!(
+                "Redstone boost — {seconds}s ×{:.2}",
+                running.map_or(1.0, Boost::multiplier)
+            )
+        };
+        self.toasts
+            .push(message, Tone::Success, Salience::Normal, TOAST_TTL);
+    }
+
     /// Buys the next level of the mine track under the cursor, or every level it can
     /// reach.
     fn buy_mine_track(&mut self, reach: Reach) {
@@ -2165,7 +2220,12 @@ mod tests {
         crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
         style::Color,
     };
-    use skylode_core::{game::Input, pickaxe::PickaxeTier, save, tunables::BOOST_COST};
+    use skylode_core::{
+        game::Input,
+        pickaxe::PickaxeTier,
+        save,
+        tunables::{BOOST_COST, BOOST_DURATION_TICKS},
+    };
 
     use super::*;
     // Both belong to the loop, which lives in `session` now — so they are imported
@@ -3806,6 +3866,87 @@ mod tests {
         assert!(
             whole_frame(&render_to_buffer(&app)).contains("Compress first"),
             "the refusal sent the player mining instead of converting"
+        );
+    }
+
+    /// A banked charge starts a boost and the toast says what is running.
+    ///
+    /// The reserve *and* the boost are both asserted: a charge that was spent without
+    /// starting anything, and one that started a boost without being spent, are the two
+    /// halves this could get wrong, and each prints the same sentence.
+    #[test]
+    fn firing_a_charge_spends_it_and_starts_a_boost() {
+        let mut app = session();
+        app.state.dev_grant_boost_charges(2);
+
+        app.update(Action::FireBoost);
+
+        assert_eq!(app.state.boost_charges(), 1, "the charge was not spent");
+        assert_eq!(
+            app.state.active_boost().map(Boost::remaining_ticks),
+            Some(BOOST_DURATION_TICKS)
+        );
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("Redstone boost — 30s ×2.50"),
+            "the boost was not announced with its own figures"
+        );
+    }
+
+    /// **A second charge adds its window and says so**, which is the whole reason the
+    /// interface asks no confirmation: nothing is lost, so there is no question to put
+    /// in front of the player. The two sentences differ because the two events do.
+    #[test]
+    fn a_second_charge_extends_the_running_boost_and_is_worded_as_such() {
+        let mut app = session();
+        app.state.dev_grant_boost_charges(2);
+
+        app.update(Action::FireBoost);
+        app.update(Action::FireBoost);
+
+        assert_eq!(app.state.boost_charges(), 0);
+        assert_eq!(
+            app.state.active_boost().map(Boost::remaining_ticks),
+            Some(BOOST_DURATION_TICKS * 2),
+            "the second charge replaced the first instead of adding to it"
+        );
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Boost extended — 60s"), "{frame}");
+    }
+
+    /// An empty reserve is refused **in the core's own words**, and nothing starts.
+    #[test]
+    fn firing_with_an_empty_reserve_refuses_and_starts_nothing() {
+        let mut app = session();
+
+        app.update(Action::FireBoost);
+
+        assert!(app.state.active_boost().is_none());
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("no boost charge to fire"),
+            "the refusal was reworded or swallowed"
+        );
+    }
+
+    /// **The gesture is inert off the Mine screen**, even though the keymap only emits
+    /// it there — the reducer is where a gesture's meaning is settled, and a guard
+    /// living only in the keymap moves the day the binding does.
+    #[test]
+    fn a_boost_gesture_does_nothing_on_another_screen() {
+        let mut app = session();
+        app.state.dev_grant_boost_charges(1);
+        app.screen = Screen::Inventory;
+
+        app.update(Action::FireBoost);
+
+        assert_eq!(
+            app.state.boost_charges(),
+            1,
+            "a charge was spent off-screen"
+        );
+        assert!(app.state.active_boost().is_none());
+        assert!(
+            app.toasts.is_empty(),
+            "an inert gesture announced something"
         );
     }
 

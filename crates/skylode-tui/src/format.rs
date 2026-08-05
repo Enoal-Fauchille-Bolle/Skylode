@@ -84,6 +84,25 @@ pub fn duration_hm(ticks: u64) -> String {
     format!("{hours}h {minutes:02}m")
 }
 
+/// A countdown of simulated ticks as whole seconds, **rounded up**.
+///
+/// **The fourth duration in this module, and the only one that counts *down*.** The
+/// other three total something that has already happened, where rounding either way is
+/// a cosmetic choice. This one labels a boost that is still running, and rounding
+/// *down* would print `0s` for the last twenty ticks of a live boost — a gauge saying
+/// the thing is over while it is still multiplying. `div_ceil` makes the readout hit
+/// zero exactly when the boost does.
+///
+/// **Widened, divided, narrowed.** [`TICKS_PER_SECOND`] is a `u64` because the offline
+/// accrual multiplies by it across days, while a tick countdown is a `u32`; dividing in
+/// the wider type keeps the conversion total, where a cast either way would be the
+/// compiler taking the programmer's word for it. The narrowing back cannot fail — a
+/// `u32` of ticks over twenty is a smaller number — and is written as a fallback rather
+/// than an `unwrap` only because this crate's lints leave none to spend.
+pub fn boost_seconds(ticks: u32) -> u32 {
+    u32::try_from(u64::from(ticks).div_ceil(TICKS_PER_SECOND)).unwrap_or(u32::MAX)
+}
+
 /// A span of wall-clock time as `6d 4h`, `6h 12m`, `12m` or `45s`.
 ///
 /// **The third duration format in this module, and none of the three is a special
