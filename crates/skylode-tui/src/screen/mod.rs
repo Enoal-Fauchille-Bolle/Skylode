@@ -526,9 +526,32 @@ mod tests {
                     Some(Action::ClaimAll),
                     None,
                 ],
-                // Mine takes only `Space`, which `keymap` resolves above this table;
-                // Stats is phase 7's remaining screen. `None` is "not mine", which
-                // lets `keymap` fall through instead of swallowing the key.
+                // **The row this table was missing, and the bug it cost.** Stats used to
+                // fall into the catch-all below, commented "phase 7's remaining screen"
+                // — so the trou was *documented here* rather than detected, and `↑↓`
+                // stayed unbound on a screen whose footer had been advertising them
+                // since the panel was drawn. Every other link existed: the cursor, the
+                // reducer's arm, the projection, the accented row. Only the decode was
+                // absent, and nothing in the suite crossed that seam.
+                //
+                // `p` is not in `keys` above, so the prestige preview does not show
+                // here; `keymap`'s own tests carry it.
+                Screen::Stats => [
+                    Some(Action::CursorUp),
+                    Some(Action::CursorDown),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ],
+                // Mine takes only `Space`, which `keymap` resolves above this table, so
+                // it is the one screen left in the catch-all. `None` is "not mine",
+                // which lets `keymap` fall through instead of swallowing the key.
                 _ => [const { None }; 11],
             }
         };

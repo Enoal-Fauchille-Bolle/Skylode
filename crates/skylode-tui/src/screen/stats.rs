@@ -27,7 +27,7 @@ use crate::{
         age, denominations, grouped_u64, holding, justified, multiplier, prestige_rank, truncate,
         xp_progress,
     },
-    screen::{panel, window},
+    screen::{panel, scrollbar, window},
     theme,
     view::View,
 };
@@ -54,12 +54,18 @@ const RIGHT_COLUMN_WEIGHT: u16 = 50;
 const PRICE_MARGIN: usize = 1;
 
 /// The column [`history`] keeps clear on the right, so a truncated line's `…` does not
-/// sit against the border.
+/// sit against the scrollbar.
 ///
 /// One and not [`RIGHT_MARGIN`]'s three: these lines are prose and the box is already
 /// too narrow for what the game says into it, so every column spent on air is a word
 /// the player does not get. It matches [`PRICE_MARGIN`] for the same reason — both are
 /// rows where the content, not the alignment, is what the margin is competing with.
+///
+/// **It is measured against the rows, not the panel**, now that a column of the panel
+/// belongs to the bar: the scrollbar is not a margin that happens to be drawn on, so
+/// counting it as one would leave the `…` flush against the track. The Levels roadmap
+/// keeps two here for the same shape and a different reason — its right-hand column is
+/// a number, and a figure abutting a bar reads as a wider figure.
 const HISTORY_MARGIN: usize = 1;
 
 /// Draws the three panels and the footer.
@@ -195,15 +201,23 @@ fn this_run(frame: &mut Frame, area: Rect, view: &View) {
 
 /// The History panel: every announcement this session made, newest first.
 ///
-/// **Three departures from the §5.5 frame, all found by rendering it** (`docs/UI.md`
+/// **Four departures from the §5.5 frame, all found by rendering it** (`docs/UI.md`
 /// §5.5.2). The stamp is an age and not a clock; the lines are truncated because the
-/// real sentences do not fit; and the selected row is drawn, which the frame does not
+/// real sentences do not fit; the selected row is drawn, which the frame does not
 /// show and which the scroll needs — without it the first presses of `↑↓` move a
-/// cursor inside the window and nothing on the screen changes.
+/// cursor inside the window and nothing on the screen changes; and a scrollbar is
+/// drawn, which the frame has no column for.
 fn history(frame: &mut Frame, area: Rect, view: &View) {
     let block = panel(" History ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // The rows beside a one-column bar, on the Levels roadmap's own split. There is no
+    // header to keep the bar off here, so the whole inner area divides — `Min(0)` first
+    // so the text takes every column the terminal has beyond the one the bar is owed,
+    // rather than freezing at the width §5.5 was counted at.
+    let [rows_area, bar_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
 
     // **No stored offset, exactly as the Levels roadmap has none.** `window` derives
     // the visible slice from the cursor and a zero offset, which keeps the scroll
@@ -211,14 +225,16 @@ fn history(frame: &mut Frame, area: Rect, view: &View) {
     // leaves one scroll position rather than two that could disagree.
     let history = &view.stats.history;
     let selected = view.stats.selected;
-    let range = window(history.len(), selected, 0, usize::from(inner.height));
+    let visible = usize::from(rows_area.height);
+    let range = window(history.len(), selected, 0, visible);
     // The window's own start, so the drawn rows can be numbered back into the log and
     // the selected one found. Recomputed from the range rather than carried, because
     // `window` is what settled it and a second copy would be the disagreement the
-    // missing offset exists to prevent.
+    // missing offset exists to prevent. The bar is handed this same figure, for the
+    // same reason it is the only one there is.
     let top = range.start;
 
-    let width = (inner.width as usize).saturating_sub(HISTORY_MARGIN);
+    let width = (rows_area.width as usize).saturating_sub(HISTORY_MARGIN);
     let lines: Vec<Line> = history[range]
         .iter()
         .enumerate()
@@ -240,7 +256,19 @@ fn history(frame: &mut Frame, area: Rect, view: &View) {
             }
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines), rows_area);
+
+    // **`top` and never a stored offset**, which on this screen is not even a choice:
+    // there is no second scroll position to get wrong, because `window` is what settles
+    // where the box sits and it may have moved it to keep the cursor visible. A thumb
+    // drawn from anything else would report a scroll that did not happen.
+    //
+    // Worth the column here where §5.5's frame spends none: the log is capped at 500
+    // entries and *every* announcement enters it, including the ones too quiet to draw a
+    // toast — so this is the one panel on the screen where "how much of it am I looking
+    // at" is a real question. `scrollbar` draws nothing at all when the log fits, so a
+    // fresh session pays for it in a blank column rather than in a stuck-looking thumb.
+    scrollbar(frame, bar_area, history.len(), visible, top);
 }
 
 /// A `label … value` row with the value flush right and a margin off the border.
@@ -268,14 +296,29 @@ fn inline(label: &str, value: &str) -> Line<'static> {
     Line::from(format!(" {label:<11}{value}"))
 }
 
-/// `p` opens the prestige preview; `↑↓` will scroll the history with the Stats wiring.
+/// `↑↓` scroll the history; `p` opens the prestige preview.
 ///
 /// **Bound here and not globally**, though prestige is reachable from nowhere else:
 /// `p` is an ordinary letter, and a global claim would swallow it on the five screens
 /// that do not own it — the same argument that keeps the sub-tab binding gated on the
 /// Upgrades screen.
+///
+/// **The arrows are what this function was missing, and the footer had been promising
+/// them for a phase.** Every other link in the chain existed — the cursor
+/// ([`Cursors::history`](crate::cursor::Cursors::history)), the reducer's arm in
+/// [`App::step_list_cursor`](crate::app::App), the projection, the drawn accent — so a
+/// `↑` decoded to nothing here, fell out of [`crate::keymap`]'s rule 6, and the screen
+/// simply did not move. Both halves were tested and the seam between them was not,
+/// which is why `screen::tests::only_the_screens_with_bindings_claim_a_key` now names
+/// this screen's row rather than leaving it to a catch-all.
+///
+/// They decode to the *list* gestures and not to a scroll of their own: §9 makes the
+/// history a row cursor, so `↑↓` here mean exactly what they mean on the Levels roadmap
+/// and the reducer picks the list from the open screen.
 pub fn map_key(key: KeyEvent) -> Option<Action> {
     match key.code {
+        KeyCode::Up => Some(Action::CursorUp),
+        KeyCode::Down => Some(Action::CursorDown),
         KeyCode::Char('p') => Some(Action::OpenPrestige),
         _ => None,
     }
@@ -327,6 +370,16 @@ mod tests {
             .find(|line| line.contains(needle))
             .unwrap_or(frame)
     }
+
+    /// The column the History's scrollbar is drawn in, at 80 columns.
+    ///
+    /// The right column starts at 30, the panel's border takes 30 and 79, and the bar
+    /// claims the last inner one. Spelled once because two tests need it and they must
+    /// not disagree about which side of it they are looking at.
+    const BAR_COLUMN: u16 = 78;
+
+    /// One past the last column of History *text* — everything left of the bar.
+    const TEXT_END: u16 = BAR_COLUMN;
 
     /// Just the Progression panel's columns (0..30), joined per row.
     ///
@@ -485,10 +538,18 @@ mod tests {
 
         // The third row of the History box, whose inner area starts below the
         // `This run` panel and its own border.
+        //
+        // **The scan stops one column short of the inner area, and that column is the
+        // scrollbar's.** The bar draws `█` in [`theme::ACCENT`] and `░` in
+        // [`theme::MUTED`], so including it would make this test depend on whether the
+        // thumb happens to cover the selected row: with the thumb there it passes for
+        // the wrong reason, and with the track there it fails while the row is marked
+        // perfectly well. The cursor is a property of the *text*, so the text is what
+        // is scanned.
         let accented: Vec<String> = (0..buffer.area.height)
             .filter_map(|y| {
                 let row: String = (30..80).map(|x| buffer[(x, y)].symbol()).collect();
-                let coloured = (31..79).all(|x| {
+                let coloured = (31..TEXT_END).all(|x| {
                     let cell = &buffer[(x, y)];
                     cell.symbol() == " " || cell.fg == theme::ACCENT
                 });
@@ -505,6 +566,69 @@ mod tests {
             1,
             "more than one row claimed the cursor: {accented:?}"
         );
+    }
+
+    /// The History's scrollbar, top to bottom, as one string of `█` and `░`.
+    ///
+    /// Read off [`BAR_COLUMN`] rather than searched for across the frame the way the
+    /// Levels screen searches for `█`: that screen has no other block glyph, and this
+    /// one is a whole frame of three panels. Naming the column is what keeps this test
+    /// about the bar rather than about whatever else might one day be drawn in a block.
+    ///
+    /// **Filtered to the two bar glyphs**, because the column runs the height of the
+    /// *terminal* and the bar occupies only the History panel's inner rows: above and
+    /// below it sit the two panels' borders (`─`) and the footer. Filtering is what lets
+    /// a caller say "the thumb is at the top" without first working out which row the
+    /// panel starts on — and it makes an absent bar the empty string, which is exactly
+    /// the assertion a fitting log wants.
+    fn bar_column(buffer: &Buffer) -> String {
+        (0..buffer.area.height)
+            .map(|y| buffer[(BAR_COLUMN, y)].symbol())
+            .filter(|symbol| matches!(*symbol, "█" | "░"))
+            .collect()
+    }
+
+    /// The log outgrows its box long before a session is over — it is capped at 500 and
+    /// every announcement enters it — so the panel says how much of it is off screen.
+    #[test]
+    fn the_history_draws_a_scrollbar_when_the_log_outgrows_the_box() {
+        let bar = bar_column(&render_screen());
+        assert!(bar.contains('█'), "no thumb in the bar column: {bar:?}");
+        assert!(bar.contains('░'), "no track in the bar column: {bar:?}");
+    }
+
+    /// The thumb reports the **window**, not the cursor, which is the whole reason it is
+    /// handed `range.start` and not a stored offset: `window` may move the box to keep
+    /// the selection visible, and a bar drawn from anything else would report a scroll
+    /// that did not happen.
+    #[test]
+    fn the_thumb_travels_as_the_history_is_scrolled() {
+        let mut view = View::sample();
+        let top = bar_column(&render_view(&view));
+        assert!(
+            top.starts_with('█') && top.ends_with('░'),
+            "the thumb did not open at the top: {top:?}"
+        );
+
+        view.stats.selected = view.stats.history.len() - 1;
+        let bottom = bar_column(&render_view(&view));
+        assert!(
+            bottom.ends_with('█') && bottom.starts_with('░'),
+            "the thumb did not reach the bottom: {bottom:?}"
+        );
+    }
+
+    /// **A fresh session pays for the column in blank space, not in a stuck thumb.**
+    /// `scrollbar` draws nothing when the list fits, which is the state every run opens
+    /// in — the log is empty until the first swing — and a full-height thumb there would
+    /// read as a scrollbar that is broken rather than as one that has nothing to say.
+    #[test]
+    fn a_history_that_fits_its_box_draws_no_bar_at_all() {
+        let mut view = View::sample();
+        view.stats.history.truncate(2);
+        view.stats.selected = 0;
+        let bar = bar_column(&render_view(&view));
+        assert!(bar.is_empty(), "a fitting log drew a bar: {bar:?}");
     }
 
     /// The foreground of the first cell drawn with `glyph`. See the same helper on

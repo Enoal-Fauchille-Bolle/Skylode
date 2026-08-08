@@ -678,6 +678,43 @@ mod tests {
         assert_eq!(resolve(&app, press(KeyCode::Char('t'))), None);
     }
 
+    /// **The seam the Stats history bug lived in, and this is the test that crosses
+    /// it.**
+    ///
+    /// Everything on either side was covered: `app` moved the cursor when handed
+    /// [`Action::CursorDown`], and `screen::stats` drew whatever row it was told was
+    /// selected. Both suites passed for a screen where `↑` decoded to nothing at all,
+    /// because neither of them asks a *key* for an answer. A binding does not exist
+    /// until this function says it does, so this is where a binding is asserted.
+    #[test]
+    fn the_arrows_scroll_the_history_on_the_stats_screen() {
+        let mut app = session();
+        app.screen = Screen::Stats;
+
+        assert_eq!(resolve(&app, press(KeyCode::Up)), Some(Action::CursorUp));
+        assert_eq!(
+            resolve(&app, press(KeyCode::Down)),
+            Some(Action::CursorDown)
+        );
+        // And the screen's own letter still answers beside them rather than being
+        // displaced by the two arms above it.
+        assert_eq!(
+            resolve(&app, press(KeyCode::Char('p'))),
+            Some(Action::OpenPrestige)
+        );
+    }
+
+    /// Contextual like every other screen binding: the Mine screen owns no list, so an
+    /// arrow there stays unclaimed rather than moving something the player cannot see.
+    #[test]
+    fn the_history_arrows_are_not_claimed_on_a_screen_with_no_list() {
+        let mut app = session();
+        app.screen = Screen::Mine;
+
+        assert_eq!(resolve(&app, press(KeyCode::Up)), None);
+        assert_eq!(resolve(&app, press(KeyCode::Down)), None);
+    }
+
     /// A key event of a given kind — the third argument the release path turns on.
     fn of_kind(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
         KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind)

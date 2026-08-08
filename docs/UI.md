@@ -1093,12 +1093,13 @@ were wired in turn. The frame above is left as drawn.
   quoted in both. Those two rows also keep a **one-column** right margin where the
   counters keep three: at twenty-one columns of figure they do not fit at the wider one.
 
-#### 5.5.2 Five departures the rendered screen found
+#### 5.5.2 Six departures the rendered screen found
 
-Recorded when the three panels were wired to the run. §5.5.1 above was written while the
-counters and the two right-hand panels were still fixture; **these five are what showed
-up the first time the boxes were drawn with what the game actually says**, and four of
-them are about the History. The frame above is left as drawn.
+Recorded when the three panels were wired to the run — except the last, which came later,
+when the history's `↑↓` were finally bound and the panel could be scrolled by hand for the
+first time. §5.5.1 above was written while the counters and the two right-hand panels were
+still fixture; **these six are what showed up when the boxes were drawn with what the game
+actually says**, and five of them are about the History. The frame above is left as drawn.
 
 - **The real announcements do not fit, and the frame hides it by abbreviating.** §5.5
   writes `+80 A. Debris`; nothing in the code produces that. The sentence
@@ -1130,6 +1131,16 @@ them are about the History. The frame above is left as drawn.
   `Stone 20x10 R9  ✓` on a row it leaves _un_-ticked — but `20x10 R9` **is** a maxed
   mine, so the sub-mark and the row's own mark contradict each other. The detail now
   names the frontrunner (`Iron 12x7 R3`) and the row's mark is the only verdict.
+- **The History carries a scrollbar, which the frame has no column for.** The panel is
+  the one place on this screen where _"how much of this is off screen"_ is a real
+  question: the log is capped at 500 entries and **every** announcement enters it,
+  including the ones too quiet to draw a toast, so it outgrows its eleven rows within a
+  minute of mining. Without the bar the only report of depth is the selected row moving,
+  which says where the cursor is and nothing about how far the log runs. It costs one
+  column of prose on a panel §5.5.2's first bullet already calls too narrow — accepted,
+  because a truncated word is recoverable by scrolling and an unknown depth is not. It
+  reuses the roadmap's `░`/`█` bar and, like it, **draws nothing at all when the log
+  fits**, which is the state every run opens in.
 
 **One thing the frame gets right and is worth stating**, since counting it would suggest
 otherwise: the `This run` panel is ten rows of box, so **exactly eight** goals fit. The
