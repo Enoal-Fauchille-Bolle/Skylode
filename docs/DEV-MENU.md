@@ -151,5 +151,5 @@ And the claim the gate makes, checked directly:
 
 ```sh
 cargo build --release
-strings target/release/skylode-tui | grep -ciE 'dev menu|SKYLODE_DEV|free upgrades'   # 0
+strings target/release/skylode | grep -ciE 'dev menu|SKYLODE_DEV|free upgrades'   # 0
 ```

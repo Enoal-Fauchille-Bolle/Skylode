@@ -3,6 +3,18 @@ name = "skylode-tui"
 version = "0.1.0"
 edition = "2024"
 
+# The package keeps the `-tui` suffix because it names a *place in the workspace*
+# — the front-end, next to `skylode-core` — and every `cargo run -p skylode-tui`,
+# every scope in a commit message and every path in `docs/` reads it that way. The
+# binary names a *thing the player launches*, and `skylode-tui` is a build detail
+# they have no reason to type. Cargo only conflates the two by default: absent this
+# section it infers a binary from `src/main.rs` and hands it the package's name.
+# Declaring the target explicitly is what separates the two names again — `path` is
+# required here, since a hand-written target is no longer inferred from its file.
+[[bin]]
+name = "skylode"
+path = "src/main.rs"
+
 [dependencies]
 color-eyre = "0.6.5"
 crossterm = "0.29.0"

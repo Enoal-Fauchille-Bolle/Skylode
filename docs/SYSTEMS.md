@@ -361,7 +361,7 @@ pinning the key against accidental change.
 cargo build --release
 python3 - <<'PY'
 key = bytes.fromhex("…the 64 bytes…")          # from crates/skylode-tui/src/persist/key.rs
-print(open("target/release/skylode-tui","rb").read().count(key))   # must print 0
+print(open("target/release/skylode","rb").read().count(key))   # must print 0
 PY
 ```
 
