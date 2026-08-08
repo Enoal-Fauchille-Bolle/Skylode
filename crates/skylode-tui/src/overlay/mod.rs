@@ -63,23 +63,34 @@ pub enum Conversion {
 
 /// A modal overlay that captures input.
 ///
-/// One is still missing ([`settings`]): it is drawn but not yet stacked, and arrives
-/// as a variant here when the screen that opens it is wired (phase 9). The exhaustive
-/// `match` in [`crate::keymap`] and [`crate::app`] then refuses to compile until it
-/// learns to draw and drive.
-///
 /// **[`Clone`] and no longer [`Copy`]**, since the prestige confirm carries the text
 /// the player has typed. A [`String`] owns a heap allocation, and copying one bit for
 /// bit would leave two owners of it — so the language refuses `Copy` and the callers
 /// ask for a clone instead. The cost is one small allocation per keystroke, on the
 /// input path and never on the render one; the alternative was a hand-rolled fixed
 /// buffer whose only merit would have been keeping a trait this enum does not need.
-///
-/// [`settings`]: crate::overlay::settings
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Modal {
     /// The full-screen key reference (UI.md §6.11), opened with `?` from any screen.
     Help,
+    /// The Settings screen (UI.md §6.10), opened with `s` from any screen.
+    ///
+    /// **The selected row lives in the variant**, for the reason
+    /// [`Compress`](Modal::Compress) carries its count: *"row three, with no screen
+    /// open"* is then a state nobody can write down. It is the caret and **not** the
+    /// preferences — those are `App::config`, which is the copy the game is actually
+    /// reading and the copy the autosave writes. A row here and a value there is what
+    /// keeps this box an editor of the real config rather than of a snapshot that
+    /// would have to be merged back.
+    ///
+    /// It opens on [`ROWS[0]`](settings::ROWS) every time rather than remembering where
+    /// it was left, unlike the dev menu: the dev menu's rows *carry dialled values* a
+    /// user is mid-way through using, while five preferences fit on one screen and the
+    /// top is where a short list opens.
+    Settings {
+        /// Which of the five rows the `▸` is on.
+        row: settings::SettingsRow,
+    },
     /// The compression dialog (UI.md §6.6), opened with `c` / `C` from Inventory.
     ///
     /// **The spinner's count lives in the variant, not in a field beside

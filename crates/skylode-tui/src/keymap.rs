@@ -7,8 +7,9 @@
 //!
 //! **Three functions and not one**, because the game is no longer the only thing on
 //! screen. [`resolve`] answers a run; [`resolve_menu`] answers the states that are
-//! not a run at all (the title, the recovery frames) in [`MenuAction`]'s four
-//! gestures; and [`resolve_too_small`] answers the one screen that is drawn over
+//! not a run at all (the title, the recovery frames, and the Settings screen the
+//! title opens) in [`MenuAction`]'s six gestures; and [`resolve_too_small`] answers
+//! the one screen that is drawn over
 //! every other. They live together because the invariant above is about the *module*:
 //! a `KeyCode` named anywhere else is a binding nobody can find.
 //!
@@ -69,6 +70,13 @@ pub fn resolve_menu(key: KeyEvent) -> Option<MenuAction> {
         // else.
         KeyCode::Up => Some(MenuAction::Up),
         KeyCode::Down => Some(MenuAction::Down),
+        // The lateral pair means what it means everywhere else — *adjust whatever the
+        // cursor is on* (`docs/UI.md` §9). It is bound unconditionally rather than only
+        // while Settings is up, because this function deliberately takes no state: which
+        // list is showing is the caller's question, and a menu with nothing to adjust
+        // simply drops the gesture where it lands.
+        KeyCode::Left => Some(MenuAction::Left),
+        KeyCode::Right => Some(MenuAction::Right),
         KeyCode::Enter => Some(MenuAction::Confirm),
         // Declining, wherever something was asked. It is `Esc` here because it is `Esc`
         // in every modal the game already has, and a box that asked to be declined with
@@ -141,6 +149,18 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
             // Help closes on its own key (`?`) or `Esc`.
             Modal::Help => match key.code {
                 KeyCode::Char('?') | KeyCode::Esc => Some(Action::CloseModal),
+                _ => None,
+            },
+            // Settings is a list whose rows hold values, so it reuses the four list
+            // gestures and names no key of its own — the dev menu's arm exactly, which
+            // is the same shape of screen. `s` closes it as well as opening it, like
+            // Help's `?`: a key that leads nowhere else should be a toggle.
+            Modal::Settings { .. } => match key.code {
+                KeyCode::Up => Some(Action::CursorUp),
+                KeyCode::Down => Some(Action::CursorDown),
+                KeyCode::Left => Some(Action::AdjustLeft),
+                KeyCode::Right => Some(Action::AdjustRight),
+                KeyCode::Char('s') | KeyCode::Esc => Some(Action::CloseModal),
                 _ => None,
             },
             // The compression spinner. It reuses the list gestures rather than
@@ -235,6 +255,11 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
         KeyCode::Char('q') => return Some(Action::ToTitle),
         // `?` is global and printed in every footer, so it opens Help from anywhere.
         KeyCode::Char('?') => return Some(Action::OpenHelp),
+        // `s` is the other global that no footer prints (`docs/UI.md` §9): Help is its
+        // only discoverability surface, exactly like `q`. It was documented as a
+        // binding for eight phases while being bound nowhere — the one advertised key
+        // that did nothing — and this line is the whole of the fix.
+        KeyCode::Char('s') => return Some(Action::OpenSettings),
         // **Back to the Mine screen** (`docs/UI.md` §8.1), and deliberately *not*
         // guarded on which screen we are on: `Esc` reads the same sentence on all six
         // tabs, and on Mine it lands where the player already is. A guard would make it
@@ -419,6 +444,63 @@ mod tests {
             resolve(&app, press(KeyCode::Char('?'))),
             Some(Action::OpenHelp)
         );
+    }
+
+    /// **The one global that advertised a key and bound nothing**, until now.
+    ///
+    /// Asserted on every screen rather than on one, like `Esc` above and for the same
+    /// reason: `s` is global, so a screen that later claimed the letter would shadow it
+    /// on exactly one tab out of six — the failure nobody notices by playing.
+    #[test]
+    fn s_opens_settings_from_every_tab() {
+        for screen in Screen::ALL {
+            let mut app = session();
+            app.screen = screen;
+            assert_eq!(
+                resolve(&app, press(KeyCode::Char('s'))),
+                Some(Action::OpenSettings),
+                "s is shadowed on {screen:?}"
+            );
+        }
+    }
+
+    /// Settings captures the keys and closes on its own letter or on `Esc` — Help's
+    /// contract exactly, which is what makes the two overlays one habit.
+    #[test]
+    fn while_settings_is_up_it_captures_the_keys_and_closes_on_s_or_esc() {
+        let mut app = session();
+        app.modal = Some(Modal::Settings {
+            row: crate::overlay::settings::ROWS[0],
+        });
+
+        // The four list gestures reach the rows and the values.
+        assert_eq!(
+            resolve(&app, press(KeyCode::Down)),
+            Some(Action::CursorDown)
+        );
+        assert_eq!(
+            resolve(&app, press(KeyCode::Right)),
+            Some(Action::AdjustRight)
+        );
+        // And the globals it would otherwise shadow are swallowed: `1` is a tab jump
+        // everywhere else, and a settings screen that changed tab under the player
+        // would not be modal at all.
+        assert_eq!(resolve(&app, press(KeyCode::Char('1'))), None);
+        assert_eq!(resolve(&app, press(KeyCode::Tab)), None);
+
+        assert_eq!(
+            resolve(&app, press(KeyCode::Char('s'))),
+            Some(Action::CloseModal)
+        );
+        assert_eq!(resolve(&app, press(KeyCode::Esc)), Some(Action::CloseModal));
+    }
+
+    /// The lateral pair reaches the menu vocabulary too, which is what the title's
+    /// Settings screen is driven by.
+    #[test]
+    fn a_menu_screen_understands_the_lateral_pair() {
+        assert_eq!(resolve_menu(press(KeyCode::Left)), Some(MenuAction::Left));
+        assert_eq!(resolve_menu(press(KeyCode::Right)), Some(MenuAction::Right));
     }
 
     #[test]

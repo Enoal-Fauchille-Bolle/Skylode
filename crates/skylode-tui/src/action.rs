@@ -98,6 +98,14 @@ pub enum Action {
     /// Open the Help overlay (`?` from any screen). It stacks over the current
     /// screen, which is what Help then reports the bindings of.
     OpenHelp,
+    /// Open the Settings overlay (`s` from any screen).
+    ///
+    /// **A sibling of [`OpenHelp`](Action::OpenHelp) and not a variant of it**, though
+    /// the two are opened the same way and drawn at the same size: Help is a *reading*
+    /// of the screen it was opened over and takes it as an argument, while Settings is
+    /// about nothing on screen at all. Folding them into one `OpenOverlay(kind)` would
+    /// buy one arm and cost the reducer the ability to say which of them a key meant.
+    OpenSettings,
     /// Dismiss the stacked modal (`Esc`, or `?` while Help is up). Names the act,
     /// not the modal, so a second modal reuses it rather than adding a close per
     /// variant.
@@ -267,6 +275,16 @@ pub enum MenuAction {
     Up,
     /// Move it down, wrapping at the bottom.
     Down,
+    /// Turn the value under the caret one step down (`←`).
+    ///
+    /// **The lateral pair arrived with Settings**, which is the first thing reachable
+    /// from the title that holds a *value* rather than a list of destinations. The
+    /// menus that came before had nothing to adjust, so this vocabulary had four
+    /// gestures; it now has six, and the two new ones read exactly as they do in the
+    /// game — `docs/UI.md` §9's *adjust whatever the cursor is on*.
+    Left,
+    /// Turn it one step up (`→`).
+    Right,
     /// Take the row it is on (`Enter`).
     Confirm,
     /// Back out of whatever was asked (`Esc`).

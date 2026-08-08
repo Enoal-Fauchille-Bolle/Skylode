@@ -17,6 +17,7 @@
 mod action;
 mod announce;
 mod app;
+mod capability;
 mod config;
 mod cursor;
 mod event;
@@ -35,7 +36,7 @@ mod widget;
 
 use std::{io::stdout, time::SystemTime};
 
-use crate::{event::EventHandler, session::Session};
+use crate::{capability::Capabilities, event::EventHandler, session::Session};
 use color_eyre::Result;
 use ratatui::crossterm::{
     event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
@@ -62,12 +63,12 @@ fn main() -> Result<()> {
     // below is still reported legibly.
     color_eyre::install()?;
 
-    // The two readings this binary owes the rest of the program, and the only two:
-    // where the platform keeps a save, and what time it is. Both are the environment,
-    // and `main` is the outside — everything below takes them as arguments so that a
-    // test can choose them.
+    // The readings this binary owes the rest of the program: where the platform keeps
+    // a save, what time it is, and what the terminal says about its palette. All three
+    // are the environment, and `main` is the outside — everything below takes them as
+    // arguments so that a test can choose them.
     let slots = persist::location();
-    let session = Session::boot(slots, SystemTime::now());
+    let session = Session::boot(slots, SystemTime::now()).with_capabilities(Capabilities::detect());
 
     // `init` enables raw mode, switches to the alternate screen, and installs a
     // panic hook that restores both before any message is printed — the reason

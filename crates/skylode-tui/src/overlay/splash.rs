@@ -36,7 +36,7 @@ use crate::{
 /// 55 columns is deliberate too: it clears the 80-column budget
 /// [`too_small`](super::too_small) enforces with twelve columns of margin either
 /// side, so the title needs no narrow variant.
-const LOGO: [&str; 5] = [
+pub(crate) const LOGO: [&str; 5] = [
     "███████ ██   ██ ██   ██ ██      ███████ ██████  ███████",
     "██      ██  ██   ██ ██  ██      ██   ██ ██   ██ ██",
     "███████ █████     ███   ██      ██   ██ ██   ██ ██████",
@@ -82,6 +82,7 @@ fn label(row: SplashRow) -> &'static str {
     match row {
         SplashRow::Continue => "Continue",
         SplashRow::NewGame => "New game",
+        SplashRow::Settings => "Settings",
         SplashRow::Quit => "Quit",
     }
 }
@@ -118,11 +119,12 @@ pub fn render(frame: &mut Frame, area: Rect, splash: &Splash) {
         Constraint::Length(5),
         Constraint::Length(1),
         // A fixed band whatever the menu holds, so losing `Continue` on a fresh
-        // install shortens the box and moves nothing under it. Five, which is
-        // exactly the three-row box: at six the box sat with one blank row above
-        // it and two below, and the gaps either side of it are what the eye reads
-        // as the block being centred.
-        Constraint::Length(5),
+        // install shortens the box and moves nothing under it. It is sized to the
+        // **longest** menu — four rows plus two border lines — because
+        // `centered_rect` clamps to the band it is given, so a band shorter than the
+        // box would not centre it but cut its last row off. It grew from five with
+        // the `Settings` row; before that the longest menu was three rows.
+        Constraint::Length(6),
         Constraint::Length(1),
         Constraint::Length(2),
         Constraint::Fill(3),
@@ -506,6 +508,24 @@ mod tests {
         let splash = Splash::sample_at_rank(true, true, 42);
         let frame = crate::overlay::render_to_string(|frame, area| render(frame, area, &splash));
         assert!(frame.contains("Prestige 42"), "{frame}");
+    }
+
+    /// **The longest menu fits in its band.**
+    ///
+    /// `centered_rect` *clamps* a box to the area it is given rather than overflowing
+    /// it, so a band one row short of the box does not misplace the menu — it silently
+    /// cuts the last row off. Adding `Settings` took the longest menu from three rows to
+    /// four, and this is what says the band grew with it. Asserted on `Quit`, which is
+    /// the row that would go, and on the bottom border, which is what would go with it.
+    #[test]
+    fn the_longest_menu_keeps_its_last_row_and_its_own_bottom_border() {
+        let splash = Splash::sample(true, true);
+        let frame = crate::overlay::render_to_string(|frame, area| render(frame, area, &splash));
+        for row in ["Continue", "New game", "Settings", "Quit"] {
+            assert!(frame.contains(row), "{row} was cut off the menu: {frame}");
+        }
+        // The box is closed: four rows plus two borders, so the `└` has to be there.
+        assert!(frame.contains('└'), "the menu box lost its floor: {frame}");
     }
 
     #[test]

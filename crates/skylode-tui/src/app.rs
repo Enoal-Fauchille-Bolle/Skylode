@@ -32,6 +32,7 @@ use skylode_core::{
 use crate::{
     action::Action,
     announce,
+    capability::Capabilities,
     config::Config,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     flash::Flashes,
@@ -42,7 +43,7 @@ use crate::{
     overlay::{
         Conversion, Modal, compression, dip, help,
         prestige::{self as prestige_overlay, CONFIRM_WORD},
-        too_small,
+        settings, too_small,
     },
     screen::Screen,
     theme,
@@ -243,8 +244,16 @@ pub struct App {
     /// mining, not by anything on the Inventory screen, so remembering it would put a
     /// note on a screen that cannot act on it.
     pub refused: Option<CompressHint>,
-    /// Front-end preferences — read while drawing, edited by Settings (phase 7).
+    /// Front-end preferences — read while drawing, edited by the Settings overlay.
     pub config: Config,
+    /// What the terminal said about itself, for the one Settings row that quotes it.
+    ///
+    /// Carried rather than asked at the draw, for the reason `crate::capability`
+    /// spells out: the environment is ambient state, and a renderer that read it would
+    /// draw differently depending on which shell ran the test suite. [`Default`] here
+    /// is *"the terminal said nothing"*, which is the honest answer for every `App` a
+    /// test builds without caring.
+    pub capabilities: Capabilities,
     /// The dev menu's state, or [`None`] when this session was not started with it.
     ///
     /// **One field carrying both layers of the gate**, which is what keeps the two from
@@ -327,6 +336,7 @@ impl App {
             cursors,
             refused: None,
             config: Config::default(),
+            capabilities: Capabilities::default(),
             #[cfg(debug_assertions)]
             dev: None,
             next_tick: now + SIM_PERIOD,
@@ -364,6 +374,17 @@ impl App {
     /// from the run, and the preferences are consulted while *drawing*.
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Tells this session what the terminal declared about itself.
+    ///
+    /// A builder step for [`with_config`](App::with_config)'s reason, and handed down
+    /// from [`Session`](crate::session::Session) rather than read here: `main` does the
+    /// reading once, and a session can open several games that must all be told the
+    /// same thing.
+    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
         self
     }
 
@@ -443,6 +464,13 @@ impl App {
             // keymap only emits `OpenHelp` when nothing is stacked, so this never
             // buries one modal under another.
             Action::OpenHelp => self.modal = Some(Modal::Help),
+            // Opens at the top of the list every time. See [`Modal::Settings`] for why
+            // this one does not remember where it was left where the dev menu does.
+            Action::OpenSettings => {
+                self.modal = Some(Modal::Settings {
+                    row: settings::ROWS[0],
+                });
+            }
             Action::CloseModal => self.modal = None,
             // The list gestures are decoded without a screen in mind, so this is
             // where one is chosen. Mines, Inventory and Upgrades answer today;
@@ -596,6 +624,22 @@ impl App {
                     // clamp answer, rather than reading the ceiling twice.
                     Action::AdjustMax => self.set_spinner(material, direction, u32::MAX),
                     Action::Confirm => self.apply_conversion(material, direction, units),
+                    _ => return false,
+                }
+                true
+            }
+            // Settings walks a list of five rows and turns the value under the caret.
+            // **The `←→` arms write straight into `self.config`**, which is the copy the
+            // game reads and the copy the autosave writes — so a preference is in force
+            // the moment it is changed, and reaches the disk on the next ten-second
+            // tick with no new cadence to write. There is no `Enter` here for the same
+            // reason: nothing is staged, so nothing needs applying.
+            Some(Modal::Settings { row }) => {
+                match action {
+                    Action::CursorUp => self.modal = Some(Modal::Settings { row: row.step(-1) }),
+                    Action::CursorDown => self.modal = Some(Modal::Settings { row: row.step(1) }),
+                    Action::AdjustLeft => row.adjust(&mut self.config, -1),
+                    Action::AdjustRight => row.adjust(&mut self.config, 1),
                     _ => return false,
                 }
                 true
@@ -2032,6 +2076,11 @@ impl App {
                 // Help reports the bindings of the screen it was opened over, so it
                 // is handed the current screen and the config the sub-tab line reads.
                 Modal::Help => help::render(frame, area, self.screen, &self.config),
+                // The live config, not a copy: the row turns it in place, so what is
+                // drawn is what the game is already using.
+                Modal::Settings { row } => {
+                    settings::render(frame, area, &self.config, *row, self.capabilities);
+                }
                 // The dialog reads the run rather than the `View`: it is about a pile
                 // as it stands *now*, and the snapshot behind it was projected before
                 // the conversion the player is about to confirm.
@@ -2236,7 +2285,7 @@ mod tests {
     // Both belong to the loop, which lives in `session` now — so they are imported
     // here rather than at the top of the file, where a release build would find them
     // unused.
-    use crate::{keymap, palette};
+    use crate::{config::SubTabKeys, keymap, palette};
 
     /// The seed every test session starts from.
     ///
@@ -2641,6 +2690,57 @@ mod tests {
         let frame = whole_frame(&render_to_buffer(&app));
         // The right pane's title is Help-only, so its presence is Help on top.
         assert!(frame.contains("Reading the screen"), "{frame}");
+    }
+
+    #[test]
+    fn opening_settings_stacks_it_at_the_top_of_the_list() {
+        let mut app = session();
+        app.update(Action::OpenSettings);
+        assert_eq!(
+            app.modal,
+            Some(Modal::Settings {
+                row: settings::ROWS[0]
+            })
+        );
+        app.update(Action::CloseModal);
+        assert!(app.modal.is_none());
+    }
+
+    /// **The reducer edits the live config**, which is the whole design of this modal:
+    /// there is no staging buffer and no `Enter`, so a preference is in force the
+    /// instant it is turned and the ordinary autosave carries it to disk.
+    #[test]
+    fn adjusting_a_settings_row_changes_the_config_the_game_is_reading() {
+        let mut app = session();
+        app.update(Action::OpenSettings);
+        // Down to `Sub-tab keys`, the last of the five.
+        for _ in 0..4 {
+            app.update(Action::CursorDown);
+        }
+        app.update(Action::AdjustRight);
+        assert_eq!(app.config.sub_tab_keys, SubTabKeys::HL);
+        // And it is the *live* config, so the binding answers immediately — no reopen,
+        // no confirm. `keymap` reads `app.config`, so this is the real consequence.
+        assert_eq!(app.config.sub_tab_keys.label(), "h  l");
+    }
+
+    /// The caret walks and wraps, like every other list in the crate.
+    #[test]
+    fn the_settings_caret_wraps_past_either_end() {
+        let mut app = session();
+        app.update(Action::OpenSettings);
+        app.update(Action::CursorUp);
+        let last = settings::ROWS.last().copied();
+        assert_eq!(app.modal, last.map(|row| Modal::Settings { row }));
+    }
+
+    #[test]
+    fn settings_draws_over_the_screen_it_was_opened_on() {
+        let mut app = session();
+        app.update(Action::OpenSettings);
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("Toast duration"), "{frame}");
+        assert!(frame.contains("Esc  back"), "{frame}");
     }
 
     #[test]

@@ -50,11 +50,16 @@ use skylode_core::{
 use crate::{
     action::{Action, MenuAction},
     app::{App, Leaving},
+    capability::Capabilities,
     config::Config,
     event::{Event, Events},
     format::rung_label,
     keymap,
-    overlay::{offline, save_recovery, splash, too_small},
+    overlay::{
+        offline, save_recovery,
+        settings::{self, SettingsRow},
+        splash, too_small,
+    },
     persist::{self, PersistError, SaveSlots},
     toast::{Salience, TOAST_TTL, Tone},
 };
@@ -174,6 +179,12 @@ pub struct Session {
     next_autosave: Instant,
     /// Set when the process should end.
     quit: bool,
+    /// What the terminal declared about itself, for the Settings screen to quote.
+    ///
+    /// Held here for [`dev`](Session#structfield.dev)'s reason: `main` does the reading
+    /// once, and a session opens several games — a `New game` after a recovery, and
+    /// every `Continue` — each of which has to be told the same thing.
+    capabilities: Capabilities,
     /// Whether every game this session opens gets the dev menu.
     ///
     /// Held here and not read from the environment again: `main` does the reading, and
@@ -236,6 +247,29 @@ pub struct Splash {
     /// departure taken because `New game` sits one arrow key away from `Continue` and
     /// the first autosave ten seconds later writes over the run it was next to.
     confirm: Option<usize>,
+    /// Which row of the Settings screen the caret is on, while it is up.
+    ///
+    /// [`confirm`](field@Self::confirm)'s shape exactly, and for its reason: one
+    /// [`Option`] means *"Settings is closed"* and *"Settings is open on its third
+    /// row"* cannot be written down together.
+    settings: Option<SettingsRow>,
+    /// The preferences the next game this title opens will run on.
+    ///
+    /// **This is where "config lives in the save" meets a screen that has no save.**
+    /// The title holds no [`GameState`], and [`persist::save`] cannot write without one
+    /// — so a preference changed here has nowhere to go *yet*. It is carried instead:
+    /// loaded from the save when there is one, [`Config::default`] when there is not,
+    /// and handed to [`open_game`](Session::open_game) by both `Continue` and
+    /// `New game`, which write it on the way in.
+    ///
+    /// The cost, taken deliberately: a player who changes a setting on the title and
+    /// then quits without playing loses it. The alternative was re-signing a save from
+    /// a screen whose whole job is to not have opened one yet.
+    ///
+    /// Note the consequence for `Continue`, which re-reads the file: the run comes from
+    /// disk but the **preferences come from here**, so a change made on the title
+    /// survives being loaded over.
+    config: Config,
 }
 
 /// What a title screen knows about the save it is offering to continue.
@@ -290,15 +324,19 @@ pub enum ConfirmRow {
 pub const CONFIRM_ROWS: [ConfirmRow; 2] = [ConfirmRow::Keep, ConfirmRow::StartOver];
 
 /// A row of the title's menu.
-///
-/// `Settings` is **not** here yet: it is phase 9's screen, and a row that highlights
-/// and does nothing teaches the player that the caret is decorative.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SplashRow {
     /// Load the save this title was built from.
     Continue,
     /// Start over.
     NewGame,
+    /// Edit the preferences the next game will run on (§6.10).
+    ///
+    /// **Above `Quit` and below `New game`**, which is where §6.1 draws it. It is
+    /// offered on a fresh install too, unlike `Continue`: a player who cannot read the
+    /// 256-colour palette needs the 16-colour mode *before* their first run, not after
+    /// it.
+    Settings,
     /// Leave.
     Quit,
 }
@@ -378,6 +416,8 @@ enum Chosen {
     Collect,
     /// `New game` where there is a run to lose: raise the box rather than act.
     AskNewGame,
+    /// The title's `Settings` row — open the screen over the menu.
+    OpenSettings,
     /// The box's `Keep`, or an `Esc` over it.
     Cancel,
     /// Leave.
@@ -385,23 +425,27 @@ enum Chosen {
 }
 
 impl Splash {
-    /// A title with nothing to continue.
+    /// A title with nothing to continue, on preferences nobody has expressed yet.
     fn fresh(persists: bool) -> Self {
         Self {
             resume: None,
             cursor: 0,
             persists,
             confirm: None,
+            settings: None,
+            config: Config::default(),
         }
     }
 
-    /// A title over a save that has just loaded.
-    fn over(resume: Resume, persists: bool) -> Self {
+    /// A title over a save that has just loaded, on the preferences it carried.
+    fn over(resume: Resume, persists: bool, config: Config) -> Self {
         Self {
             resume: Some(resume),
             cursor: 0,
             persists,
             confirm: None,
+            settings: None,
+            config,
         }
     }
 
@@ -412,10 +456,25 @@ impl Splash {
     /// answers.
     pub fn rows(&self) -> &'static [SplashRow] {
         if self.resume.is_some() {
-            &[SplashRow::Continue, SplashRow::NewGame, SplashRow::Quit]
+            &[
+                SplashRow::Continue,
+                SplashRow::NewGame,
+                SplashRow::Settings,
+                SplashRow::Quit,
+            ]
         } else {
-            &[SplashRow::NewGame, SplashRow::Quit]
+            &[SplashRow::NewGame, SplashRow::Settings, SplashRow::Quit]
         }
+    }
+
+    /// Which Settings row the caret is on, while that screen is up.
+    pub fn settings(&self) -> Option<SettingsRow> {
+        self.settings
+    }
+
+    /// The preferences this title is holding for the next game.
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 
     /// Which row the caret is on.
@@ -480,6 +539,8 @@ impl Splash {
             cursor: 0,
             persists,
             confirm: None,
+            settings: None,
+            config: Config::default(),
         }
     }
 }
@@ -596,6 +657,7 @@ impl Session {
             cramped: false,
             next_autosave: Instant::now() + AUTOSAVE_PERIOD,
             quit: false,
+            capabilities: Capabilities::default(),
             #[cfg(debug_assertions)]
             dev: false,
         }
@@ -612,6 +674,16 @@ impl Session {
         self
     }
 
+    /// Tells this session what the terminal declared about itself.
+    ///
+    /// A builder step for [`with_dev`](Session::with_dev)'s reason. `main` is the only
+    /// non-test caller, and a session without it reports *"nothing at all"* — which is
+    /// the honest answer for a test that never asked.
+    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
     /// Where a launch — or a return to the title — lands, given what is on the disk.
     ///
     /// One function and one caller-visible rule, which is what makes `q` cheap later:
@@ -625,6 +697,7 @@ impl Session {
             Ok(Some(save)) => Stage::Splash(Splash::over(
                 Resume::of(&save, slots.primary(), now, false),
                 true,
+                save.config,
             )),
             // **Not a fresh install on its own.** The atomic write is two renames, and
             // between them the backup exists while the save does not; a crash exactly
@@ -654,6 +727,7 @@ impl Session {
             Ok(Some(save)) => Stage::Splash(Splash::over(
                 Resume::of(&save, slots.backup(), now, true),
                 true,
+                save.config,
             )),
             Ok(None) => Stage::Splash(Splash::fresh(true)),
             Err(PersistError::Io(_)) => Stage::Recovery(Recovery::new(Trouble::Unreadable)),
@@ -895,7 +969,18 @@ impl Session {
             return;
         }
         match &self.stage {
-            Stage::Splash(state) => splash::render(frame, area, state),
+            // **Settings replaces the title rather than covering it**, unlike the
+            // *"start a new game?"* box beside it — and the difference is what the two
+            // are. The box asks about the run the menu is describing, so the menu has to
+            // stay readable behind it; Settings is about nothing on the title at all,
+            // and it is a full-frame two-panel screen. `docs/UI.md` §8.3 draws it as a
+            // node reached from the title, not as a modal raised over it.
+            Stage::Splash(state) => match state.settings() {
+                Some(row) => {
+                    settings::render(frame, area, state.config(), row, self.capabilities);
+                }
+                None => splash::render(frame, area, state),
+            },
             Stage::Recovery(state) => save_recovery::render(frame, area, state),
             Stage::Game(app) => app.render(frame, now),
             // The run is drawn *under* the summary, which is what makes it a modal
@@ -961,14 +1046,54 @@ impl Session {
     }
 
     /// Applies one menu gesture to whichever list is up.
+    ///
+    /// **Settings takes every gesture first**, which is what *modal* means on the title
+    /// as much as it does inside a game: it is drawn in place of the menu, so a `↑` that
+    /// reached the menu underneath would move a caret nobody can see.
     fn menu(&mut self, action: MenuAction) {
+        if self.settings_gesture(action) {
+            return;
+        }
         match action {
             MenuAction::Up => self.move_caret(-1),
             MenuAction::Down => self.move_caret(1),
+            // Nothing on either list holds a value, so the lateral pair lands on
+            // nothing. Dropped rather than repurposed: `←` on a menu row is a key the
+            // player pressed at nothing, and giving it a second meaning here would be a
+            // gesture that means one thing on the title and another everywhere else.
+            MenuAction::Left | MenuAction::Right => {}
             MenuAction::Confirm => self.confirm(SystemTime::now()),
             MenuAction::Cancel => self.cancel(),
             MenuAction::Quit => self.quit = true,
         }
+    }
+
+    /// Answers `action` on the title's Settings screen, saying whether it was there.
+    ///
+    /// **The preferences it turns are [`Splash::config`](field@Splash::config)'s**, not
+    /// a running game's — there is no game — so the change is carried to whichever run
+    /// this title opens next and written by the first autosave.
+    ///
+    /// `Enter` is deliberately absent: nothing here is staged, so there is nothing to
+    /// apply, and the footer advertises only `Esc`. `q` still ends the process, which
+    /// is what it does on every frame this vocabulary answers.
+    fn settings_gesture(&mut self, action: MenuAction) -> bool {
+        let Stage::Splash(splash) = &mut self.stage else {
+            return false;
+        };
+        let Some(row) = splash.settings else {
+            return false;
+        };
+        match action {
+            MenuAction::Up => splash.settings = Some(row.step(-1)),
+            MenuAction::Down => splash.settings = Some(row.step(1)),
+            MenuAction::Left => row.adjust(&mut splash.config, -1),
+            MenuAction::Right => row.adjust(&mut splash.config, 1),
+            MenuAction::Cancel => splash.settings = None,
+            MenuAction::Confirm => {}
+            MenuAction::Quit => self.quit = true,
+        }
+        true
     }
 
     /// Walks the caret, wrapping at both ends.
@@ -1024,6 +1149,7 @@ impl Session {
                 }
                 match splash.rows().get(splash.cursor)? {
                     SplashRow::Continue => Some(Chosen::Resume),
+                    SplashRow::Settings => Some(Chosen::OpenSettings),
                     // **The box appears only where it protects something.** A fresh
                     // install and a title reached through recovery both have nothing to
                     // lose, and a confirmation there would be a question with one
@@ -1051,6 +1177,7 @@ impl Session {
             Some(Chosen::RestoreBackup) => self.restore_backup(now),
             Some(Chosen::Collect) => self.collect_offline(),
             Some(Chosen::AskNewGame) => self.ask_new_game(),
+            Some(Chosen::OpenSettings) => self.open_settings(),
             Some(Chosen::Cancel) => self.cancel(),
             Some(Chosen::Quit) => self.quit = true,
             None => {}
@@ -1071,8 +1198,14 @@ impl Session {
             return;
         };
         let (source, from_backup) = (resume.source.clone(), resume.from_backup);
+        // **The run comes from the file; the preferences come from the title.** They are
+        // the same preferences unless the player just edited them here, and in that case
+        // `save.config` is the *stale* copy — the one written before they walked into
+        // Settings. Taking the title's is what makes a change survive the `Continue`
+        // that re-reads the run it belongs to.
+        let config = splash.config.clone();
         match persist::load(&source) {
-            Ok(Some(save)) => self.open_game(save.state, save.config, from_backup, now),
+            Ok(Some(save)) => self.open_game(save.state, config, from_backup, now),
             // It was there a moment ago and is not now, or no longer loads. That is
             // exactly the question `look` answers, so it answers it again rather than
             // this branch inventing a second routing.
@@ -1090,24 +1223,44 @@ impl Session {
         }
     }
 
+    /// Opens the Settings screen over the title, on its first row.
+    ///
+    /// [`ROWS[0]`](settings::ROWS) rather than a remembered position, exactly as the
+    /// in-game overlay opens — the two doors lead to one screen and must not differ in
+    /// where it starts.
+    fn open_settings(&mut self) {
+        if let Stage::Splash(splash) = &mut self.stage {
+            splash.settings = settings::ROWS.first().copied();
+        }
+    }
+
     /// Takes the box back down, having changed nothing.
     ///
     /// Silent everywhere else: `Esc` on a title with no question up is a key the player
     /// pressed at nothing, and there is no screen behind the title to fall back to.
+    /// Settings never reaches here — [`settings_gesture`](Session::settings_gesture)
+    /// answers `Esc` while it is up, which is what keeps *"the innermost thing closes
+    /// first"* true on the title as well as in a game.
     fn cancel(&mut self) {
         if let Stage::Splash(splash) = &mut self.stage {
             splash.confirm = None;
         }
     }
 
-    /// Starts a run with no history behind it.
+    /// Starts a run with no history behind it, on the preferences the title holds.
+    ///
+    /// **Not [`Config::default`]**, which is what this used to pass: a fresh install
+    /// offers `Settings` before it offers anything else, precisely so a player who
+    /// cannot read the 256-colour palette can fix that *before* their first run rather
+    /// than after it. Defaulting here would throw that choice away at the door.
     fn start_new_run(&mut self, now: SystemTime) {
-        self.open_game(
-            GameState::new(seed_from(now), now),
-            Config::default(),
-            false,
-            now,
-        );
+        let config = match &self.stage {
+            Stage::Splash(splash) => splash.config.clone(),
+            // Reachable from a recovery frame's `New game`, which has no title behind
+            // it and therefore no preferences to carry.
+            _ => Config::default(),
+        };
+        self.open_game(GameState::new(seed_from(now), now), config, false, now);
     }
 
     /// Dismisses the offline summary and walks into the run behind it.
@@ -1163,7 +1316,9 @@ impl Session {
         // zero. One rule beats a condition that would have to be kept in step with the
         // ways a game can open.
         let report = state.resume(now);
-        let app = App::new(state).with_config(config);
+        let app = App::new(state)
+            .with_config(config)
+            .with_capabilities(self.capabilities);
         #[cfg(debug_assertions)]
         let app = app.with_dev(self.dev);
         let mut app = app;
@@ -1222,6 +1377,8 @@ mod tests {
     };
     use skylode_core::material::Material;
     use tempfile::TempDir;
+
+    use crate::config::SubTabKeys;
 
     use super::*;
 
@@ -2175,5 +2332,118 @@ mod tests {
             matches!(session.stage, Stage::Game(_)),
             "a fresh install was asked to confirm"
         );
+    }
+
+    /// **Settings replaces the title rather than covering it**, which is the one visual
+    /// claim `render`'s branch makes. Asserted on the wordmark's *absence*: a modal
+    /// drawn over the menu would leave the block art showing around a centred box, so a
+    /// test that only looked for the word `Settings` would pass either way.
+    #[test]
+    fn the_title_opens_settings_in_place_of_its_menu() {
+        let (_, buffer) = run_script(
+            sessionless(),
+            vec![
+                key(KeyCode::Down),
+                key(KeyCode::Enter),
+                key(KeyCode::Char('q')),
+            ],
+        );
+        let frame = whole_frame(&buffer);
+        assert!(frame.contains("Toast duration"), "{frame}");
+        assert!(frame.contains("Sub-tab keys"), "{frame}");
+        assert!(
+            !frame.contains(splash::LOGO[0]),
+            "the title was still showing behind the settings screen: {frame}"
+        );
+    }
+
+    /// `Esc` backs out of the innermost thing, on the title as much as in a game.
+    #[test]
+    fn esc_closes_the_title_settings_and_gives_the_menu_back() {
+        let (_, buffer) = run_script(
+            sessionless(),
+            vec![
+                key(KeyCode::Down),
+                key(KeyCode::Enter),
+                key(KeyCode::Esc),
+                key(KeyCode::Char('q')),
+            ],
+        );
+        let frame = whole_frame(&buffer);
+        assert!(frame.contains("New game"), "{frame}");
+        assert!(
+            !frame.contains("Toast duration"),
+            "the settings screen stayed up: {frame}"
+        );
+    }
+
+    /// **The end-to-end claim of the title door**: a preference changed where there is
+    /// no run reaches the run that is opened next.
+    ///
+    /// It is asserted through `Sub-tab keys` because that is the one preference already
+    /// *rendered* from config — Help draws the binding it was given rather than the
+    /// default — so the assertion reads a real consequence rather than a field.
+    #[test]
+    fn a_preference_set_on_the_title_is_the_one_the_new_run_plays_on() {
+        let (_, buffer) = run_script(
+            sessionless(),
+            vec![
+                // Down to `Settings`, into it, down to the last row, one step right.
+                key(KeyCode::Down),
+                key(KeyCode::Enter),
+                key(KeyCode::Down),
+                key(KeyCode::Down),
+                key(KeyCode::Down),
+                key(KeyCode::Down),
+                key(KeyCode::Right),
+                key(KeyCode::Esc),
+                // Back up to `New game`, and in.
+                key(KeyCode::Up),
+                key(KeyCode::Enter),
+                // Upgrades, then Help — the one screen whose block quotes the binding.
+                key(KeyCode::Char('4')),
+                key(KeyCode::Char('?')),
+                ctrl_c(),
+            ],
+        );
+        let frame = whole_frame(&buffer);
+        assert!(
+            frame.contains("h  l"),
+            "the title's choice did not reach the run: {frame}"
+        );
+        assert!(
+            !frame.contains("⇧← ⇧→"),
+            "the run fell back to the default binding: {frame}"
+        );
+    }
+
+    /// The other half: preferences already **in** a save are what the title hands back.
+    ///
+    /// `Continue` re-reads the run from disk but takes the config from the title, so
+    /// this pins that the title was loaded with the file's preferences in the first
+    /// place — without it, every `Continue` would quietly reset them to the default.
+    #[test]
+    fn continuing_a_save_plays_on_the_preferences_that_save_carried() {
+        let bracketed = Config {
+            sub_tab_keys: SubTabKeys::Brackets,
+            ..Config::default()
+        };
+        let (_dir, slots) = empty();
+        let mut state = GameState::new(SEED, now());
+        if let Err(error) = persist::save(&slots, &mut state, &bracketed, now()) {
+            unreachable!("the fixture should have been written: {error}");
+        }
+
+        let (_, buffer) = run_script(
+            Session::boot(Some(slots), now()),
+            vec![
+                key(KeyCode::Enter),
+                key(KeyCode::Char('4')),
+                key(KeyCode::Char('?')),
+                ctrl_c(),
+            ],
+        );
+        let frame = whole_frame(&buffer);
+        assert!(frame.contains("[  ]"), "{frame}");
     }
 }
