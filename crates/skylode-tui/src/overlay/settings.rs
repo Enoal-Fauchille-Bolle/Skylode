@@ -31,6 +31,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,
+    text::Line,
     widgets::{Clear, Paragraph},
 };
 
@@ -49,6 +50,20 @@ use crate::{
 /// label, then the value at column 21 of the panel. Written once so a longer label
 /// cannot push one row's value out of line with the four above it.
 const VALUE_COLUMN: usize = 19;
+
+/// The sentence the whole screen exists to make true, printed under every row.
+///
+/// **On every row rather than only on `Colour`**: it explains why editing here is safe,
+/// and a player who never lands on the first row would otherwise never read it. Hoisted
+/// out of [`SettingsRow::detail`] so that [`render`] can give it a style of its own —
+/// the pane is one [`Paragraph`], which carries a single style, so the only way to mute
+/// four lines out of twenty is for the lines to carry it themselves.
+const FOOTNOTE: [&str; 4] = [
+    " Stored in the save. There is no config",
+    " file; Settings is the only way to",
+    " change these — which is what keeps the",
+    " HMAC quiet when you change a colour.",
+];
 
 /// One line of the Settings screen.
 ///
@@ -169,6 +184,30 @@ impl SettingsRow {
         }
     }
 
+    /// Puts **this row alone** back to what a fresh install would have shown (`r`).
+    ///
+    /// **Read out of [`Config::default`] rather than written down again.** Which value
+    /// is the default is already declared once — in the `#[default]` attribute on each
+    /// preference's enum — and a second copy here would be a second source of truth
+    /// that can drift without anything failing. So the answer is fetched from the type
+    /// that owns it, and this function only knows *which field* to copy across.
+    ///
+    /// **One row and never all five**, which is the whole of the design decision. This
+    /// is the one destructive gesture on the one screen with no confirmation, and every
+    /// ladder here is short enough to walk back by hand in at most three presses — so a
+    /// *reset everything* would buy two keystrokes at the price of the only key on the
+    /// screen that can undo work the player meant to keep.
+    pub fn reset(self, config: &mut Config) {
+        let fresh = Config::default();
+        match self {
+            Self::Colour => config.colour = fresh.colour,
+            Self::MiningInput => config.mining_input = fresh.mining_input,
+            Self::NumberFormat => config.number_format = fresh.number_format,
+            Self::ToastDuration => config.toast_duration = fresh.toast_duration,
+            Self::SubTabKeys => config.sub_tab_keys = fresh.sub_tab_keys,
+        }
+    }
+
     /// The next row down, wrapping — the tab ring's rule, applied to a five-row list.
     pub fn step(self, delta: isize) -> Self {
         step_in(&ROWS, self, delta)
@@ -180,9 +219,14 @@ impl SettingsRow {
     /// shows what the preference *is*; this is where the player finds out what the
     /// other answers would do, which is the only reason a settings screen needs two
     /// panels rather than one list.
+    ///
+    /// It no longer opens with the row's name: that line became the pane's **title**,
+    /// which is what gives it ACCENT and bold without this module naming a colour —
+    /// `docs/UI.md` §4.4's rule is that colour doubles a glyph and never replaces one,
+    /// and a block title is a route §4.5 already opened. Nor does it carry
+    /// [`FOOTNOTE`], for the reason that constant documents.
     fn detail(self, caps: Capabilities) -> Vec<String> {
-        let mut lines = vec![format!(" {}", self.label()), String::new()];
-        let body: Vec<String> = match self {
+        match self {
             Self::Colour => vec![
                 " 256   every block gets its own swatch".to_owned(),
                 " 16    one colour per mine; the value".to_owned(),
@@ -237,19 +281,7 @@ impl SettingsRow {
                 String::new(),
                 " Help shows whichever pair you pick.".to_owned(),
             ],
-        };
-        lines.extend(body);
-        lines.push(String::new());
-        // The sentence the whole screen exists to make true, and it belongs on every
-        // row rather than only on `Colour`: it explains why editing here is safe, and a
-        // player who never lands on the first row would otherwise never read it.
-        lines.extend([
-            " Stored in the save. There is no config".to_owned(),
-            " file; Settings is the only way to".to_owned(),
-            " change these — which is what keeps the".to_owned(),
-            " HMAC quiet when you change a colour.".to_owned(),
-        ]);
-        lines
+        }
     }
 }
 
@@ -300,14 +332,27 @@ pub fn render(
         .block(square(" Settings ")),
         left,
     );
+    // The choices first, then a blank, then the footnote — the same three parts the
+    // pane always had, assembled here rather than inside `detail` so the last part can
+    // be muted. `MUTED` carries no meaning anywhere in this crate: it is the *less
+    // urgent* treatment the footers, the table headers and `marked_row`'s value column
+    // already wear, so stepping this paragraph back makes no information depend on a
+    // hue. `docs/UI.md` §4.4.
+    let mut pane: Vec<Line> = row.detail(caps).into_iter().map(Line::from).collect();
+    pane.push(Line::default());
+    pane.extend(FOOTNOTE.map(|text| Line::styled(text, Style::default().fg(theme::MUTED))));
     frame.render_widget(
-        Paragraph::new(row.detail(caps).join("\n")).block(square("")),
+        // The row's name is the pane's title, which is where its ACCENT comes from —
+        // see `detail`. Spaced on both sides like every other block title in the crate.
+        Paragraph::new(pane).block(square(&format!(" {} ", row.label()))),
         right,
     );
 
-    // Muted, like every other footer in the crate.
+    // Muted, like every other footer in the crate. It prints `r` because this screen is
+    // the only place the key means anything, and an undo nobody can see is an undo
+    // nobody uses.
     frame.render_widget(
-        Paragraph::new(" ↑↓  select     ← →  change     Esc  back")
+        Paragraph::new(" ↑↓  select     ← →  change     r  default     Esc  back")
             .style(Style::default().fg(theme::MUTED)),
         footer_area,
     );
@@ -320,6 +365,19 @@ mod tests {
     /// Renders `config` with `row` selected, as one frame string.
     fn frame_of(config: &Config, row: SettingsRow) -> String {
         crate::overlay::render_to_string(|frame, area| {
+            render(
+                frame,
+                area,
+                config,
+                row,
+                Capabilities::with_colours(Some(256)),
+            );
+        })
+    }
+
+    /// The same draw, kept as cells so a test can ask what hue something was drawn in.
+    fn buffer_of(config: &Config, row: SettingsRow) -> ratatui::buffer::Buffer {
+        crate::overlay::render_to_buffer(80, 24, |frame, area| {
             render(
                 frame,
                 area,
@@ -473,6 +531,103 @@ mod tests {
                 .count();
             assert_eq!(changed, 1, "{} changed {changed} rows", row.label());
         }
+    }
+
+    /// `r` restores **the row under the caret**, and only that one.
+    ///
+    /// Run from a config dialled away from every default, so the two halves of the
+    /// claim are tested at once by counting: after one reset, exactly one of the five
+    /// rows should read what a fresh install reads. A `reset` that wrote the whole
+    /// struct — the obvious mistake, since it already builds a `Config::default()` —
+    /// would restore five and fail here rather than quietly throwing away four
+    /// preferences the player had chosen.
+    #[test]
+    fn r_restores_one_row_and_leaves_the_other_four_alone() {
+        let dialled = Config {
+            colour: ColourMode::Ansi16,
+            mining_input: MiningInput::PressToStart,
+            number_format: NumberFormat::Comma,
+            toast_duration: ToastDuration::Lingering,
+            sub_tab_keys: SubTabKeys::Brackets,
+        };
+        let fresh = Config::default();
+
+        for row in ROWS {
+            let mut config = dialled.clone();
+            row.reset(&mut config);
+            assert_eq!(
+                row.value(&config),
+                row.value(&fresh),
+                "{} did not go back to its default",
+                row.label()
+            );
+            let restored = ROWS
+                .iter()
+                .filter(|&&other| other.value(&config) == other.value(&fresh))
+                .count();
+            assert_eq!(restored, 1, "{} restored {restored} rows", row.label());
+        }
+    }
+
+    /// Restoring a row that is already default changes nothing — `r` is the one
+    /// destructive key on a screen with no confirmation, so pressing it twice must not
+    /// be a second act.
+    #[test]
+    fn restoring_an_untouched_row_is_not_a_change() {
+        let mut config = Config::default();
+        for row in ROWS {
+            row.reset(&mut config);
+        }
+        assert_eq!(config, Config::default());
+    }
+
+    /// The key is printed, because an undo nobody can see is an undo nobody uses.
+    #[test]
+    fn the_footer_advertises_the_restore_key() {
+        let frame = frame_of(&Config::default(), SettingsRow::Colour);
+        assert!(frame.contains("r  default"), "{frame}");
+    }
+
+    /// **The row's name is the pane's title**, which is where its colour comes from.
+    ///
+    /// `docs/UI.md` §4.4 says a hue doubles a glyph and never replaces one, so the only
+    /// admissible way to accent this line was to make it a *thing that is already
+    /// accented* — a block title — rather than to paint a body line. The colour is
+    /// therefore asserted together with the position: on the top border row, which is
+    /// the only place a title can be, and in ACCENT, which is what `square` gives every
+    /// title in the crate without this module naming a colour.
+    #[test]
+    fn the_detail_pane_is_titled_with_the_row_it_describes() {
+        let frame = frame_of(&Config::default(), SettingsRow::NumberFormat);
+        let top = frame.lines().next().unwrap_or_default();
+        assert!(top.contains("Number format"), "{frame}");
+
+        // The first `N` in the frame scanning downwards is that title's: the row of the
+        // same name is four lines below it in the left column.
+        let buffer = buffer_of(&Config::default(), SettingsRow::NumberFormat);
+        assert_eq!(crate::overlay::colour_of(&buffer, "N"), Some(theme::ACCENT));
+    }
+
+    /// The footnote steps back; the choices above it do not.
+    ///
+    /// **`MUTED` is the one colour in the palette that carries no meaning** — it is the
+    /// *less urgent* treatment already worn by every footer, every table header and
+    /// `marked_row`'s value column — so muting this paragraph makes no information
+    /// depend on a hue, which is the test's real claim. The second assertion is what
+    /// makes it a *limit* rather than a licence: the pane's choices keep the terminal's
+    /// own foreground, and a pass that muted the whole pane would fail here.
+    #[test]
+    fn the_footnote_is_muted_and_the_choices_above_it_are_not() {
+        let buffer = buffer_of(&Config::default(), SettingsRow::Colour);
+        // The em dash appears once on this row's pane, in the footnote's third line.
+        assert_eq!(crate::overlay::colour_of(&buffer, "—"), Some(theme::MUTED));
+        // And `w` appears first in the pane's own body — `own swatch` — since no label,
+        // value or footer on this frame carries the letter.
+        assert_eq!(
+            crate::overlay::colour_of(&buffer, "w"),
+            Some(ratatui::style::Color::Reset),
+            "the choices were muted along with the footnote"
+        );
     }
 
     #[test]

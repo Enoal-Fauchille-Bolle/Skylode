@@ -539,6 +539,10 @@ impl App {
             // Nothing to adjust to its maximum outside the spinner, which
             // `update_modal` has already answered for.
             Action::AdjustMax => {}
+            // Nothing outside Settings has a default to go back to — a mine, a pickaxe
+            // rung and an inventory are state rather than preference — and
+            // `update_modal` has already answered for the one screen that does.
+            Action::ResetSetting => {}
             // Guarded on the screen even though `stats::map_key` is the only decoder
             // that emits it, for the reason the sub-tab arms are: the reducer is where
             // a gesture's meaning is settled, and a guard living only in the keymap
@@ -648,6 +652,10 @@ impl App {
                     Action::CursorDown => self.modal = Some(Modal::Settings { row: row.step(1) }),
                     Action::AdjustLeft => row.adjust(&mut self.config, -1),
                     Action::AdjustRight => row.adjust(&mut self.config, 1),
+                    // `r`, and it writes into the same place the arrows do — so a
+                    // restored preference is in force at once and reaches the disk on
+                    // the next autosave, with nothing extra to remember.
+                    Action::ResetSetting => row.reset(&mut self.config),
                     _ => return false,
                 }
                 true
@@ -2730,6 +2738,33 @@ mod tests {
         // And it is the *live* config, so the binding answers immediately — no reopen,
         // no confirm. `keymap` reads `app.config`, so this is the real consequence.
         assert_eq!(app.config.sub_tab_keys.label(), "h  l");
+    }
+
+    /// `r` puts the row the caret is on back where it started, through the same live
+    /// config the arrows write to — so an undo is in force as immediately as the change
+    /// it undoes.
+    #[test]
+    fn r_restores_the_row_under_the_settings_caret() {
+        let mut app = session();
+        app.update(Action::OpenSettings);
+        for _ in 0..4 {
+            app.update(Action::CursorDown);
+        }
+        app.update(Action::AdjustRight);
+        assert_eq!(app.config.sub_tab_keys, SubTabKeys::HL);
+
+        app.update(Action::ResetSetting);
+        assert_eq!(app.config.sub_tab_keys, SubTabKeys::default());
+    }
+
+    /// The key means nothing with the screen closed, which is what keeps `r` free for
+    /// whatever a screen wants to claim later.
+    #[test]
+    fn r_outside_the_settings_screen_restores_nothing() {
+        let mut app = session();
+        app.config.sub_tab_keys = SubTabKeys::HL;
+        app.update(Action::ResetSetting);
+        assert_eq!(app.config.sub_tab_keys, SubTabKeys::HL);
     }
 
     /// The caret walks and wraps, like every other list in the crate.

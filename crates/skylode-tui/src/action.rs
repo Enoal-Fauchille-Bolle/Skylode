@@ -119,6 +119,18 @@ pub enum Action {
     AdjustLeft,
     /// Turn it up one step.
     AdjustRight,
+    /// Put the setting under the cursor back to its default (`r`, on Settings).
+    ///
+    /// **Not an [`AdjustLeft`](Action::AdjustLeft) with a bigger step**, and not a
+    /// sibling of [`AdjustMax`](Action::AdjustMax) either: those two walk a ladder the
+    /// player is looking at, while this one jumps to a value they may not be able to
+    /// see from where they are. Naming it separately is also what keeps *"restore"* out
+    /// of the lateral pair, which means the same thing on every screen in the game.
+    ///
+    /// It resets **one row** and never the screen. See
+    /// [`SettingsRow::reset`](crate::overlay::settings::SettingsRow::reset) for why a
+    /// global reset was refused.
+    ResetSetting,
     /// Push that value straight to its maximum (`a`) — the compression dialog's
     /// *all*.
     ///
@@ -264,7 +276,7 @@ pub enum Action {
 ///
 /// The title, the recovery frames and the offline summary all show a short list and
 /// a caret, and nothing else: there is no tab ring to walk, no modal to stack, no
-/// mine key to hold. Four gestures cover every one of them.
+/// mine key to hold. Eight gestures cover every one of them.
 ///
 /// **A second enum rather than four of [`Action`]'s twenty-six**, and the reason is
 /// the same one that made `Action` exist. `Action`'s exhaustive `match` in
@@ -292,6 +304,14 @@ pub enum MenuAction {
     Left,
     /// Turn it one step up (`→`).
     Right,
+    /// Put the value under the caret back to its default (`r`).
+    ///
+    /// [`Action::ResetSetting`]'s twin, and it arrived with it: the Settings screen is
+    /// reachable through two doors and the gesture has to exist on both sides of the
+    /// split, or the same frame would answer `r` from a game and ignore it from the
+    /// title. **Dropped on every other menu**, exactly as the lateral pair is — a list
+    /// of destinations has no value to restore.
+    Reset,
     /// Take the row it is on (`Enter`).
     Confirm,
     /// Back out of whatever was asked (`Esc`).
@@ -304,11 +324,30 @@ pub enum MenuAction {
     ///
     /// [`Esc`]: ratatui::crossterm::event::KeyCode::Esc
     Cancel,
-    /// Leave the game entirely (`q`, `Ctrl-C`).
+    /// Leave the game entirely (`q`).
     ///
     /// **Always the process and never a screen behind**, because on every screen that
     /// answers this vocabulary there is nothing behind: the title is the bottom of the
     /// stack, and the recovery frames are in front of a save the game has refused to
     /// load.
+    ///
+    /// **It is capturable, and [`Interrupt`](MenuAction::Interrupt) is not.** The
+    /// Settings screen the title opens swallows this one — a modal that let a key
+    /// through would not be modal — which is the whole reason the two stopped being one
+    /// gesture. Getting out from there is `Esc` and then `q`: two presses that each say
+    /// what they do.
     Quit,
+    /// End the process on the terminal's own key (`Ctrl-C`), whatever is on screen.
+    ///
+    /// **The menu half of [`keymap`](crate::keymap)'s rule 1**, and it exists for the
+    /// same reason the game's [`Action::Quit`] is not [`Action::ToTitle`]: `Ctrl-C`
+    /// means *stop this program* in every terminal the player has ever used, so no
+    /// frame may hold on to it. Nothing captures this variant, and that is the only
+    /// thing distinguishing it from [`Quit`](MenuAction::Quit) — both end the process,
+    /// and on every menu but Settings they are indistinguishable in effect.
+    ///
+    /// The two were one gesture until the title learned to open Settings. Before that
+    /// there was no menu that captured anything, so there was nothing for the
+    /// distinction to be about.
+    Interrupt,
 }

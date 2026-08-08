@@ -8,7 +8,7 @@
 //! **Three functions and not one**, because the game is no longer the only thing on
 //! screen. [`resolve`] answers a run; [`resolve_menu`] answers the states that are
 //! not a run at all (the title, the recovery frames, and the Settings screen the
-//! title opens) in [`MenuAction`]'s six gestures; and [`resolve_too_small`] answers
+//! title opens) in [`MenuAction`]'s eight gestures; and [`resolve_too_small`] answers
 //! the one screen that is drawn over
 //! every other. They live together because the invariant above is about the *module*:
 //! a `KeyCode` named anywhere else is a binding nobody can find.
@@ -51,8 +51,12 @@ const FIRST_TAB_DIGIT: char = '1';
 /// means *take the row the caret is on* whatever that row happens to be, and which
 /// row that is belongs to the caller that owns the cursor.
 ///
-/// **`Ctrl-C` is here too, and it is the same answer as `q`.** On a screen with no
-/// game behind it there is no third thing quitting could mean.
+/// **`Ctrl-C` is here too, and it is no longer the same answer as `q`.** Both end the
+/// process — on a screen with no game behind it there is no third thing quitting could
+/// mean — but the title now opens a Settings screen, and a modal that let a key through
+/// would not be modal. So `q` decodes to a gesture that screen may swallow and `Ctrl-C`
+/// to one nothing may, which is the split [`resolve`] has always drawn between
+/// [`Action::ToTitle`] and [`Action::Quit`], arriving here for the first time.
 pub fn resolve_menu(key: KeyEvent) -> Option<MenuAction> {
     // A release is never a menu gesture. It reaches this far only on a terminal
     // speaking the kitty protocol, where every key is reported twice — so without
@@ -62,7 +66,7 @@ pub fn resolve_menu(key: KeyEvent) -> Option<MenuAction> {
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
     {
-        return Some(MenuAction::Quit);
+        return Some(MenuAction::Interrupt);
     }
     match key.code {
         // Arrows only, matching the game's own lists: no screen in Skylode binds
@@ -77,6 +81,11 @@ pub fn resolve_menu(key: KeyEvent) -> Option<MenuAction> {
         // simply drops the gesture where it lands.
         KeyCode::Left => Some(MenuAction::Left),
         KeyCode::Right => Some(MenuAction::Right),
+        // *Restore what the caret is on*, and bound unconditionally for the lateral
+        // pair's reason: this function takes no state, so a menu with nothing to
+        // restore drops the gesture where it lands. `r` is free on every menu, and on
+        // every screen of the game besides.
+        KeyCode::Char('r') => Some(MenuAction::Reset),
         KeyCode::Enter => Some(MenuAction::Confirm),
         // Declining, wherever something was asked. It is `Esc` here because it is `Esc`
         // in every modal the game already has, and a box that asked to be declined with
@@ -95,13 +104,20 @@ pub fn resolve_menu(key: KeyEvent) -> Option<MenuAction> {
 /// and not "back to the title": the title is a screen this terminal cannot draw
 /// either, and a key that promised to quit and did not would be the one lie on a
 /// frame whose whole job is to be readable when nothing else is.
+///
+/// The two keys still decode to the two different gestures [`resolve_menu`] gives
+/// them, and here the distinction is inert: this frame captures nothing, so its caller
+/// asks only whether *something* was bound. Kept apart anyway, because a decoder that
+/// flattened them would be the one place a `Ctrl-C` stopped being `Ctrl-C`.
 pub fn resolve_too_small(key: KeyEvent) -> Option<MenuAction> {
     if key.kind == KeyEventKind::Release {
         return None;
     }
-    let control_c = key.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key.code, KeyCode::Char('c' | 'C'));
-    (control_c || key.code == KeyCode::Char('q')).then_some(MenuAction::Quit)
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
+    {
+        return Some(MenuAction::Interrupt);
+    }
+    (key.code == KeyCode::Char('q')).then_some(MenuAction::Quit)
 }
 
 /// Translates a key press into an [`Action`], or `None` if nothing is bound.
@@ -160,6 +176,10 @@ pub fn resolve(app: &App, key: KeyEvent) -> Option<Action> {
                 KeyCode::Down => Some(Action::CursorDown),
                 KeyCode::Left => Some(Action::AdjustLeft),
                 KeyCode::Right => Some(Action::AdjustRight),
+                // The one key this screen names of its own, and the footer prints it.
+                // A default the player cannot get back to would make every ladder a
+                // one-way walk on the two rows where the choice is hard to undo by eye.
+                KeyCode::Char('r') => Some(Action::ResetSetting),
                 KeyCode::Char('s') | KeyCode::Esc => Some(Action::CloseModal),
                 _ => None,
             },
@@ -488,11 +508,33 @@ mod tests {
         assert_eq!(resolve(&app, press(KeyCode::Char('1'))), None);
         assert_eq!(resolve(&app, press(KeyCode::Tab)), None);
 
+        // The one key the screen names of its own, and the only one its footer prints
+        // that the four gestures above do not already cover.
+        assert_eq!(
+            resolve(&app, press(KeyCode::Char('r'))),
+            Some(Action::ResetSetting)
+        );
+
         assert_eq!(
             resolve(&app, press(KeyCode::Char('s'))),
             Some(Action::CloseModal)
         );
         assert_eq!(resolve(&app, press(KeyCode::Esc)), Some(Action::CloseModal));
+    }
+
+    /// **`r` exists in both vocabularies**, because the screen has two doors: the modal
+    /// one this crate's `Action` answers, and the title one `MenuAction` does. A key
+    /// bound on one side only would be a frame that answers a printed affordance
+    /// depending on how the player got to it — the exact defect `q` had.
+    #[test]
+    fn the_restore_key_is_bound_on_both_doors_of_the_settings_screen() {
+        assert_eq!(
+            resolve_menu(press(KeyCode::Char('r'))),
+            Some(MenuAction::Reset)
+        );
+        // And it is claimed by nothing in a game, so no screen loses a letter to it.
+        let app = session();
+        assert_eq!(resolve(&app, press(KeyCode::Char('r'))), None);
     }
 
     /// The lateral pair reaches the menu vocabulary too, which is what the title's
@@ -501,6 +543,32 @@ mod tests {
     fn a_menu_screen_understands_the_lateral_pair() {
         assert_eq!(resolve_menu(press(KeyCode::Left)), Some(MenuAction::Left));
         assert_eq!(resolve_menu(press(KeyCode::Right)), Some(MenuAction::Right));
+    }
+
+    /// **The two ways out are two gestures, not one**, which is what lets the title's
+    /// Settings screen swallow the letter without swallowing the terminal's key too.
+    ///
+    /// Both still end the process everywhere else, so what this pins is the *decode*
+    /// rather than the effect: the moment they collapse back into one variant, the
+    /// screen that captures `q` captures `Ctrl-C` with it, and no test downstream can
+    /// tell the difference because there is no longer a difference to tell.
+    #[test]
+    fn a_menu_tells_the_quit_key_from_the_terminal_interrupt() {
+        assert_eq!(
+            resolve_menu(press(KeyCode::Char('q'))),
+            Some(MenuAction::Quit)
+        );
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(resolve_menu(ctrl_c), Some(MenuAction::Interrupt));
+
+        // And the too-small frame decodes them the same way, though nothing there is
+        // captured: one decoder, one meaning per key, on every screen it answers.
+        assert_eq!(
+            resolve_too_small(press(KeyCode::Char('q'))),
+            Some(MenuAction::Quit)
+        );
+        assert_eq!(resolve_too_small(ctrl_c), Some(MenuAction::Interrupt));
+        assert_eq!(resolve_too_small(press(KeyCode::Esc)), None);
     }
 
     #[test]

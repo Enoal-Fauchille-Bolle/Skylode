@@ -1061,10 +1061,15 @@ impl Session {
             // nothing. Dropped rather than repurposed: `←` on a menu row is a key the
             // player pressed at nothing, and giving it a second meaning here would be a
             // gesture that means one thing on the title and another everywhere else.
-            MenuAction::Left | MenuAction::Right => {}
+            // `r` lands on nothing here for the same reason: a menu row is a
+            // destination, and a destination has no default to be restored to.
+            MenuAction::Left | MenuAction::Right | MenuAction::Reset => {}
             MenuAction::Confirm => self.confirm(SystemTime::now()),
             MenuAction::Cancel => self.cancel(),
-            MenuAction::Quit => self.quit = true,
+            // The two ways out are one answer here, and only here: nothing on a plain
+            // menu captures a key, so the gesture `q` produces and the one `Ctrl-C`
+            // produces have nothing to differ about. They differ one function up.
+            MenuAction::Quit | MenuAction::Interrupt => self.quit = true,
         }
     }
 
@@ -1075,8 +1080,18 @@ impl Session {
     /// this title opens next and written by the first autosave.
     ///
     /// `Enter` is deliberately absent: nothing here is staged, so there is nothing to
-    /// apply, and the footer advertises only `Esc`. `q` still ends the process, which
-    /// is what it does on every frame this vocabulary answers.
+    /// apply, and the footer advertises only `Esc`.
+    ///
+    /// **`q` is swallowed, and that is what makes this screen modal.** Opened from a
+    /// game the letter is captured by [`keymap::resolve`]'s rule 2 and does nothing;
+    /// opened from the title it used to reach [`MenuAction::Quit`] and end the process,
+    /// so the same frame answered the same key two ways depending on the door it came
+    /// through. Getting out is `Esc` and then `q` — two gestures that each say what
+    /// they do, on a screen where one of them is otherwise unlabelled.
+    ///
+    /// [`Interrupt`](MenuAction::Interrupt) is the exception, and the only one:
+    /// `Ctrl-C` belongs to the terminal rather than to any frame, which is exactly the
+    /// rank [`keymap`] gives it above a game's modals.
     fn settings_gesture(&mut self, action: MenuAction) -> bool {
         let Stage::Splash(splash) = &mut self.stage else {
             return false;
@@ -1089,9 +1104,14 @@ impl Session {
             MenuAction::Down => splash.settings = Some(row.step(1)),
             MenuAction::Left => row.adjust(&mut splash.config, -1),
             MenuAction::Right => row.adjust(&mut splash.config, 1),
+            MenuAction::Reset => row.reset(&mut splash.config),
             MenuAction::Cancel => splash.settings = None,
-            MenuAction::Confirm => {}
-            MenuAction::Quit => self.quit = true,
+            // Swallowed rather than acted on. `Confirm` has nothing to apply and `Quit`
+            // is the letter this screen captures; both are reported as *taken*, since a
+            // key that fell through to the menu underneath would act on a list the
+            // player cannot see.
+            MenuAction::Confirm | MenuAction::Quit => {}
+            MenuAction::Interrupt => self.quit = true,
         }
         true
     }
@@ -2342,11 +2362,9 @@ mod tests {
     fn the_title_opens_settings_in_place_of_its_menu() {
         let (_, buffer) = run_script(
             sessionless(),
-            vec![
-                key(KeyCode::Down),
-                key(KeyCode::Enter),
-                key(KeyCode::Char('q')),
-            ],
+            // `Ctrl-C` and not `q` to finish: the screen under test swallows the
+            // letter, so a script ending on it would simply run out.
+            vec![key(KeyCode::Down), key(KeyCode::Enter), ctrl_c()],
         );
         let frame = whole_frame(&buffer);
         assert!(frame.contains("Toast duration"), "{frame}");
@@ -2375,6 +2393,67 @@ mod tests {
             !frame.contains("Toast duration"),
             "the settings screen stayed up: {frame}"
         );
+    }
+
+    /// A title with the Settings screen up, driven through the real gestures.
+    fn titled_settings() -> Session {
+        let mut session = sessionless();
+        session.menu(MenuAction::Down);
+        session.menu(MenuAction::Confirm);
+        session
+    }
+
+    /// **One screen, one answer to `q`, whichever door it was opened through.**
+    ///
+    /// Opened from a game the letter never arrives — `keymap`'s rule 2 captures it —
+    /// and opened from the title it used to end the process, so the same frame behaved
+    /// two ways depending on where the player came from. Asserted on the `Stage` as
+    /// well as on `quit`, because a `q` that closed the screen instead of ending the
+    /// program would be just as much a second behaviour.
+    #[test]
+    fn q_is_swallowed_by_the_settings_screen_the_title_opens() {
+        let mut session = titled_settings();
+        session.menu(MenuAction::Quit);
+
+        assert!(
+            !session.quit,
+            "q ended the process from behind a modal screen"
+        );
+        match &session.stage {
+            Stage::Splash(splash) => assert!(
+                splash.settings().is_some(),
+                "q closed the settings screen instead of doing nothing"
+            ),
+            other => unreachable!("the title should still be up: {other:?}"),
+        }
+    }
+
+    /// `r` restores on the title too, against the preferences the `Splash` carries.
+    ///
+    /// The gesture is bound on both doors of one screen; this is the half a test of
+    /// `App` cannot reach, because there is no run here for the config to belong to.
+    #[test]
+    fn r_restores_a_row_of_the_title_settings() {
+        let mut session = titled_settings();
+        session.menu(MenuAction::Right);
+        session.menu(MenuAction::Reset);
+
+        match &session.stage {
+            Stage::Splash(splash) => assert_eq!(splash.config(), &Config::default()),
+            other => unreachable!("the title should still be up: {other:?}"),
+        }
+    }
+
+    /// The one key no frame captures, on the title as much as over a game.
+    ///
+    /// This is the whole reason `q` and `Ctrl-C` stopped decoding to a single gesture:
+    /// swallowing the letter would otherwise have swallowed the terminal's own key with
+    /// it, and made this the one screen in Skylode where `Ctrl-C` did nothing.
+    #[test]
+    fn ctrl_c_still_ends_the_process_from_the_title_settings() {
+        let mut session = titled_settings();
+        session.menu(MenuAction::Interrupt);
+        assert!(session.quit, "Ctrl-C was captured by a settings screen");
     }
 
     /// **The end-to-end claim of the title door**: a preference changed where there is
