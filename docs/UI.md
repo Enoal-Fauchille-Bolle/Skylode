@@ -1027,7 +1027,7 @@ state.
 │                            ││ 19:51  Richness dial: Obsidian 46% → 64%       │
 │                            ││ 19:44  Mine refilled                           │
 └────────────────────────────┘└────────────────────────────────────────────────┘
- ↑↓  scroll history     p  prestige     Tab  next screen     ?  help
+ ↑↓  scroll history     Home  newest     p  prestige     ?  help
 ```
 
 **`This run` is run progress, not achievements.** Every entry is a pure predicate
@@ -2303,6 +2303,7 @@ never switches a sub-tab, and the sub-tab key is the configurable binding
 | | `Enter` | buy the chain up to the cursor; refused past the `✓` prefix. A net power regression routes through the dip modal (§5.7.7) |
 | | `M` | buy max — to the end of the `✓` prefix |
 | **Stats** | `↑↓` | scroll history |
+| | `Home` | jump to the newest announcement |
 | | `p` | open the prestige preview (§5.7.8) |
 | **Levels** | `↑↓` | scroll |
 | | `Home` | jump to the current level |
@@ -2327,6 +2328,25 @@ instead, exactly as the Levels roadmap does: the cursor wraps, `window` slides t
 behind it, and there is no second scroll position to disagree with the first. The cost
 is one departure from the frame, recorded in §5.5.2 — the selected row has to be drawn,
 or the first presses move a cursor inside the box and nothing on screen changes.
+
+**`Home` is shared with the Levels roadmap, and it is the wrap that makes it necessary.**
+The table above gave the key to Levels alone, on the argument that fifty rungs are easy
+to scroll away from and expensive to walk back to. The history is the same argument at
+five times the scale: the buffer is capped at 500 entries and **every** announcement
+enters it, including the ones too quiet to draw a toast, so a session fills it within a
+minute of mining. Wrapping does not rescue that, and the reason is worth stating because
+it is easy to assume the opposite — a wrap joins the two **ends** of a list, and the
+newest entry already _is_ an end, so from two hundred rows down the walk back is two
+hundred presses in either direction. The key decodes to the same generic action the
+roadmap uses (_put the cursor back where the player actually is_), so the second screen
+cost an arm in the reducer and no new gesture to learn.
+
+**The Stats footer gives up `Tab  next screen` to make room**, which is the only place in
+§5 a global is dropped from a footer. With `Home` named the line runs to eighty-five
+columns against the eighty §6.2 refuses to draw below, so something had to go: `Tab` is
+printed in five other footers and listed in Help, while `↑↓  scroll history` cannot lose
+the word `history` on a screen with three panels of which only one scrolls. §5.6's own
+footer already drops the same key whenever a claim is waiting.
 
 **Three controls stop at their ends, and none of them is a list.** The richness dial is
 a cursor on a bought ceiling, and rolling from the ceiling to 0 would jump the bar the
@@ -2400,7 +2420,8 @@ than binding `c` in place (§6.4). No two bindings fight.
   confirmation (§5.7.9). The guard belongs on the act, not on the door to the
   information about the act.
   **Consequence, applied:** §5.6's Stats footer becomes
-  `↑↓  scroll history · p  prestige · Tab  next screen · ?  help`.
+  `↑↓  scroll history · Home  newest · p  prestige · ?  help` — `Tab` having since been
+  dropped from it for width, per the note above the table.
 
 ### 9.1 How a hold is detected, and why `Space` is one binding and two events
 

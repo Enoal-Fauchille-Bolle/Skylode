@@ -704,6 +704,38 @@ mod tests {
         );
     }
 
+    /// `Home` reaches the same action the Levels roadmap decodes it to, from the second
+    /// screen that has a *where you actually are* to go back to.
+    #[test]
+    fn home_answers_on_both_screens_that_have_somewhere_to_return_to() {
+        for screen in [Screen::Stats, Screen::Levels] {
+            let mut app = session();
+            app.screen = screen;
+            assert_eq!(
+                resolve(&app, press(KeyCode::Home)),
+                Some(Action::JumpToCurrent),
+                "{screen:?} did not answer Home"
+            );
+        }
+
+        // And nowhere else: the key is a screen binding, so the four screens with no
+        // such place must leave it unclaimed rather than swallowing it.
+        for screen in [
+            Screen::Mine,
+            Screen::Mines,
+            Screen::Inventory,
+            Screen::Upgrades,
+        ] {
+            let mut app = session();
+            app.screen = screen;
+            assert_eq!(
+                resolve(&app, press(KeyCode::Home)),
+                None,
+                "{screen:?} claimed Home"
+            );
+        }
+    }
+
     /// Contextual like every other screen binding: the Mine screen owns no list, so an
     /// arrow there stays unclaimed rather than moving something the player cannot see.
     #[test]

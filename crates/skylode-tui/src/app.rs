@@ -498,14 +498,22 @@ impl App {
                     self.claim_everything();
                 }
             }
-            // `Home`. Only the Levels roadmap has a "where you actually are" to jump
-            // back to — the other lists are short enough to walk, and on Inventory or
-            // Mines the player's position is already the row they opened on.
-            Action::JumpToCurrent => {
-                if self.screen == Screen::Levels {
-                    self.cursors.level = self.state.player().get_level();
-                }
-            }
+            // `Home`, and **two screens answer it with two different facts**, which is
+            // why this is a `match` on the screen and not a condition: like
+            // `step_list_cursor`, the keymap cannot know what "where you actually are"
+            // means on a given screen, so the reducer is where that is decided. The
+            // remaining four are silent — their lists are short enough to walk, and on
+            // Inventory or Mines the player's position is already the row they opened on.
+            Action::JumpToCurrent => match self.screen {
+                Screen::Levels => self.cursors.level = self.state.player().get_level(),
+                // **`0` is a position and not an absence**, which is what makes this
+                // total: the history cursor is a rank counted from the newest, so the
+                // newest entry, an empty log and a log the player never scrolled all
+                // answer the same number. Nothing has to be read to know it, and there is
+                // no row here that can fail to exist.
+                Screen::Stats => self.cursors.history = 0,
+                _ => {}
+            },
             // `M`, and only where something is for sale. It reaches the *same* buy as
             // `Enter` with a further target, which is what keeps "buy to here" and
             // "buy max" from being two implementations of one purchase.
@@ -4482,6 +4490,65 @@ mod tests {
         app.update(Action::CursorDown);
 
         assert_eq!(app.cursors.history, 0);
+    }
+
+    /// `Home` on a log means *the newest thing said*, which is rank `0`.
+    ///
+    /// The walk back is what the key buys: the buffer holds up to
+    /// [`HISTORY_CAP`](crate::toast::HISTORY_CAP) entries and every announcement enters
+    /// it, and the wrap is no help — it joins the two **ends** of the list and the newest
+    /// entry already is one, so from deep in the log both directions are equally long.
+    #[test]
+    fn home_returns_the_history_to_its_newest_entry() {
+        let mut app = session();
+        app.screen = Screen::Stats;
+        for index in 0..40 {
+            app.toasts.push(
+                format!("entry {index}"),
+                Tone::Neutral,
+                Salience::Normal,
+                TOAST_TTL,
+            );
+        }
+
+        for _ in 0..25 {
+            app.update(Action::CursorDown);
+        }
+        assert_eq!(app.cursors.history, 25, "the fixture never scrolled");
+
+        app.update(Action::JumpToCurrent);
+        assert_eq!(app.cursors.history, 0);
+    }
+
+    /// The key belongs to the screen that has somewhere to return to, exactly as `↑↓`
+    /// belongs to the screen that owns a list — and the Levels roadmap must keep its own
+    /// answer now that the action serves two.
+    #[test]
+    fn home_moves_only_the_cursor_of_the_screen_that_is_open() {
+        let mut app = session();
+        for index in 0..4 {
+            app.toasts.push(
+                format!("entry {index}"),
+                Tone::Neutral,
+                Salience::Normal,
+                TOAST_TTL,
+            );
+        }
+
+        // On Levels it still answers with the player's rung, and leaves the log alone.
+        app.screen = Screen::Levels;
+        app.cursors.history = 2;
+        app.cursors.level = 1;
+        app.update(Action::JumpToCurrent);
+        assert_eq!(app.cursors.level, app.state.player().get_level());
+        assert_eq!(app.cursors.history, 2, "Levels answered for the log");
+
+        // And on Stats it answers with the log, and leaves the roadmap alone.
+        app.screen = Screen::Stats;
+        app.cursors.level = 1;
+        app.update(Action::JumpToCurrent);
+        assert_eq!(app.cursors.history, 0);
+        assert_eq!(app.cursors.level, 1, "Stats answered for the roadmap");
     }
 
     /// The gesture belongs to the screen that owns the list. `↑↓` on Stats must not

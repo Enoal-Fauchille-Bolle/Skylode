@@ -250,6 +250,13 @@ pub enum Action {
     /// level, so scrolling away is easy and scrolling back is fifty presses. Generic
     /// in the same way the list gestures are: `keymap` cannot know what "where the
     /// player is" means on a given screen, so the reducer answers it.
+    ///
+    /// **Two screens answer it now, and the generality is what made the second free.**
+    /// On the Stats history "where the player is" is the newest announcement, and the
+    /// case for the key is the sharper one: the roadmap is fifty rows, the log is capped
+    /// at five hundred and takes an entry from every announcement a run makes. Had this
+    /// been named `JumpToLevel`, adding it there would have meant a second action for
+    /// one idea.
     JumpToCurrent,
 }
 

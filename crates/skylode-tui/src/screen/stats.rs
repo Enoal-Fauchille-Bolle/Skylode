@@ -86,7 +86,15 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     this_run(frame, this_run_area, view);
     history(frame, history_area, view);
 
-    let footer = " ↑↓  scroll history     p  prestige     Tab  next screen     ?  help";
+    // **`Tab  next screen` is the row's casualty, and the width is the whole reason.**
+    // With `Home` named the line runs to eighty-five columns against a terminal this
+    // game refuses to draw below eighty (`overlay::too_small::MIN_WIDTH`), so something
+    // had to go. It is `Tab` rather than the word `history` because this screen carries
+    // three panels and only one of them scrolls — dropping `history` would leave `↑↓`
+    // ambiguous between the log and the goals above it — while `Tab` is a global,
+    // printed in five other footers and listed in Help. The Levels screen already sets
+    // the precedent: its footer drops the same key the moment a claim is waiting.
+    let footer = " ↑↓  scroll history     Home  newest     p  prestige     ?  help";
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(theme::MUTED)),
         footer_area,
@@ -296,7 +304,8 @@ fn inline(label: &str, value: &str) -> Line<'static> {
     Line::from(format!(" {label:<11}{value}"))
 }
 
-/// `↑↓` scroll the history; `p` opens the prestige preview.
+/// `↑↓` scroll the history, `Home` returns to its newest entry, `p` opens the prestige
+/// preview.
 ///
 /// **Bound here and not globally**, though prestige is reachable from nowhere else:
 /// `p` is an ordinary letter, and a global claim would swallow it on the five screens
@@ -315,10 +324,24 @@ fn inline(label: &str, value: &str) -> Line<'static> {
 /// They decode to the *list* gestures and not to a scroll of their own: §9 makes the
 /// history a row cursor, so `↑↓` here mean exactly what they mean on the Levels roadmap
 /// and the reducer picks the list from the open screen.
+///
+/// **`Home` is the second screen to claim it, and §9's table gave it only to Levels.**
+/// The reason it was granted there transfers, and hardens: the roadmap is fifty rows and
+/// coming back to your own rung is fifty presses, while the log is capped at five hundred
+/// ([`HISTORY_CAP`](crate::toast::HISTORY_CAP)) and *every* announcement enters it —
+/// including the ones too quiet to draw a toast — so it fills within a minute of mining.
+/// Wrapping does not rescue that: the wrap joins the two **ends** of the list, and the
+/// newest entry already *is* an end, so from two hundred rows down there is no short way
+/// back in either direction.
+///
+/// It decodes to [`Action::JumpToCurrent`] rather than to a gesture of this screen's own,
+/// because that action means *put the cursor back where the player actually is* and
+/// leaves each screen to answer what that means. On a log, it is the newest thing said.
 pub fn map_key(key: KeyEvent) -> Option<Action> {
     match key.code {
         KeyCode::Up => Some(Action::CursorUp),
         KeyCode::Down => Some(Action::CursorDown),
+        KeyCode::Home => Some(Action::JumpToCurrent),
         KeyCode::Char('p') => Some(Action::OpenPrestige),
         _ => None,
     }
@@ -497,8 +520,18 @@ mod tests {
             .map(|x| buffer[(x, 23)].symbol())
             .collect::<String>();
         assert!(last.contains("↑↓  scroll history"), "{last:?}");
+        assert!(last.contains("Home  newest"), "{last:?}");
         assert!(last.contains("p  prestige"), "{last:?}");
         assert!(last.contains("?  help"), "{last:?}");
+        // **`Tab` is the key this footer gives up**, and it is asserted gone rather than
+        // merely absent: the line runs to eighty-five columns with it, against a terminal
+        // the game refuses to draw below eighty, so a `Tab` that came back would be
+        // clipping `?  help` off the end where nobody would look for it.
+        assert!(!last.contains("next screen"), "{last:?}");
+        assert!(
+            last.trim_end().len() <= usize::from(crate::overlay::too_small::MIN_WIDTH),
+            "the footer overflows the minimum terminal: {last:?}"
+        );
     }
 
     /// A sentence too long for the box is cut and marked, not clipped silently.

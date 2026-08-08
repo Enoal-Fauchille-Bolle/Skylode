@@ -509,10 +509,13 @@ mod tests {
                     None,
                     None,
                 ],
-                // **`Home` and `A` are the Levels screen's alone**, which is what the
-                // two columns added for them are here to pin: `A` collects a whole
-                // ladder of rewards and `Home` jumps to the player's own rung, and
-                // both would be nonsense claimed globally.
+                // **`A` is the Levels screen's alone, and `Home` is now shared with
+                // Stats** — which is what these two columns are here to pin. `A` collects
+                // a whole ladder of rewards and would be nonsense claimed globally;
+                // `Home` means *back to where you actually are*, and the two screens that
+                // have such a place both answer it. The column below is where that
+                // sharing is visible, since it is the only view of the bindings laid
+                // side by side.
                 Screen::Levels => [
                     Some(Action::CursorUp),
                     Some(Action::CursorDown),
@@ -536,6 +539,11 @@ mod tests {
                 //
                 // `p` is not in `keys` above, so the prestige preview does not show
                 // here; `keymap`'s own tests carry it.
+                //
+                // `Home` is the one column this screen shares with the Levels roadmap,
+                // and it decodes to the *same* action: the log is capped at five hundred
+                // entries, so "back to the newest" is the same need the roadmap's fifty
+                // rungs raised.
                 Screen::Stats => [
                     Some(Action::CursorUp),
                     Some(Action::CursorDown),
@@ -545,7 +553,7 @@ mod tests {
                     None,
                     None,
                     None,
-                    None,
+                    Some(Action::JumpToCurrent),
                     None,
                     None,
                 ],
