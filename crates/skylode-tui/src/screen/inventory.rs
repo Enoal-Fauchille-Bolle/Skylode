@@ -347,8 +347,12 @@ mod tests {
     #[test]
     fn the_compress_panel_details_the_selected_material() {
         let frame = whole_frame(&render_screen());
-        assert!(frame.contains("480 Raw"), "{frame}");
-        assert!(frame.contains("Held     2 Compressed"), "{frame}");
+        // `Held` labels the first of the two denomination lines, and the swap moved
+        // which one that is: the label anchors Raw now, and Compressed is the bare
+        // continuation line. Asserting the label against the wrong line is what the
+        // column swap left behind.
+        assert!(frame.contains("Held     480 Raw"), "{frame}");
+        assert!(frame.contains("2 Compressed"), "{frame}");
         // Value = 480 + 2 × 100 = 680, in the common denomination.
         assert!(frame.contains("Value    680 Iron"), "{frame}");
         // Compressible now = 480 / 100 = 4, derived from the raw pile.
