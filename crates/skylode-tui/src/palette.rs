@@ -35,6 +35,7 @@
 //! [UI.md §4.2]: ../../../docs/UI.md
 
 use ratatui::style::Color;
+use serde::{Deserialize, Serialize};
 use skylode_core::mine_kind::MineKind;
 
 /// Ink for a **light** swatch, as a 256-colour index rather than [`Color::Black`].
@@ -285,27 +286,42 @@ pub enum CellRole {
 /// How many colours the terminal is being asked for.
 ///
 /// A player preference, stored in the save (UI-EN.md §5.7.10) — which is why it is
-/// a plain two-variant enum with a `Default` and no detection: reading what the
-/// terminal reports, and offering the choice at all, is the Settings screen's job
-/// in phase 7. Until then every caller takes the default and the fallback path
-/// exists only to be tested.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// a plain two-variant enum with a `Default` and no detection. What the *terminal*
+/// reports is a separate question, printed beside this choice on the Settings screen
+/// rather than allowed to override it: a player on a terminal that under-reports its
+/// palette must still be able to ask for 256, and one who finds the swatches
+/// indistinguishable must be able to ask for 16 on a terminal that offers more.
+///
+/// It carries serde derives because it is a [`Config`](crate::config::Config) field
+/// and config travels inside the signed save. **The variant names are therefore
+/// on-disk format** — `Ansi256` is that word in every save file — which is the same
+/// rule [`SubTabKeys`](crate::config::SubTabKeys) states at length: what the player
+/// reads comes from [`ColourMode::label`], so the display can be reworded freely and
+/// only a rename of the variant is a format change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColourMode {
     /// Every block gets its own swatch — the twenty-four of [`PALETTE`].
     #[default]
     Ansi256,
     /// One colour per mine; the stipple carries common-versus-value alone.
-    ///
-    /// **`allow` and not `expect`, which is the exception to this workspace's
-    /// rule.** A lint expectation is checked *per compilation*, and this variant
-    /// is dead in exactly one of the two: the binary never constructs it until
-    /// Settings exists, while the test harness constructs it several times. So
-    /// `expect` is fulfilled building the bin and **unfulfilled** building the
-    /// tests, and `--all-targets -D warnings` fails on the second. `allow` is
-    /// what stays quiet in both, and the reason string carries the same
-    /// information the phase name would have.
-    #[allow(dead_code, reason = "awaiting the phase-7 Settings screen")]
     Ansi16,
+}
+
+/// `allow` and not `expect`, for the reason [`Config`](crate::config) spells out: this
+/// method is dead building the binary and live building the tests, so an expectation
+/// would be unfulfilled in exactly one of the two compilations.
+#[allow(dead_code, reason = "awaiting the settings screen that draws the rows")]
+impl ColourMode {
+    /// The value column's text on the Settings screen (`docs/UI.md` §6.10).
+    ///
+    /// Bare numerals rather than `256 colours`, because the row is already labelled
+    /// `Colour` and the wireframe's column is eleven characters wide.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ansi256 => "256",
+            Self::Ansi16 => "16",
+        }
+    }
 }
 
 /// The row describing `kind`.

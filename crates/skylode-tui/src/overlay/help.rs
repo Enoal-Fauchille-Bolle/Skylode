@@ -304,6 +304,7 @@ mod tests {
 
         let rebound = Config {
             sub_tab_keys: SubTabKeys::HL,
+            ..Config::default()
         };
         let frame = help(Screen::Upgrades, &rebound);
         assert!(frame.contains("h  l"), "{frame}");
