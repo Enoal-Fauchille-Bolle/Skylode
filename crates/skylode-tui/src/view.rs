@@ -695,7 +695,7 @@ impl UpgradesView {
 /// The world grouping, the mine name and whether it is two-material are all read
 /// from `kind` in the screen. The rest is the run's, and it is **typed rather than
 /// pre-formatted**: this row used to carry `detail: String`, the frame's own
-/// `8 x 5   R 6` or `locked   Netherite`, because [`MineLock`] was assumed not to
+/// `8 x 5    R 6` or `locked Netherite`, because [`MineLock`] was assumed not to
 /// exist yet. It does, and it answers both axes separately — so the row hands the
 /// screen the facts and the screen decides the wording.
 #[derive(Clone, Debug)]

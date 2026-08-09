@@ -83,6 +83,31 @@ const LIST_MARGIN: usize = 2;
 /// spacing: a thirteenth block with a longer name is what would move it.
 const NAME_COLUMN: usize = 17;
 
+/// Columns one side of a mine's grid size is padded to in the list's right column.
+///
+/// **Two, because the core's size ladder tops out at `20 x 10`** — `MINE_SIZES` is
+/// ten rungs from `(3, 3)` up, and no side of any of them reaches three digits.
+/// Named for [`NAME_COLUMN`]'s reason: the number is a fact about that table, and an
+/// eleventh rung wider than 99 is what would move it.
+///
+/// The two sides are padded *differently* on purpose, and [`row_detail`] argues why.
+const SIZE_NUMBER: usize = 2;
+
+/// Columns the richness rung is padded to, right-aligned.
+///
+/// Two, since [`shown_rung`] counts the ten rungs from 1, so `10` is the widest it
+/// ever prints.
+const RUNG_COLUMN: usize = 2;
+
+/// Columns a gating pickaxe tier's name is padded to, right-aligned.
+///
+/// Nine, the length of `Netherite` — the longest of the six tiers, and the one that
+/// decides how much room the locked rows need. It is the tight constraint on this
+/// panel: `   Ancient Debris` is seventeen columns, `locked` is six, and 17 + 1 + 6 +
+/// 1 + 9 is exactly the 34 the list has, which is why the gap between the word and
+/// the tier is a single space here where the size and rung columns can afford three.
+const TIER_COLUMN: usize = 9;
+
 /// Draws the list, the detail pane, and the footer.
 pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     let [body, footer_area] =
@@ -152,18 +177,41 @@ fn list(frame: &mut Frame, area: Rect, view: &View) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// A list row's right-hand column: `8 x 5   R 6`, or the tier that still shuts it.
+/// A list row's right-hand column: `8 x 5    R 6`, or the tier that still shuts it.
 ///
 /// **Only the tier half of the lock is printed here.** A mine shut by its world is
 /// shut for every mine in that world, and the world's own header row already carries
 /// that level — repeating it on each of the three rows below would say one thing
 /// four times. The End mine is the case that shows both at once: `Lv 30 ✗` on the
-/// header, `locked   Netherite` on the row.
+/// header, `locked Netherite` on the row.
+///
+/// **Every field is padded to a fixed width, and that is what makes this a table.**
+/// [`justified`] flushes the string it is handed against the right edge, so a row
+/// built by concatenation aligns only its *last* character: `locked` used to step
+/// four columns left between `Stone` and `Netherite`, and `20 x 10` shared no column
+/// with `3 x 3`. Padding each field here is what pins the columns, and the widths are
+/// named constants rather than literals because each is a claim about a core table.
+///
+/// **The two sides of the size are padded in opposite directions, on purpose.** The
+/// width is right-aligned, so `3` sits under the `0` of `20` and the ladder can be
+/// read down the column. The height is *left*-aligned, so the pair reads `3 x 3`
+/// rather than `3 x  3` — and it costs nothing, because the size ladder's widths are
+/// strictly increasing (3, 4, 6, … 20), so the width alone already orders all ten
+/// rungs and a comparable height column would be a second answer to a question the
+/// first one has settled. The padding simply moves to the far side of the height,
+/// which shows up as a four-column gap before the `R` on the single-digit rungs
+/// instead of a one-column hole inside the size.
+///
+/// The rung keeps its number right-aligned, unlike the height, because it is **last
+/// on the row**: a trailing pad there would push `10` out from under the `✓` the
+/// world headers put at the same edge. `R` is a label in front of a number rather
+/// than an operator between two, so a column-wide gap reads as a table and not as a
+/// stutter.
 fn row_detail(row: &MineListRow) -> String {
     match row.lock.missing_tier() {
-        Some(tier) => format!("locked   {}", tier.name()),
+        Some(tier) => format!("locked {:>TIER_COLUMN$}", tier.name()),
         None => format!(
-            "{} x {}   R {}",
+            "{:>SIZE_NUMBER$} x {:<SIZE_NUMBER$}   R {:>RUNG_COLUMN$}",
             row.size.0,
             row.size.1,
             shown_rung(row.richness_level)
@@ -492,6 +540,49 @@ mod tests {
             .unwrap_or(text)
     }
 
+    /// Which **column** `needle` starts in on `row`, or [`None`] if it is not there.
+    ///
+    /// Counted in `chars` and not bytes, for
+    /// [`justified`](crate::format::justified)'s own reason: the mark column carries
+    /// `▸` and `●`, which are three bytes and one column, so a byte offset would
+    /// report the marked row two columns further right than it is drawn.
+    ///
+    /// [`None`] rather than a panic, because this crate's lints leave no `unwrap` to
+    /// spend — and because the callers below assert that the answer is `Some` as part
+    /// of what they are checking, which a panicking helper would have hidden.
+    fn column_of(row: &str, needle: &str) -> Option<usize> {
+        row.find(needle).map(|byte| row[..byte].chars().count())
+    }
+
+    /// Every column `needle` starts in, over the rows that contain it at all.
+    fn columns_of(text: &str, needle: &str) -> Vec<Option<usize>> {
+        text.lines()
+            .filter(|row| row.contains(needle))
+            .map(|row| column_of(row, needle))
+            .collect()
+    }
+
+    /// The sample view with every mine shut on the **tier** axis, which is the only
+    /// way to get four gating tiers of four different lengths onto one screen.
+    ///
+    /// `View::sample()` is drawn at Diamond, where eleven of the twelve mines are
+    /// open and the End alone prints a reason — so it can show that a locked row is
+    /// drawn, but never that two of them agree about where to draw it. Dropping the
+    /// pickaxe to Wooden leaves Stone and Coal open (they gate on Wooden) and shuts
+    /// the other ten behind `Stone`, `Iron`, `Diamond` and `Netherite`: four, five,
+    /// seven and nine columns, the full spread the padding has to absorb.
+    ///
+    /// The locks are **re-derived** rather than written down, exactly as
+    /// `sample_mines` derives its own: a fixture that states a lock can state one the
+    /// rules would never produce.
+    fn wooden_pickaxe_view() -> View {
+        let mut view = View::sample();
+        for row in &mut view.mines.rows {
+            row.lock = row.kind.lock(view.player_level, PickaxeTier::Wooden);
+        }
+        view
+    }
+
     #[test]
     fn the_list_groups_mines_under_their_three_worlds() {
         let list = list_panel(&render_screen());
@@ -525,6 +616,77 @@ mod tests {
         // The End mine is drawn locked with its gate named, not hidden.
         let end_mine = row_with(&list, "locked");
         assert!(end_mine.contains("Netherite"), "{end_mine:?}");
+    }
+
+    /// The right column is a **table**, and a table is only a table if its fields
+    /// keep their columns whatever the numbers on the row happen to be.
+    ///
+    /// **This is the assertion the screen was missing, and its absence is what let
+    /// the columns drift.** Every row is right-flushed as a single string, so the
+    /// last character of a row lines up for free and nothing else does: before the
+    /// fields were padded, `20 x 10   R 10` and `3 x 3   R 1` shared no column at
+    /// all, and the reading a ladder is drawn for — run your eye down it — was not
+    /// available. Written against the sample precisely because its ladder spans both
+    /// widths, `20 x 10` two rows above `6 x 4`.
+    ///
+    /// The columns are asserted *equal to each other* rather than to a number: a
+    /// literal here would pin the layout to the panel's current width, and this is a
+    /// claim about alignment, not about where the panel happens to start.
+    #[test]
+    fn the_size_and_the_rung_keep_their_columns_whatever_the_numbers_are() {
+        let list = list_panel(&render_screen());
+
+        for needle in [" x ", "R "] {
+            let columns = columns_of(&list, needle);
+            assert!(
+                columns.len() >= 2,
+                "{needle:?} on fewer than two rows, so nothing is being compared: {list}"
+            );
+            let first = columns[0];
+            assert!(first.is_some(), "{needle:?} found but not located: {list}");
+            assert!(
+                columns.iter().all(|column| *column == first),
+                "{needle:?} does not hold one column: {columns:?}\n{list}"
+            );
+        }
+    }
+
+    /// The same claim for the rows that print a reason instead of a size.
+    ///
+    /// **Four tier names of four different lengths, on one screen**, which the sample
+    /// alone cannot produce — see [`wooden_pickaxe_view`]. The word `locked` is a
+    /// constant six columns, so it can only move if what follows it does: pinning its
+    /// column is what proves the tier is padded rather than merely flushed right.
+    ///
+    /// The second half is the **tight** half. `Ancient Debris` is the longest mine
+    /// name in the game and `Netherite` the longest tier, and the panel has exactly
+    /// enough room for the pair with a single space between the name and the reason.
+    /// A wider pad or a wider gap does not overflow visibly — a `Paragraph` clips in
+    /// silence — it just runs the name into the word, so the space is asserted rather
+    /// than trusted.
+    #[test]
+    fn every_locked_row_starts_its_reason_in_the_same_column() {
+        let list = list_panel(&render_view(&wooden_pickaxe_view()));
+
+        let columns = columns_of(&list, "locked");
+        assert!(columns.len() >= 4, "too few locked rows to compare: {list}");
+        let first = columns[0];
+        assert!(first.is_some(), "`locked` found but not located: {list}");
+        assert!(
+            columns.iter().all(|column| *column == first),
+            "`locked` does not hold one column: {columns:?}\n{list}"
+        );
+
+        // The longest name in the game against the longest tier: the row still reads
+        // as two things and not as one word.
+        assert!(
+            row_with(&list, "Ancient Debris").contains("Debris locked"),
+            "the widest row lost the space before its reason: {list}"
+        );
+        assert!(
+            row_with(&list, "Netherite").contains("locked Netherite"),
+            "the widest tier lost the space after `locked`: {list}"
+        );
     }
 
     #[test]

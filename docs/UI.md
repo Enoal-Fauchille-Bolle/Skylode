@@ -413,21 +413,21 @@ exchange rate the game does not have.
 0---------1---------2---------3---------4---------5---------6---------7---------
  1 Mine │ [2 Mines] │ 3 Inventory │ 4 Upgrades │ 5 Stats       Prestige II  ×1.2
 ┌─ Mines ────────────────────────────┐┌─ Obsidian Mine ────────────────────────┐
-│ Overworld                ✓         ││ Obsidian         hard 50.0   60 ticks  │
-│   Stone          20 x 10   R 9     ││ Crying Obsidian  hard 50.0   60 ticks  │
-│   Coal            18 x 9   R 7     ││                                        │
-│   Iron            12 x 7   R 0     ││ World      Nether        Lv 15  ✓      │
-│   Gold            10 x 6   R 2     ││ Gate       Diamond pickaxe      ✓      │
-│   Lapis            8 x 5   R 1     ││ Size       8 x 5 = 40    level 3       │
-│   Redstone         6 x 4   R 0     ││ Blocks     31 / 40                     │
-│   Emerald          6 x 4   R 0     ││ Richness   level 6 / 9                 │
-│   Diamond          8 x 5   R 1     ││                                        │
+│ Overworld                       ✓  ││ Obsidian         hard 50.0   60 ticks  │
+│   Stone            20 x 10   R  9  ││ Crying Obsidian  hard 50.0   60 ticks  │
+│   Coal             18 x 9    R  7  ││                                        │
+│   Iron             12 x 7    R  0  ││ World      Nether        Lv 15  ✓      │
+│   Gold             10 x 6    R  2  ││ Gate       Diamond pickaxe      ✓      │
+│   Lapis             8 x 5    R  1  ││ Size       8 x 5 = 40    level 3       │
+│   Redstone          6 x 4    R  0  ││ Blocks     31 / 40                     │
+│   Emerald           6 x 4    R  0  ││ Richness   level 6 / 9                 │
+│   Diamond           8 x 5    R  1  ││                                        │
 │ Nether                   Lv 15  ✓  ││ Dial   ◄ ██████████████░░░░░░░░ ►      │
-│   Quartz           8 x 5   R 3     ││        Crying 64%   Obsidian 36%       │
-│   Ancient Debris   6 x 4   R 0     ││                                        │
-│ ▸ Obsidian         8 x 5   R 6     ││        free, reversible, any time      │
+│   Quartz            8 x 5    R  3  ││        Crying 64%   Obsidian 36%       │
+│   Ancient Debris    6 x 4    R  0  ││                                        │
+│ ▸ Obsidian          8 x 5    R  6  ││        free, reversible, any time      │
 │ End                      Lv 30  ✗  ││                                        │
-│   End           locked   Netherite ││ The enhancement past Netherite eats    │
+│   End            locked Netherite  ││ The enhancement past Netherite eats    │
 │                                    ││ both of them, so this dial has an      │
 │                                    ││ optimum, not a maximum.                │
 │                                    ││                                        │
@@ -439,6 +439,27 @@ exchange rate the game does not have.
 
 **Constraints.** Fifteen rows for twelve mines plus three world headers fit in 20:
 this is the one list screen that never needs a `Scrollbar` at 80x24.
+
+**The right column is a table, and every field in it is padded to a fixed width.**
+Flushing a row's right-hand string against the edge aligns its last character and
+nothing else, which is what made `locked` step four columns left between `Stone` and
+`Netherite` and left `20 x 10` sharing no column with `3 x 3`. The widths are facts
+about core tables — two digits a side (`MINE_SIZES` tops out at `20 x 10`), two for
+the rung, nine for `Netherite`, the longest tier.
+
+**A locked row and a sized row do not share columns, and cannot.** `   Ancient
+Debris` is seventeen columns and `locked` plus `Netherite` is fifteen more; one grid
+covering both variants needs two columns this panel does not have, which is why the
+locked rows keep a single space between the word and the tier where the sized rows
+can afford three.
+
+**The width of the size is right-aligned and its height is left-aligned**, so the
+pair reads `3 x 3` rather than `3 x  3`. That costs no comparison: `MINE_SIZES`'
+widths are strictly increasing (3, 4, 6, … 20), so the width column already orders
+all ten rungs and a height column would answer the same question twice. The rung is
+the exception and stays right-aligned, because it is last on the row — a trailing
+pad there would push its number out from under the `✓` the world headers put at the
+same edge.
 
 **The dial is one control, drawn identically on all twelve mines** — slider,
 arrows, rung, and the split beneath it. The wireframe above reserved the slider for
@@ -454,7 +475,7 @@ the game a player can set too high.
 **Core reads — all of them exist, and this screen is wired to them.**
 `MineKind::lock(level, tier)` answers *why* a mine is shut with a `MineLock`
 carrying its two axes apart (`missing_level`, `missing_tier`), which is what lets
-the list print `Lv 30` on a world header and `locked   Netherite` on the row below
+the list print `Lv 30` on a world header and `locked Netherite` on the row below
 without saying either twice. `MineKind::ALL` lists the twelve — an enum cannot
 enumerate itself, and the front-end has to draw all of them.
 `GameState::select_mine` and `set_mine_richness_setting` are the two the keys call.
