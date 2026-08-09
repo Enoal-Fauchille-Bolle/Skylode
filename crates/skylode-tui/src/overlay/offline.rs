@@ -22,7 +22,10 @@ use skylode_core::{
     tunables::{AUTO_MINER_MILLIBLOCKS_PER_TICK, MILLIBLOCKS_PER_BLOCK, TICKS_PER_SECOND},
 };
 
-use crate::format::{denominations, grouped, grouped_u64, span};
+use crate::{
+    config::NumberFormat,
+    format::{denominations, grouped, grouped_u64, span},
+};
 
 /// How wide the frame is drawn.
 const WIDTH: u16 = 60;
@@ -52,7 +55,7 @@ fn rate() -> f64 {
 }
 
 /// Draws the offline summary for `report`.
-pub fn render(frame: &mut Frame, area: Rect, report: &OfflineReport) {
+pub fn render(frame: &mut Frame, area: Rect, report: &OfflineReport, format: NumberFormat) {
     let mut lines = vec![
         String::new(),
         away(report),
@@ -66,14 +69,14 @@ pub fn render(frame: &mut Frame, area: Rect, report: &OfflineReport) {
     let width = report
         .gained
         .iter()
-        .map(|&(_, amount)| grouped(amount).chars().count())
+        .map(|&(_, amount)| grouped(amount, format).chars().count())
         .max()
         .unwrap_or(0);
     lines.extend(
         report
             .gained
             .iter()
-            .map(|&(item, amount)| gain(item, amount, width)),
+            .map(|&(item, amount)| gain(item, amount, width, format)),
     );
 
     lines.push(String::new());
@@ -83,7 +86,7 @@ pub fn render(frame: &mut Frame, area: Rect, report: &OfflineReport) {
         " Rate  {:.2} blocks/s  ×  {}  =  {} blocks",
         rate(),
         span(report.counted),
-        grouped_u64(report.blocks)
+        grouped_u64(report.blocks, format)
     ));
     lines.push(String::new());
 
@@ -126,14 +129,14 @@ fn away(report: &OfflineReport) -> String {
 /// The parenthesis appears only when there is a second reading to give. Under one
 /// Compressed unit [`denominations`] answers with the same figure already printed, and
 /// a line that says `+80  Coal            (80)` is a column spent on nothing.
-fn gain(item: Item, amount: u32, width: usize) -> String {
-    let split = denominations(amount);
+fn gain(item: Item, amount: u32, width: usize, format: NumberFormat) -> String {
+    let split = denominations(amount, format);
     let name = item.material().name();
     // The `+` sits flush against the column and the padding goes *inside* it, so a
     // stack of gains reads as one number per row rather than as a `+` adrift from its
     // own figure.
-    let total = format!(" +{:>width$}  ", grouped(amount));
-    if split == grouped(amount) {
+    let total = format!(" +{:>width$}  ", grouped(amount, format));
+    if split == grouped(amount, format) {
         return format!("{total}{name}");
     }
     format!("{total}{name:<NAME_COLUMN$}({split})")
@@ -162,7 +165,9 @@ mod tests {
     }
 
     fn drawn(report: &OfflineReport) -> String {
-        crate::overlay::render_to_string(|frame, area| render(frame, area, report))
+        crate::overlay::render_to_string(|frame, area| {
+            render(frame, area, report, NumberFormat::default());
+        })
     }
 
     #[test]

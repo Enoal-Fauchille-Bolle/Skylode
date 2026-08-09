@@ -19,6 +19,7 @@ use skylode_core::{
 };
 
 use crate::{
+    config::NumberFormat,
     format::grouped,
     toast::{Salience, Tone},
 };
@@ -47,7 +48,7 @@ use crate::{
 /// an Excavator at its ceiling rolls 5 % of a swing and a held `Space` swings twenty
 /// times a second — so they were spending the interface's only interruption on the
 /// three things needing none. They stay in the buffer and so stay in §5.5's History.
-pub fn of(event: &GameEvent) -> (String, Tone, Salience) {
+pub fn of(event: &GameEvent, format: NumberFormat) -> (String, Tone, Salience) {
     match event {
         // **The sentence says what is waiting, not what arrived**, because as of TUI
         // phase 7 nothing arrives: crossing a level files its reward and the player
@@ -63,7 +64,7 @@ pub fn of(event: &GameEvent) -> (String, Tone, Salience) {
         // player to go somewhere. A line that ends in an instruction is the one line
         // that must not be erased by the next block to break.
         GameEvent::LevelUp { level, reward } => (
-            match granted(reward.as_ref()) {
+            match granted(reward.as_ref(), format) {
                 grants if grants.is_empty() => format!("Level {level}"),
                 grants => format!("Level {level}{grants} — claim on 6"),
             },
@@ -81,7 +82,11 @@ pub fn of(event: &GameEvent) -> (String, Tone, Salience) {
         // Jackhammer line. The sentence was the redundant half, and it was arriving
         // often enough to own the slot outright.
         GameEvent::SpatialProc { kind, broken, .. } => (
-            format!("{} — {} blocks", kind.name(), grouped(count(*broken))),
+            format!(
+                "{} — {} blocks",
+                kind.name(),
+                grouped(count(*broken), format)
+            ),
             Tone::Neutral,
             Salience::Silent,
         ),
@@ -131,9 +136,9 @@ pub fn of(event: &GameEvent) -> (String, Tone, Salience) {
 /// that a garnish which lands that often announces nothing and so dilutes nothing.
 ///
 /// [`reward_for_level`]: skylode_core::reward::reward_for_level
-fn granted(reward: Option<&LevelReward>) -> String {
+fn granted(reward: Option<&LevelReward>, format: NumberFormat) -> String {
     match reward {
-        Some(reward) => format!(" — {}", payout(&reward.payout)),
+        Some(reward) => format!(" — {}", payout(&reward.payout, format)),
         None => String::new(),
     }
 }
@@ -149,10 +154,10 @@ fn granted(reward: Option<&LevelReward>) -> String {
 /// UI.md §5.6's roadmap appends `, +1 charge` and the toast deliberately does not,
 /// since a garnish landing every fifth level announces nothing and dilutes the payout
 /// beside it. Each caller adds what its own frame asks for.
-pub fn payout(payout: &Payout) -> String {
+pub fn payout(payout: &Payout, format: NumberFormat) -> String {
     match payout {
         Payout::World(world) => format!("The {} opens", world.name()),
-        Payout::Ore(lines) => ore(lines),
+        Payout::Ore(lines) => ore(lines, format),
     }
 }
 
@@ -161,10 +166,10 @@ pub fn payout(payout: &Payout) -> String {
 /// Quoted as raw totals with a `+`, matching §5.6's roadmap and §6.4's offline
 /// summary: the strict two-denomination rule governs **paying**, never receiving, and
 /// a level's bundle is always credited raw ([`Payout::Ore`] says so in the core).
-fn ore(lines: &[(Item, u32)]) -> String {
+fn ore(lines: &[(Item, u32)], format: NumberFormat) -> String {
     lines
         .iter()
-        .map(|&(item, amount)| format!("+{} {item}", grouped(amount)))
+        .map(|&(item, amount)| format!("+{} {item}", grouped(amount, format)))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -195,16 +200,19 @@ mod tests {
     /// receipt.
     #[test]
     fn a_level_up_names_the_level_and_where_to_claim_it() {
-        let (text, tone, _) = of(&GameEvent::LevelUp {
-            level: 23,
-            reward: Some(LevelReward {
-                payout: Payout::Ore(vec![
-                    (Item::Raw(Material::Quartz), 115),
-                    (Item::Raw(Material::AncientDebris), 80),
-                ]),
-                boost_charges: 0,
-            }),
-        });
+        let (text, tone, _) = of(
+            &GameEvent::LevelUp {
+                level: 23,
+                reward: Some(LevelReward {
+                    payout: Payout::Ore(vec![
+                        (Item::Raw(Material::Quartz), 115),
+                        (Item::Raw(Material::AncientDebris), 80),
+                    ]),
+                    boost_charges: 0,
+                }),
+            },
+            NumberFormat::default(),
+        );
         assert_eq!(
             text,
             "Level 23 — +115 Quartz, +80 Ancient Debris — claim on 6"
@@ -216,22 +224,28 @@ mod tests {
     fn a_world_level_says_what_opened_instead_of_a_bundle() {
         // Levels 15 and 30 pay a dimension and no loot, and the payout being an enum
         // is what stops this line from having to say "and no ore".
-        let (text, _, _) = of(&GameEvent::LevelUp {
-            level: 15,
-            reward: Some(LevelReward {
-                payout: Payout::World(World::Nether),
-                boost_charges: 1,
-            }),
-        });
+        let (text, _, _) = of(
+            &GameEvent::LevelUp {
+                level: 15,
+                reward: Some(LevelReward {
+                    payout: Payout::World(World::Nether),
+                    boost_charges: 1,
+                }),
+            },
+            NumberFormat::default(),
+        );
         assert_eq!(text, "Level 15 — The Nether opens — claim on 6");
     }
 
     #[test]
     fn a_level_that_pays_nothing_is_still_announced() {
-        let (text, tone, _) = of(&GameEvent::LevelUp {
-            level: 2,
-            reward: None,
-        });
+        let (text, tone, _) = of(
+            &GameEvent::LevelUp {
+                level: 2,
+                reward: None,
+            },
+            NumberFormat::default(),
+        );
         assert_eq!(text, "Level 2");
         assert_eq!(tone, Tone::Success);
     }
@@ -241,41 +255,53 @@ mod tests {
         // The whole reason `broken` exists as a field. Twenty-five cells of shape over
         // a half-dug grid, nine blocks standing in them: the sentence quotes the nine,
         // because nine is what reached the inventory.
-        let (text, tone, _) = of(&GameEvent::SpatialProc {
-            kind: EnchantType::Explosive,
-            origin: (4, 4),
-            cells: vec![(0, 0); 25],
-            broken: 9,
-        });
+        let (text, tone, _) = of(
+            &GameEvent::SpatialProc {
+                kind: EnchantType::Explosive,
+                origin: (4, 4),
+                cells: vec![(0, 0); 25],
+                broken: 9,
+            },
+            NumberFormat::default(),
+        );
         assert_eq!(text, "Explosive — 9 blocks");
         assert_eq!(tone, Tone::Neutral);
     }
 
     #[test]
     fn a_big_blast_groups_its_thousands_like_every_other_number() {
-        let (text, _, _) = of(&GameEvent::SpatialProc {
-            kind: EnchantType::Nuke,
-            origin: (0, 0),
-            cells: Vec::new(),
-            broken: 1_200,
-        });
+        let (text, _, _) = of(
+            &GameEvent::SpatialProc {
+                kind: EnchantType::Nuke,
+                origin: (0, 0),
+                cells: Vec::new(),
+                broken: 1_200,
+            },
+            NumberFormat::default(),
+        );
         assert_eq!(text, "Nuke — 1 200 blocks");
     }
 
     #[test]
     fn an_excavator_names_the_denomination_it_substituted() {
-        let (text, tone, _) = of(&GameEvent::ExcavatorProc {
-            item: Item::Compressed(Material::Iron),
-        });
+        let (text, tone, _) = of(
+            &GameEvent::ExcavatorProc {
+                item: Item::Compressed(Material::Iron),
+            },
+            NumberFormat::default(),
+        );
         assert_eq!(text, "Excavator!  +1 Compressed Iron");
         assert_eq!(tone, Tone::Success);
     }
 
     #[test]
     fn a_refill_does_not_name_the_mine_the_player_is_standing_in() {
-        let (text, tone, _) = of(&GameEvent::MineRefilled {
-            kind: MineKind::Iron,
-        });
+        let (text, tone, _) = of(
+            &GameEvent::MineRefilled {
+                kind: MineKind::Iron,
+            },
+            NumberFormat::default(),
+        );
         assert_eq!(text, "Mine refilled");
         assert_eq!(tone, Tone::Neutral);
     }
@@ -323,7 +349,7 @@ mod tests {
         ];
 
         for (event, expected) in cases {
-            let (_, _, salience) = of(&event);
+            let (_, _, salience) = of(&event, NumberFormat::default());
             assert_eq!(salience, expected, "{event:?}");
         }
     }
@@ -333,13 +359,19 @@ mod tests {
     /// about once a second.
     #[test]
     fn a_level_up_is_the_only_major_and_its_tone_does_not_say_so() {
-        let (_, tone, salience) = of(&GameEvent::LevelUp {
-            level: 23,
-            reward: None,
-        });
-        let (_, excavator_tone, excavator_salience) = of(&GameEvent::ExcavatorProc {
-            item: Item::Compressed(Material::Iron),
-        });
+        let (_, tone, salience) = of(
+            &GameEvent::LevelUp {
+                level: 23,
+                reward: None,
+            },
+            NumberFormat::default(),
+        );
+        let (_, excavator_tone, excavator_salience) = of(
+            &GameEvent::ExcavatorProc {
+                item: Item::Compressed(Material::Iron),
+            },
+            NumberFormat::default(),
+        );
 
         assert_eq!(salience, Salience::Major);
         assert_eq!(excavator_salience, Salience::Silent);
@@ -352,7 +384,7 @@ mod tests {
     fn a_lapsed_boost_says_so_without_alarm() {
         // Neutral and not a refusal: nothing was denied, a timer ran out. The tone is
         // what tells a glance which of the two just happened.
-        let (text, tone, _) = of(&GameEvent::BoostExpired);
+        let (text, tone, _) = of(&GameEvent::BoostExpired, NumberFormat::default());
         assert_eq!(text, "Redstone boost ended");
         assert_eq!(tone, Tone::Neutral);
     }

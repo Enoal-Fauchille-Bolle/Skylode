@@ -24,7 +24,7 @@ use skylode_core::world::World;
 
 use crate::{
     action::Action,
-    config::SubTabKeys,
+    config::{NumberFormat, SubTabKeys},
     cursor::{MineTrack, UpgradeTab},
     format::{MAXED, grouped, justified, roman, shown_rung},
     screen::{panel, scrollbar, window},
@@ -61,7 +61,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     let (list_area, detail_area) = master_detail(frame, box_area);
     let subtab = upgrades.active_subtab();
     list(frame, list_area, subtab);
-    detail(frame, detail_area, subtab);
+    detail(frame, detail_area, subtab, view.number_format);
 
     frame.render_widget(
         Paragraph::new(subtab.footer.as_str()).style(Style::default().fg(theme::MUTED)),
@@ -334,12 +334,12 @@ fn list(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
 /// this screen with no bound — a chain from Wooden to Netherite Eff XV is forty-five
 /// rungs, and an enchant level is priced in three materials — so it is cut to whatever
 /// the blocks around it leave. See [`assembled`].
-fn detail(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab) {
+fn detail(frame: &mut Frame, area: Rect, subtab: &UpgradeSubtab, format: NumberFormat) {
     let text = match &subtab.detail {
-        UpgradeDetail::Pickaxe(detail) => pickaxe_pane(detail, usize::from(area.height)),
-        UpgradeDetail::Enchant(detail) => enchant_pane(detail, usize::from(area.height)),
-        UpgradeDetail::Mine(detail) => mine_pane(detail, usize::from(area.height)),
-        UpgradeDetail::Boost(detail) => boost_pane(detail, usize::from(area.height)),
+        UpgradeDetail::Pickaxe(detail) => pickaxe_pane(detail, usize::from(area.height), format),
+        UpgradeDetail::Enchant(detail) => enchant_pane(detail, usize::from(area.height), format),
+        UpgradeDetail::Mine(detail) => mine_pane(detail, usize::from(area.height), format),
+        UpgradeDetail::Boost(detail) => boost_pane(detail, usize::from(area.height), format),
     };
     // Through `marked_row`: the pane quotes the affordability of what is selected, so
     // the same `✓ ~ ✗` appear here as in the list beside it, in the same hues — and
@@ -433,10 +433,10 @@ fn block(label: &str, values: &[String]) -> Vec<PaneLine> {
 ///
 /// The shortfall row is deliberately **untinted**: it is the explanation of a mark, not
 /// a second statement of it, and two red lines in a row read as two refusals.
-fn price_block(lines: &[PriceLine]) -> Vec<PaneLine> {
+fn price_block(lines: &[PriceLine], format: NumberFormat) -> Vec<PaneLine> {
     let mut out = Vec::new();
     for (index, line) in lines.iter().enumerate() {
-        let value = format!("{} {}", grouped(line.needed), line.item);
+        let value = format!("{} {}", grouped(line.needed, format), line.item);
         let row = if index == 0 {
             format!(" {:<9} {value}", "Cost")
         } else {
@@ -451,8 +451,8 @@ fn price_block(lines: &[PriceLine]) -> Vec<PaneLine> {
             out.push(
                 format!(
                     "             hold {} — short {}",
-                    grouped(line.held),
-                    grouped(line.needed.saturating_sub(line.held))
+                    grouped(line.held, format),
+                    grouped(line.needed.saturating_sub(line.held), format)
                 )
                 .into(),
             );
@@ -483,7 +483,7 @@ fn stat_block(label: &str, steps: &[StatStep]) -> Vec<PaneLine> {
 /// materials forty-five rungs of ladder demand. So the two fixed ends are measured
 /// first and the price gets what is left — the block that overflows is the block that
 /// is cut, rather than the `Ceiling` line that happened to be last.
-fn pickaxe_pane(detail: &PickaxeDetail, height: usize) -> Vec<PaneLine> {
+fn pickaxe_pane(detail: &PickaxeDetail, height: usize, format: NumberFormat) -> Vec<PaneLine> {
     let mut head = vec![
         justified(
             &format!(" {}", detail.title),
@@ -501,7 +501,7 @@ fn pickaxe_pane(detail: &PickaxeDetail, height: usize) -> Vec<PaneLine> {
     if let Some(owned) = &detail.owned {
         head.push(" Owned already — nothing to buy here.".to_owned().into());
         head.push(String::new().into());
-        head.extend(owned_block(owned));
+        head.extend(owned_block(owned, format));
         return head;
     }
 
@@ -525,8 +525,8 @@ fn pickaxe_pane(detail: &PickaxeDetail, height: usize) -> Vec<PaneLine> {
 
     let mut tail = vec![PaneLine::from(String::new())];
     match &detail.dip {
-        Some(dip) => tail.extend(dip_box(&detail.power, dip)),
-        None => tail.extend(power_block(&detail.power)),
+        Some(dip) => tail.extend(dip_box(&detail.power, dip, format)),
+        None => tail.extend(power_block(&detail.power, format)),
     }
     if !detail.unlocks.is_empty() {
         tail.push(String::new().into());
@@ -545,7 +545,7 @@ fn pickaxe_pane(detail: &PickaxeDetail, height: usize) -> Vec<PaneLine> {
         ));
     }
 
-    assembled(head, price_block(&detail.costs), tail, height)
+    assembled(head, price_block(&detail.costs, format), tail, height)
 }
 
 /// A pane's three parts, with the price cut to whatever the other two leave.
@@ -598,11 +598,15 @@ fn assembled(
 /// the buyable pane already spends on this number, and [`block`] reserves nine columns
 /// for a label — `Efficiency` is ten, and would push its own value out of the column
 /// the two rows above it line up in.
-fn owned_block(owned: &OwnedRung) -> Vec<PaneLine> {
+fn owned_block(owned: &OwnedRung, format: NumberFormat) -> Vec<PaneLine> {
     let mut lines = block("Power", &[format!("{:.1}", owned.power)]);
     lines.extend(block(
         "Ticks",
-        &[format!("{} {}", owned.block.name(), ticks(owned.ticks))],
+        &[format!(
+            "{} {}",
+            owned.block.name(),
+            ticks(owned.ticks, format)
+        )],
     ));
     let (level, cap) = owned.efficiency;
     lines.extend(block("Ceiling", &[format!("Efficiency {level} / {cap}")]));
@@ -628,7 +632,7 @@ fn owned_block(owned: &OwnedRung) -> Vec<PaneLine> {
 /// The block is named on the `Ticks` row rather than used as a label, because
 /// `Crying Obsidian` is fifteen columns against the nine [`block`] gives a label — the
 /// name would push its own value out of the pane.
-fn power_block(power: &PowerDetail) -> Vec<PaneLine> {
+fn power_block(power: &PowerDetail, format: NumberFormat) -> Vec<PaneLine> {
     let mut lines = block(
         "Power",
         &[format!("{:.1} → {:.1}", power.before, power.after)],
@@ -638,8 +642,8 @@ fn power_block(power: &PowerDetail) -> Vec<PaneLine> {
         &[format!(
             "{} {} → {}",
             power.block.name(),
-            ticks(power.ticks_before),
-            ticks(power.ticks_after)
+            ticks(power.ticks_before, format),
+            ticks(power.ticks_after, format)
         )],
     ));
     lines
@@ -651,7 +655,7 @@ fn power_block(power: &PowerDetail) -> Vec<PaneLine> {
 /// plain block cannot quote the swing differently. What the dip adds is the repayment —
 /// the rung that earns the loss back, which is the half of the decision the numbers
 /// above it cannot state.
-fn dip_box(power: &PowerDetail, dip: &DipDetail) -> Vec<PaneLine> {
+fn dip_box(power: &PowerDetail, dip: &DipDetail, format: NumberFormat) -> Vec<PaneLine> {
     let mut lines: Vec<PaneLine> =
         vec![" ┌────────────────────────────────────┐".to_owned().into()];
     lines.push(boxed(&format!("Power  {:.1} → {:.1}", power.before, power.after)).into());
@@ -659,8 +663,8 @@ fn dip_box(power: &PowerDetail, dip: &DipDetail) -> Vec<PaneLine> {
         boxed(&format!(
             "{}  {} → {} ticks",
             power.block.name(),
-            ticks(power.ticks_before),
-            ticks(power.ticks_after)
+            ticks(power.ticks_before, format),
+            ticks(power.ticks_after, format)
         ))
         .into(),
     );
@@ -681,8 +685,8 @@ fn boxed(text: &str) -> String {
 /// [`None`] is unreachable through a real pickaxe — every tier's base power is above
 /// zero — and it reads `—` rather than a number for the same reason the empty gauges
 /// do: a count would assert that the block eventually falls.
-fn ticks(count: Option<u32>) -> String {
-    count.map_or_else(|| NOTHING.to_owned(), grouped)
+fn ticks(count: Option<u32>, format: NumberFormat) -> String {
+    count.map_or_else(|| NOTHING.to_owned(), |count| grouped(count, format))
 }
 
 /// The Enchants pane (UI.md §5.4.1).
@@ -691,7 +695,7 @@ fn ticks(count: Option<u32>) -> String {
 /// in three materials, and on a run that can afford none of them the price is twelve rows
 /// against a nineteen-row pane. The block that must survive is `Cap` — the one thing on
 /// this pane a player cannot work out from anywhere else.
-fn enchant_pane(detail: &EnchantDetail, height: usize) -> Vec<PaneLine> {
+fn enchant_pane(detail: &EnchantDetail, height: usize, format: NumberFormat) -> Vec<PaneLine> {
     let mut head = vec![
         justified(
             &format!(" {}", detail.kind.name()),
@@ -723,7 +727,7 @@ fn enchant_pane(detail: &EnchantDetail, height: usize) -> Vec<PaneLine> {
     let price = if detail.cost.is_empty() {
         block("Cost", &["nothing left to buy".to_owned()])
     } else {
-        price_block(&detail.cost)
+        price_block(&detail.cost, format)
     };
     assembled(head, price, tail, height)
 }
@@ -743,14 +747,14 @@ fn enchant_pane(detail: &EnchantDetail, height: usize) -> Vec<PaneLine> {
 /// a second charge *adds* its window rather than replacing it, so firing early costs
 /// nothing. That is only true if the player knows it, which is what the last two lines
 /// are for.
-fn boost_pane(detail: &BoostDetail, height: usize) -> Vec<PaneLine> {
+fn boost_pane(detail: &BoostDetail, height: usize, format: NumberFormat) -> Vec<PaneLine> {
     // **A dash and not `0 held`**, on the rule every readout in this game follows: a
     // zero states a quantity the player owns, and an empty reserve is the absence of
     // one. The `Reserve` block below says what the absence *means*; this only has to
     // avoid contradicting it.
     let held = match detail.reserve {
         0 => format!("{NOTHING} "),
-        held => format!("{} held ", grouped(held)),
+        held => format!("{} held ", grouped(held, format)),
     };
     let mut head = vec![
         justified(" Redstone boost", &held, DETAIL_WIDTH).into(),
@@ -771,7 +775,7 @@ fn boost_pane(detail: &BoostDetail, height: usize) -> Vec<PaneLine> {
         &[match detail.reserve {
             0 => "none — nothing to fire".to_owned(),
             1 => "1 charge, unfired".to_owned(),
-            held => format!("{} charges, unfired", grouped(held)),
+            held => format!("{} charges, unfired", grouped(held, format)),
         }],
     ));
     tail.push(String::new().into());
@@ -781,7 +785,7 @@ fn boost_pane(detail: &BoostDetail, height: usize) -> Vec<PaneLine> {
     tail.push(" A second charge adds its window to".to_owned().into());
     tail.push(" the one running, never replacing it.".to_owned().into());
 
-    assembled(head, price_block(&detail.price), tail, height)
+    assembled(head, price_block(&detail.price, format), tail, height)
 }
 
 /// The `Cap` block's four lines (UI.md §5.4.1), which say three things the number alone
@@ -845,7 +849,7 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
 /// **Four lines of it are spent refusing one conflation**, and that is the frame's own
 /// choice: richness is the only word in the game that appears next to a price *and*
 /// next to a free cursor, and this is the one place both senses are on screen at once.
-fn mine_pane(detail: &MineTrackDetail, height: usize) -> Vec<PaneLine> {
+fn mine_pane(detail: &MineTrackDetail, height: usize, format: NumberFormat) -> Vec<PaneLine> {
     let track = match detail.track {
         MineTrack::Size => "size",
         MineTrack::Richness => "richness",
@@ -916,8 +920,8 @@ fn mine_pane(detail: &MineTrackDetail, height: usize) -> Vec<PaneLine> {
                         name: "cells",
                         value: format!(
                             "{} → {}",
-                            grouped(u32::from(before.0) * u32::from(before.1)),
-                            grouped(u32::from(after.0) * u32::from(after.1))
+                            grouped(u32::from(before.0) * u32::from(before.1), format),
+                            grouped(u32::from(after.0) * u32::from(after.1), format)
                         ),
                     },
                 ],
@@ -956,7 +960,7 @@ fn mine_pane(detail: &MineTrackDetail, height: usize) -> Vec<PaneLine> {
     let price = if detail.cost.is_empty() {
         block("Cost", &["nothing left to buy".to_owned()])
     } else {
-        price_block(&detail.cost)
+        price_block(&detail.cost, format)
     };
     assembled(head, price, tail, height)
 }

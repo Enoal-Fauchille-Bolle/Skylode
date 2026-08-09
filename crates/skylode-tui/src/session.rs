@@ -988,7 +988,7 @@ impl Session {
             // back into while they read what it earned without them.
             Stage::Offline { app, report } => {
                 app.render(frame, now);
-                offline::render(frame, area, report);
+                offline::render(frame, area, report, app.config.number_format);
             }
         }
     }

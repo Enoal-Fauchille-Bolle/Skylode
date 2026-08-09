@@ -39,20 +39,6 @@
 //! only as cheap as the two orders agreeing. A field appended here out of order is a
 //! field the next audit has to hunt for.
 //!
-//! ## Why the one remaining accessor carries `allow(dead_code)` and not `expect`
-//!
-//! The fields landed one session ahead of the screen that reads them, and while that
-//! gap lasted every `label` here was called by the tests and by nothing else. The
-//! screen exists now, so all but one of those attributes are gone;
-//! [`NumberFormat::separator`] is the last, because the ~46 call sites that will read
-//! it are a session away.
-//!
-//! `allow` and not `expect` is the same shape `palette::ColourMode` documented: a lint
-//! expectation is checked **per compilation**, and a method like this is dead building
-//! the binary while being live building the test harness — so `expect` is fulfilled in
-//! one and unfulfilled in the other, and `--all-targets -D warnings` fails on the
-//! second. `allow` is what stays quiet in both, and its reason names what removes it.
-//!
 //! ## Adding a field, later
 //!
 //! A new preference may carry
@@ -139,7 +125,6 @@ impl NumberFormat {
     /// An [`Option<char>`] and not a `&str` with an empty case, so that *"this format
     /// has no separator"* is a shape the caller has to handle rather than a string it
     /// might concatenate without noticing.
-    #[allow(dead_code, reason = "awaiting the grouped(n, separator) signature")]
     pub fn separator(self) -> Option<char> {
         match self {
             Self::Spaced => Some(' '),

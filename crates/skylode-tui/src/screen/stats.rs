@@ -116,7 +116,11 @@ fn progression(frame: &mut Frame, area: Rect, view: &View) {
             &format!("{} / {LEVEL_CAP}", view.player_level),
             width,
         ),
-        stat("XP", &xp_progress(view.xp, view.xp_to_next), width),
+        stat(
+            "XP",
+            &xp_progress(view.xp, view.xp_to_next, view.number_format),
+            width,
+        ),
         Line::from(""),
     ];
 
@@ -143,7 +147,7 @@ fn progression(frame: &mut Frame, area: Rect, view: &View) {
     lines.push(Line::from(""));
     lines.push(inline(
         "Prestige",
-        &format!("rank {}", prestige_rank(p.rank)),
+        &format!("rank {}", prestige_rank(p.rank, view.number_format)),
     ));
     lines.push(inline("Multiplier", &multiplier(p.multiplier_permille)));
     lines.push(inline("Next rank", &multiplier(p.next_multiplier_permille)));
@@ -159,18 +163,26 @@ fn progression(frame: &mut Frame, area: Rect, view: &View) {
     // row the panel has and reads as the unit both figures are counted in.
     // `docs/UI.md` §5.5.1.
     lines.push(inline("Price in", p.material.name()));
-    lines.push(price_row("Cost", &denominations(p.cost), width));
+    lines.push(price_row(
+        "Cost",
+        &denominations(p.cost, view.number_format),
+        width,
+    ));
     // **The purse, not a re-split of its value.** `denominations` answers *"what
     // would a price of this size be owed in"*, which is a different question and the
     // wrong one here: a player holding 20 000 raw would read `200 Compressed`, own
     // none, and be refused with no way to see why.
     lines.push(price_row(
         "Held",
-        &holding(p.held_compressed, p.held_raw),
+        &holding(p.held_compressed, p.held_raw, view.number_format),
         width,
     ));
     lines.push(Line::from(""));
-    lines.push(stat("Blocks broken", &grouped_u64(s.blocks_broken), width));
+    lines.push(stat(
+        "Blocks broken",
+        &grouped_u64(s.blocks_broken, view.number_format),
+        width,
+    ));
     lines.push(stat("Playtime", &s.playtime, width));
     lines.push(stat("This run", &s.this_run, width));
 

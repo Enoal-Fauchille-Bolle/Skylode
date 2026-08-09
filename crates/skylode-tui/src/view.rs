@@ -40,7 +40,7 @@ use skylode_core::{
 
 use crate::{
     announce,
-    config::{Config, SubTabKeys},
+    config::{Config, NumberFormat, SubTabKeys},
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     flash::{FlashStage, Flashes},
     format::{MAXED, boost_seconds, duration_hm, grouped, roman, rung_label, shown_rung},
@@ -1271,6 +1271,13 @@ pub struct View {
     /// for the config would need a second parameter added to all six signatures for the
     /// sake of the one that uses it. The copy costs a `Copy` enum per projection.
     pub colour_mode: ColourMode,
+    /// How every figure on every screen punctuates its thousands.
+    ///
+    /// Here for [`colour_mode`](View::colour_mode)'s reason, and it is the widest of
+    /// the three: a number is read on all six screens, so this field is what saves
+    /// `format::grouped`'s new argument from being a seventh parameter threaded through
+    /// every `render` signature in `screen/`.
+    pub number_format: NumberFormat,
     /// Which key pair switches Upgrades sub-tabs, for the bar that advertises it.
     ///
     /// Here for [`colour_mode`](View::colour_mode)'s reason, and it closes the last
@@ -1395,14 +1402,15 @@ impl View {
             flash: flashes.resolve(kind, now),
             mines: mines_view(state, cursors),
             inventory: inventory_view(player.get_inventory(), cursors, refused),
-            upgrades: upgrades_view(state, cursors),
-            levels: levels_view(state, cursors),
+            upgrades: upgrades_view(state, cursors, config.number_format),
+            levels: levels_view(state, cursors, config.number_format),
             prestige: prestige_view(player),
             stats: stats_view(state, cursors, toasts, now),
             // The preferences, at last, where they used to be hard-wired defaults. The
             // colour field and its one consumer (`screen::mine`'s grid) have existed
             // since the palette landed; what was missing was the wire, and this is it.
             colour_mode: config.colour,
+            number_format: config.number_format,
             sub_tab_keys: config.sub_tab_keys,
         }
     }
@@ -1494,6 +1502,7 @@ impl View {
             mines: sample_mines(),
             upgrades: sample_upgrades(),
             colour_mode: ColourMode::default(),
+            number_format: NumberFormat::default(),
             sub_tab_keys: SubTabKeys::default(),
         }
     }
@@ -1776,14 +1785,14 @@ fn inventory_view(
 /// actually has, and [`window`](crate::screen::window) moves the offset to keep the
 /// cursor on screen. A view that pre-scrolled would be guessing at a terminal size it
 /// cannot see.
-fn levels_view(state: &GameState, cursors: Cursors) -> LevelsView {
+fn levels_view(state: &GameState, cursors: Cursors, format: NumberFormat) -> LevelsView {
     LevelsView {
         rows: (1..=LEVEL_CAP)
             .map(|level| {
                 let reward = reward::reward_for_level(level);
                 LevelRow {
                     level,
-                    grants: grants_line(reward.as_ref()),
+                    grants: grants_line(reward.as_ref(), format),
                     xp: Player::xp_for_level(level),
                     unclaimed: state.is_unclaimed(level),
                 }
@@ -1806,24 +1815,31 @@ fn levels_view(state: &GameState, cursors: Cursors) -> LevelsView {
 /// A level with no reward at all gets an empty cell rather than a dash: the row's own
 /// level number and XP are still there, so the line is not empty, and `—` would read
 /// as *"a reward that is nothing"* instead of *"no reward"*.
-fn grants_line(reward: Option<&LevelReward>) -> String {
+fn grants_line(reward: Option<&LevelReward>, format: NumberFormat) -> String {
     let Some(reward) = reward else {
         return String::new();
     };
-    let mut line = announce::payout(&reward.payout);
+    let mut line = announce::payout(&reward.payout, format);
     if reward.boost_charges > 0 {
         line.push_str(&format!(", +{} charge", reward.boost_charges));
     }
     line
 }
 
-fn upgrades_view(state: &GameState, cursors: Cursors) -> UpgradesView {
+/// The four sub-tabs.
+///
+/// **The one projection helper that takes a [`NumberFormat`]**, because the Boost row
+/// is the one place a figure is turned into text *here* rather than on the screen that
+/// draws it — `3 held` is a cell of a table whose other cells are names, so the read
+/// model carries it already formatted. Everything else on this screen is a number the
+/// screen punctuates itself.
+fn upgrades_view(state: &GameState, cursors: Cursors, format: NumberFormat) -> UpgradesView {
     UpgradesView {
         active: cursors.upgrade_tab,
         pickaxe: pickaxe_subtab(state, cursors),
         enchants: enchants_subtab(state, cursors),
         mines: mine_tracks_subtab(state, cursors),
-        boost: boost_subtab(state),
+        boost: boost_subtab(state, format),
     }
 }
 
@@ -1840,7 +1856,7 @@ fn upgrades_view(state: &GameState, cursors: Cursors) -> UpgradesView {
 /// reach. The boost is the one purchase with **no cap and no ladder**, which is why
 /// there is no [`Mark::NoPrice`] branch: a maxed track has nothing to sell, and this one
 /// never runs out.
-fn boost_subtab(state: &GameState) -> UpgradeSubtab {
+fn boost_subtab(state: &GameState, format: NumberFormat) -> UpgradeSubtab {
     let inventory = state.player().get_inventory();
     let cost = economy::boost_cost();
     let price = price_lines(inventory, cost.lines());
@@ -1863,7 +1879,7 @@ fn boost_subtab(state: &GameState) -> UpgradeSubtab {
             // the fact that decides whether to buy another one.
             match reserve {
                 0 => NOTHING.to_owned(),
-                held => format!("{} held", grouped(held)),
+                held => format!("{} held", grouped(held, format)),
             },
         ],
         mark: Mark::of(&economy::affordability(inventory, &cost)),

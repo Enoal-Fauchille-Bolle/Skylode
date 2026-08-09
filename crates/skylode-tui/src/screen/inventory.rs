@@ -84,8 +84,8 @@ fn table(frame: &mut Frame, area: Rect, view: &View) {
         lines.push(theme::marked(&row(
             mark,
             item.material.name(),
-            &grouped(item.raw),
-            &grouped(item.compressed),
+            &grouped(item.raw, view.number_format),
+            &grouped(item.compressed, view.number_format),
         )));
     }
     frame.render_widget(Paragraph::new(lines), inner);
@@ -127,14 +127,26 @@ fn compress(frame: &mut Frame, area: Rect, view: &View) {
     let mut lines = vec![
         Line::from(format!(" {name}")),
         Line::from(""),
-        Line::from(format!(" Held     {} Raw", grouped(item.raw))),
-        Line::from(format!("          {} Compressed", grouped(item.compressed))),
-        Line::from(format!(" Value    {} {name}", grouped(value))),
+        Line::from(format!(
+            " Held     {} Raw",
+            grouped(item.raw, view.number_format)
+        )),
+        Line::from(format!(
+            "          {} Compressed",
+            grouped(item.compressed, view.number_format)
+        )),
+        Line::from(format!(
+            " Value    {} {name}",
+            grouped(value, view.number_format)
+        )),
         Line::from(""),
         Line::from(format!(" c   compress  {RAW_PER_COMPRESSED} raw → 1")),
         Line::from(format!(" C   decompress  1 → {RAW_PER_COMPRESSED} raw")),
         Line::from(""),
-        Line::from(format!(" Compressible now:  {}", grouped(compressible))),
+        Line::from(format!(
+            " Compressible now:  {}",
+            grouped(compressible, view.number_format)
+        )),
         Line::from(""),
     ];
     // The compress-first context, when something was actually refused. The split is
@@ -144,8 +156,8 @@ fn compress(frame: &mut Frame, area: Rect, view: &View) {
         lines.push(Line::from(format!(" {} wants", hint.purchase)));
         lines.push(Line::from(format!(
             " {} Compressed + {}.",
-            grouped(hint.needed.compressed),
-            grouped(hint.needed.raw)
+            grouped(hint.needed.compressed, view.number_format),
+            grouped(hint.needed.raw, view.number_format)
         )));
         lines.push(Line::from(" You hold the value, not"));
         lines.push(Line::from(" the denomination."));

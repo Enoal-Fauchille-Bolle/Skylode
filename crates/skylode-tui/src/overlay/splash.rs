@@ -18,6 +18,7 @@ use ratatui::{
 use super::centered_rect;
 use crate::{
     app::{MAX_HEIGHT, MAX_WIDTH},
+    config::NumberFormat,
     format::{age, prestige_rank},
     session::{CONFIRM_ROWS, ConfirmRow, Resume, Splash, SplashRow},
     theme,
@@ -69,10 +70,13 @@ const VERSION: &str = concat!("skylode ", env!("CARGO_PKG_VERSION"));
 /// The rank goes through [`prestige_rank`], not [`roman`](crate::format::roman), so a
 /// player past the numerals reads `Prestige 16` here rather than a `?` — see that
 /// function for why a prestige rank has no cap to spell out.
-fn headline(resume: &Resume) -> String {
+fn headline(resume: &Resume, format: NumberFormat) -> String {
     let mut line = format!("Lv {} · {}", resume.level(), resume.pickaxe());
     if resume.prestige() > 0 {
-        line.push_str(&format!(" · Prestige {}", prestige_rank(resume.prestige())));
+        line.push_str(&format!(
+            " · Prestige {}",
+            prestige_rank(resume.prestige(), format)
+        ));
     }
     line
 }
@@ -221,9 +225,9 @@ fn footer(splash: &Splash) -> &'static str {
 /// very line the menu was already showing them — the same function and not a second
 /// wording, so the box cannot describe the run in terms the summary did not use.
 fn confirmation(frame: &mut Frame, area: Rect, splash: &Splash, cursor: usize) {
-    let at_stake = splash
-        .resume()
-        .map_or_else(String::new, |resume| format!(" {}", headline(resume)));
+    let at_stake = splash.resume().map_or_else(String::new, |resume| {
+        format!(" {}", headline(resume, splash.config().number_format))
+    });
     let rows: Vec<String> = CONFIRM_ROWS
         .iter()
         .enumerate()
@@ -284,7 +288,7 @@ fn confirmation(frame: &mut Frame, area: Rect, splash: &Splash, cursor: usize) {
 fn summary(frame: &mut Frame, area: Rect, splash: &Splash) {
     let muted = Style::default().fg(theme::MUTED);
     let lines: Vec<Line<'static>> = if let Some(resume) = splash.resume() {
-        let mut lines = vec![Line::from(headline(resume))];
+        let mut lines = vec![Line::from(headline(resume, splash.config().number_format))];
         if let Some(idle) = resume.idle() {
             lines.push(Line::styled(
                 format!("last played {} ago", age(idle.as_secs())),

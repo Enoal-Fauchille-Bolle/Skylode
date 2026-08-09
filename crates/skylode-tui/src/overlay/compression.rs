@@ -20,7 +20,7 @@ use skylode_core::{
     tunables::RAW_PER_COMPRESSED,
 };
 
-use crate::{format::grouped, overlay::Conversion};
+use crate::{config::NumberFormat, format::grouped, overlay::Conversion};
 
 /// How many units of `material` a conversion in `direction` could convert at most.
 ///
@@ -72,6 +72,7 @@ pub fn render(
     material: Material,
     direction: Conversion,
     units: u32,
+    format: NumberFormat,
 ) {
     let name = material.name();
     let max = max_units(inventory, material, direction);
@@ -98,7 +99,7 @@ pub fn render(
     let amount = |label: &str, value: u32| {
         format!(
             "{} {denomination}",
-            aligned(label, &grouped(value), AMOUNT_COLUMN)
+            aligned(label, &grouped(value, format), AMOUNT_COLUMN)
         )
     };
 
@@ -110,7 +111,7 @@ pub fn render(
         &format!(" {verb} {name} "),
         &[
             "",
-            &aligned(held_label, &grouped(held), HELD_COLUMN),
+            &aligned(held_label, &grouped(held, format), HELD_COLUMN),
             "",
             // `{units:^4}` centres the count between the arrows, so the spinner does
             // not shuffle sideways as it crosses ten and a hundred.
@@ -143,7 +144,15 @@ mod tests {
 
     fn draw(inventory: &Inventory, direction: Conversion, units: u32) -> String {
         crate::overlay::render_to_string(|frame, area| {
-            render(frame, area, inventory, Material::Iron, direction, units);
+            render(
+                frame,
+                area,
+                inventory,
+                Material::Iron,
+                direction,
+                units,
+                NumberFormat::default(),
+            );
         })
     }
 
@@ -215,6 +224,7 @@ mod tests {
                 Material::AncientDebris,
                 Conversion::Compress,
                 5,
+                NumberFormat::default(),
             );
         });
 

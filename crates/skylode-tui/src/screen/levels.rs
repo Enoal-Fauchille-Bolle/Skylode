@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
         Some(_) => format!(
             " Levels — Lv {} · {} XP to Lv {} ",
             view.player_level,
-            xp_progress(view.xp, view.xp_to_next),
+            xp_progress(view.xp, view.xp_to_next, view.number_format),
             view.player_level + 1,
         ),
         None => format!(" Levels — Lv {} · {MAXED} ", view.player_level),
@@ -102,7 +102,9 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
             // The XP column reads `—` at the cap rather than a number: there is no
             // level 51, so the last row has no requirement to state, and the Mine
             // screen's rule about empty gauges applies unchanged.
-            let xp = row.xp.map_or_else(|| NOTHING.to_owned(), grouped);
+            let xp = row
+                .xp
+                .map_or_else(|| NOTHING.to_owned(), |xp| grouped(xp, view.number_format));
             theme::marked(&justified(&left, &xp, width))
         })
         .collect();

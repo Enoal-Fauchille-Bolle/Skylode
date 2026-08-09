@@ -19,6 +19,7 @@ use ratatui::{Frame, layout::Rect};
 use skylode_core::economy::Affordability;
 
 use crate::{
+    config::NumberFormat,
     format::{denominations, holding, justified, multiplier, prestige_rank, roman},
     view::PrestigeView,
 };
@@ -63,7 +64,7 @@ const COLUMN: usize = 35;
 const BODY_WIDTH: usize = 64;
 
 /// Draws the prestige preview for `view` (UI.md §6.8).
-pub fn render_preview(frame: &mut Frame, area: Rect, view: &PrestigeView) {
+pub fn render_preview(frame: &mut Frame, area: Rect, view: &PrestigeView, format: NumberFormat) {
     let material = view.material.name();
     let mark = if view.lock.is_open() && view.verdict == Affordability::Affordable {
         "✓"
@@ -78,8 +79,8 @@ pub fn render_preview(frame: &mut Frame, area: Rect, view: &PrestigeView) {
     // it was not.
     let ranks = format!(
         " Rank  {}  →  {}",
-        prestige_rank(view.rank),
-        prestige_rank(view.rank.saturating_add(1)),
+        prestige_rank(view.rank, format),
+        prestige_rank(view.rank.saturating_add(1), format),
     );
     let header = format!(
         "{ranks:<COLUMN$}Multiplier  {}  →  {}",
@@ -91,11 +92,11 @@ pub fn render_preview(frame: &mut Frame, area: Rect, view: &PrestigeView) {
     // purpose: the price is a total the till splits, the purse is two counts read off
     // the inventory — see `format::holding` for why the second must not be computed
     // like the first.
-    let costs = format!(" Cost  {} {material}", denominations(view.cost));
+    let costs = format!(" Cost  {} {material}", denominations(view.cost, format));
     let price = justified(
         &format!(
             "{costs:<COLUMN$}Held  {}",
-            holding(view.held_compressed, view.held_raw)
+            holding(view.held_compressed, view.held_raw, format)
         ),
         mark,
         BODY_WIDTH,
@@ -147,7 +148,7 @@ pub fn render_preview(frame: &mut Frame, area: Rect, view: &PrestigeView) {
         lines.push(format!(" {left:<33} {right}"));
     }
     lines.push(String::new());
-    lines.extend(closing_lines(view));
+    lines.extend(closing_lines(view, format));
 
     super::modal(
         frame,
@@ -171,7 +172,7 @@ pub fn render_preview(frame: &mut Frame, area: Rect, view: &PrestigeView) {
 /// [`announce`](crate::announce) or with the purchase toasts: those word an
 /// [`Affordability`] in one line for a three-second window, where this box has two
 /// lines and no deadline.
-fn closing_lines(view: &PrestigeView) -> Vec<String> {
+fn closing_lines(view: &PrestigeView, format: NumberFormat) -> Vec<String> {
     let material = view.material.name();
     if !view.lock.is_open() {
         // Two gates, so at most two clauses — built from the lock's two `Option`s, and
@@ -212,7 +213,7 @@ fn closing_lines(view: &PrestigeView) -> Vec<String> {
         Affordability::Insufficient(_) => vec![
             format!(
                 " You are {} {material} short — the End's richness dial is what",
-                denominations(view.cost.saturating_sub(view.held))
+                denominations(view.cost.saturating_sub(view.held), format)
             ),
             " turns a run into a rank.".to_owned(),
         ],
@@ -220,8 +221,14 @@ fn closing_lines(view: &PrestigeView) -> Vec<String> {
 }
 
 /// Draws the typed prestige confirm for `view`, with `typed` in its field (UI.md §6.9).
-pub fn render_confirm(frame: &mut Frame, area: Rect, view: &PrestigeView, typed: &str) {
-    let rank = prestige_rank(view.rank.saturating_add(1));
+pub fn render_confirm(
+    frame: &mut Frame,
+    area: Rect,
+    view: &PrestigeView,
+    typed: &str,
+    format: NumberFormat,
+) {
+    let rank = prestige_rank(view.rank.saturating_add(1), format);
     let title = format!(" Prestige {rank} ");
     // The field: what was typed, then underscores for the rest of the drawn width. The
     // count is over `chars` and not bytes — a stray multibyte keystroke must cost one
@@ -241,7 +248,7 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, view: &PrestigeView, typed:
             "",
             &format!(
                 " {} {}  →  rank {rank}  ({})",
-                denominations(view.cost),
+                denominations(view.cost, format),
                 view.material.name(),
                 multiplier(view.next_multiplier_permille),
             ),
@@ -286,7 +293,9 @@ mod tests {
     #[test]
     fn the_preview_is_a_two_column_trade_drawn_unaffordable() {
         let view = locked();
-        let frame = crate::overlay::render_to_string(|f, a| render_preview(f, a, &view));
+        let frame = crate::overlay::render_to_string(|f, a| {
+            render_preview(f, a, &view, NumberFormat::default())
+        });
         assert!(
             frame.contains("You lose") && frame.contains("You keep"),
             "{frame}"
@@ -315,7 +324,9 @@ mod tests {
             verdict: Affordability::CompressFirst(Vec::new()),
             ..locked()
         };
-        let frame = crate::overlay::render_to_string(|f, a| render_preview(f, a, &view));
+        let frame = crate::overlay::render_to_string(|f, a| {
+            render_preview(f, a, &view, NumberFormat::default())
+        });
         assert!(frame.contains("Held  0 Compressed + 20 000"), "{frame}");
         assert!(!frame.contains("200 Compressed"), "{frame}");
         // And the closing line names the loop that fixes it.
@@ -327,7 +338,9 @@ mod tests {
     #[test]
     fn the_price_is_quoted_in_both_denominations() {
         let view = locked();
-        let frame = crate::overlay::render_to_string(|f, a| render_preview(f, a, &view));
+        let frame = crate::overlay::render_to_string(|f, a| {
+            render_preview(f, a, &view, NumberFormat::default())
+        });
         assert!(frame.contains("65 Compressed + 40 Amethyst"), "{frame}");
         assert!(!frame.contains("6 540 Amethyst"), "{frame}");
     }
@@ -346,7 +359,9 @@ mod tests {
             level: 1,
             ..locked()
         };
-        let frame = crate::overlay::render_to_string(|f, a| render_preview(f, a, &view));
+        let frame = crate::overlay::render_to_string(|f, a| {
+            render_preview(f, a, &view, NumberFormat::default())
+        });
         assert!(frame.contains("Rank  0  →  I"), "{frame}");
         assert!(frame.contains("×1.00  →  ×1.10"), "{frame}");
         // Nothing owned, so nothing is billed as a loss.
@@ -363,7 +378,9 @@ mod tests {
             verdict: Affordability::Insufficient(Vec::new()),
             ..ready()
         };
-        let frame = crate::overlay::render_to_string(|f, a| render_preview(f, a, &short));
+        let frame = crate::overlay::render_to_string(|f, a| {
+            render_preview(f, a, &short, NumberFormat::default())
+        });
         assert!(
             frame.contains("65 Compressed + 40 Amethyst short"),
             "{frame}"
@@ -374,14 +391,18 @@ mod tests {
             verdict: Affordability::CompressFirst(Vec::new()),
             ..ready()
         };
-        let frame = crate::overlay::render_to_string(|f, a| render_preview(f, a, &misshaped));
+        let frame = crate::overlay::render_to_string(|f, a| {
+            render_preview(f, a, &misshaped, NumberFormat::default())
+        });
         assert!(frame.contains("wrong denomination"), "{frame}");
     }
 
     #[test]
     fn an_affordable_preview_is_marked_and_says_so() {
         let view = ready();
-        let frame = crate::overlay::render_to_string(|f, a| render_preview(f, a, &view));
+        let frame = crate::overlay::render_to_string(|f, a| {
+            render_preview(f, a, &view, NumberFormat::default())
+        });
         assert!(frame.contains("✓"), "{frame}");
         assert!(frame.contains("This cannot be undone."), "{frame}");
     }
@@ -389,7 +410,9 @@ mod tests {
     #[test]
     fn the_confirm_asks_for_the_typed_word() {
         let view = ready();
-        let frame = crate::overlay::render_to_string(|f, a| render_confirm(f, a, &view, ""));
+        let frame = crate::overlay::render_to_string(|f, a| {
+            render_confirm(f, a, &view, "", NumberFormat::default())
+        });
         assert!(frame.contains("This cannot be undone."), "{frame}");
         assert!(frame.contains("Type  PRESTIGE  to confirm:"), "{frame}");
         assert!(frame.contains("> ____________"), "{frame}");
@@ -400,19 +423,30 @@ mod tests {
     #[test]
     fn the_field_shows_the_letters_as_they_are_typed() {
         let view = ready();
-        let frame = crate::overlay::render_to_string(|f, a| render_confirm(f, a, &view, "PREZ"));
+        let frame = crate::overlay::render_to_string(|f, a| {
+            render_confirm(f, a, &view, "PREZ", NumberFormat::default())
+        });
         assert!(frame.contains("> PREZ________"), "{frame}");
-        let frame =
-            crate::overlay::render_to_string(|f, a| render_confirm(f, a, &view, CONFIRM_WORD));
+        let frame = crate::overlay::render_to_string(|f, a| {
+            render_confirm(f, a, &view, CONFIRM_WORD, NumberFormat::default())
+        });
         assert!(frame.contains("> PRESTIGE____"), "{frame}");
     }
 
     #[test]
     fn the_confirm_quotes_the_same_price_as_the_preview() {
         let view = ready();
-        let preview = crate::overlay::render_to_string(|f, a| render_preview(f, a, &view));
-        let confirm = crate::overlay::render_to_string(|f, a| render_confirm(f, a, &view, ""));
-        let price = format!("{} {}", denominations(view.cost), Material::Amethyst.name());
+        let preview = crate::overlay::render_to_string(|f, a| {
+            render_preview(f, a, &view, NumberFormat::default())
+        });
+        let confirm = crate::overlay::render_to_string(|f, a| {
+            render_confirm(f, a, &view, "", NumberFormat::default())
+        });
+        let price = format!(
+            "{} {}",
+            denominations(view.cost, NumberFormat::default()),
+            Material::Amethyst.name()
+        );
         assert!(preview.contains(&price) && confirm.contains(&price));
     }
 }

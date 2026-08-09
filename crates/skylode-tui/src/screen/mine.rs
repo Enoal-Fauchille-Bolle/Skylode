@@ -28,6 +28,7 @@ use skylode_core::block::Block;
 
 use crate::{
     action::Action,
+    config::NumberFormat,
     format::{grouped, justified, shown_rung, xp_progress, xp_ratio},
     screen::panel,
     theme,
@@ -110,7 +111,7 @@ fn haul(frame: &mut Frame, area: Rect, view: &View) {
     // style cannot leave the arithmetic behind.
     let width = usize::from(block.inner(area).width);
     frame.render_widget(
-        Paragraph::new(haul_line(&view.haul, width)).block(block),
+        Paragraph::new(haul_line(&view.haul, width, view.number_format)).block(block),
         area,
     );
 }
@@ -142,24 +143,28 @@ fn haul(frame: &mut Frame, area: Rect, view: &View) {
 /// uses three, and *Compressed* shortened to `Comp.`. Both are bought width, and the
 /// worst pair in the game — Obsidian beside Crying Obsidian, 23 columns of names —
 /// does not fit the loose wording at any holding worth showing.
-fn haul_line(haul: &HaulView, width: usize) -> String {
+fn haul_line(haul: &HaulView, width: usize, format: NumberFormat) -> String {
     let Some(value) = haul.value else {
         let entry = haul.common;
         let held = format!(
             "  {}   {} Raw   {} Compressed",
             entry.material,
-            grouped(entry.raw),
-            grouped(entry.compressed),
+            grouped(entry.raw, format),
+            grouped(entry.compressed, format),
         );
-        let composite = format!("value {} {}  ", grouped(entry.value()), entry.material);
+        let composite = format!(
+            "value {} {}  ",
+            grouped(entry.value(), format),
+            entry.material
+        );
         return justified(&held, &composite, width);
     };
     let segment = |entry: HaulEntry| {
         format!(
             "{} {} Raw {} Comp.",
             entry.material,
-            grouped(entry.raw),
-            grouped(entry.compressed),
+            grouped(entry.raw, format),
+            grouped(entry.compressed, format),
         )
     };
     format!("  {} · {}", segment(haul.common), segment(value))
@@ -276,8 +281,8 @@ fn mine_panel(frame: &mut Frame, area: Rect, view: &View) {
         Line::from(format!(" {:<22}{world}", view.mine_name)),
         Line::from(format!(
             " Blocks    {} / {}",
-            grouped(standing as u32),
-            grouped(total as u32),
+            grouped(standing as u32, view.number_format),
+            grouped(total as u32, view.number_format),
         )),
         Line::from(format!(
             " Size      {columns} x {rows}   (level {})",
@@ -322,7 +327,7 @@ fn gauges(frame: &mut Frame, area: Rect, view: &View) {
         &format!(
             " XP  Lv {}   {}",
             view.player_level,
-            xp_progress(view.xp, view.xp_to_next),
+            xp_progress(view.xp, view.xp_to_next, view.number_format),
         ),
         ratio(xp_ratio(view.xp, view.xp_to_next)),
     );
@@ -358,7 +363,7 @@ fn boost_label(view: &View) -> String {
     };
     let reserve = match view.boost_charges {
         0 => "no charges".to_owned(),
-        held => format!("{} held", grouped(held)),
+        held => format!("{} held", grouped(held, view.number_format)),
     };
     format!(" Boost  {running}   {reserve}")
 }
@@ -816,7 +821,11 @@ mod tests {
                 raw,
                 compressed,
             });
-            let line = haul_line(&HaulView { common, value }, INNER_WIDTH);
+            let line = haul_line(
+                &HaulView { common, value },
+                INNER_WIDTH,
+                NumberFormat::default(),
+            );
             assert!(
                 line.chars().count() <= INNER_WIDTH,
                 "{kind:?}: {} columns — {line:?}",

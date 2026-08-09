@@ -810,15 +810,19 @@ impl App {
             }
             // The value row: the two rows below it spend this, and `Enter` here is the
             // same non-act as on the toggle.
-            DevRow::Amount => format!("Amount {}", grouped(amount)),
+            DevRow::Amount => format!("Amount {}", grouped(amount, self.config.number_format)),
             DevRow::Material => {
                 let item = Item::Raw(dev.material);
                 self.state.dev_grant(item, amount);
-                format!("+{} {item}", grouped(amount))
+                format!("+{} {item}", grouped(amount, self.config.number_format))
             }
             DevRow::Everything => {
                 self.state.dev_grant_all(amount);
-                format!("+{} of all {} piles", grouped(amount), Material::ALL.len())
+                format!(
+                    "+{} of all {} piles",
+                    grouped(amount, self.config.number_format),
+                    Material::ALL.len()
+                )
             }
             DevRow::Experience => {
                 let events = self.state.dev_add_experience(amount);
@@ -832,11 +836,11 @@ impl App {
                 // `Toasts::current` pin a level-up without swallowing an answer the
                 // player is waiting for.
                 for event in &events {
-                    let (text, tone, salience) = announce::of(event);
+                    let (text, tone, salience) = announce::of(event, self.config.number_format);
                     self.toasts
                         .push(text, tone, salience, self.config.toast_ttl());
                 }
-                format!("+{} xp", grouped(amount))
+                format!("+{} xp", grouped(amount, self.config.number_format))
             }
             DevRow::Level => {
                 self.state.dev_set_level(dev.level);
@@ -884,7 +888,7 @@ impl App {
         match self.state.resume(now) {
             Some(report) => format!(
                 "Skipped {label} — {} blocks mined",
-                grouped_u64(report.blocks)
+                grouped_u64(report.blocks, self.config.number_format)
             ),
             None => "Skipped nothing — the mark is already at the epoch".to_owned(),
         }
@@ -948,7 +952,10 @@ impl App {
             // nothing about what the player came for, and the loop is a walk with no
             // errand at the end. `remember_refusal` clears it on every other outcome, so
             // this is also what stops a stale note surviving the trade.
-            let purchase = format!("Prestige {}", prestige_rank(rank.saturating_add(1)));
+            let purchase = format!(
+                "Prestige {}",
+                prestige_rank(rank.saturating_add(1), self.config.number_format)
+            );
             self.remember_refusal(&purchase, &cost);
         }
     }
@@ -1005,7 +1012,7 @@ impl App {
                 self.toasts.push(
                     format!(
                         "Prestige {} — {} on everything",
-                        prestige_rank(rank),
+                        prestige_rank(rank, self.config.number_format),
                         multiplier(prestige::multiplier_permille(rank))
                     ),
                     Tone::Success,
@@ -1095,7 +1102,10 @@ impl App {
         let refusal = match direction {
             Conversion::Compress => format!(
                 "Nothing to compress — {RAW_PER_COMPRESSED} raw {name} needed, {} held",
-                grouped(inventory.count(Item::Raw(material)))
+                grouped(
+                    inventory.count(Item::Raw(material)),
+                    self.config.number_format
+                )
             ),
             Conversion::Decompress => format!("Nothing to decompress — no Compressed {name} held"),
         };
@@ -1142,7 +1152,10 @@ impl App {
         let (message, tone) = match outcome {
             Ok(()) => {
                 let (item, amount) = gained;
-                (format!("+{} {item}", grouped(amount)), Tone::Success)
+                (
+                    format!("+{} {item}", grouped(amount, self.config.number_format)),
+                    Tone::Success,
+                )
             }
             Err(refusal) => (refusal.to_string(), Tone::Refusal),
         };
@@ -1305,7 +1318,10 @@ impl App {
                 format!("{} {what} → level {level}", kind.name())
             }
             UpgradeTab::Boost => {
-                format!("{} boost charges held", grouped(self.state.boost_charges()))
+                format!(
+                    "{} boost charges held",
+                    grouped(self.state.boost_charges(), self.config.number_format)
+                )
             }
         }
     }
@@ -1517,10 +1533,16 @@ impl App {
         let bought_label = if bought == 1 {
             "a boost charge".to_owned()
         } else {
-            format!("{} boost charges", grouped(bought))
+            format!(
+                "{} boost charges",
+                grouped(bought, self.config.number_format)
+            )
         };
         self.toasts.push(
-            format!("Bought {bought_label} — {} held", grouped(held)),
+            format!(
+                "Bought {bought_label} — {} held",
+                grouped(held, self.config.number_format)
+            ),
             Tone::Success,
             Salience::Normal,
             self.config.toast_ttl(),
@@ -1656,8 +1678,8 @@ impl App {
                 match shortfalls.first() {
                     Some(Shortfall { item, needed, held }) => format!(
                         "Compress first — need {} {item}, you have {} · c to go",
-                        grouped(*needed),
-                        grouped(*held)
+                        grouped(*needed, self.config.number_format),
+                        grouped(*held, self.config.number_format)
                     ),
                     None => "Compress first · c to go".to_owned(),
                 },
@@ -1680,8 +1702,8 @@ impl App {
                     Some(Shortfall { item, needed, held }) => format!(
                         "Not enough {} — {} needed, {} held",
                         item.material().name(),
-                        denominations(*needed),
-                        denominations(*held)
+                        denominations(*needed, self.config.number_format),
+                        denominations(*held, self.config.number_format)
                     ),
                     None => "Not enough ore".to_owned(),
                 },
@@ -1872,7 +1894,10 @@ impl App {
         let level = self.cursors.level;
         match self.state.claim_level(level) {
             Ok(reward) => {
-                let message = format!("Claimed Lv {level} — {}", announce::payout(&reward.payout));
+                let message = format!(
+                    "Claimed Lv {level} — {}",
+                    announce::payout(&reward.payout, self.config.number_format)
+                );
                 self.toasts.push(
                     message,
                     Tone::Success,
@@ -1911,7 +1936,10 @@ impl App {
         let message = match collected.as_slice() {
             [] => "Nothing waiting to claim".to_owned(),
             [(level, reward)] => {
-                format!("Claimed Lv {level} — {}", announce::payout(&reward.payout))
+                format!(
+                    "Claimed Lv {level} — {}",
+                    announce::payout(&reward.payout, self.config.number_format)
+                )
             }
             many => format!("Claimed {} levels", many.len()),
         };
@@ -2037,7 +2065,7 @@ impl App {
         }
 
         for event in &events {
-            let (text, tone, salience) = announce::of(event);
+            let (text, tone, salience) = announce::of(event, self.config.number_format);
             // `push_at` and not `push`: a toast raised by a step must expire three
             // seconds after the instant that step ran, and the prune two lines below
             // is measured against that same `now`. Reading the clock twice inside one
@@ -2141,6 +2169,7 @@ impl App {
                     *material,
                     *direction,
                     *units,
+                    self.config.number_format,
                 ),
                 // The opposite choice to the dialog above, and for the opposite reason:
                 // the dip is about a purchase whose numbers the player has *already
@@ -2155,10 +2184,21 @@ impl App {
                 // draws from, which is the dip modal's rule and is what stops the box
                 // quoting a price the panel disagrees with.
                 Modal::PrestigePreview => {
-                    prestige_overlay::render_preview(frame, area, &self.view.prestige);
+                    prestige_overlay::render_preview(
+                        frame,
+                        area,
+                        &self.view.prestige,
+                        self.config.number_format,
+                    );
                 }
                 Modal::PrestigeConfirm { typed } => {
-                    prestige_overlay::render_confirm(frame, area, &self.view.prestige, typed);
+                    prestige_overlay::render_confirm(
+                        frame,
+                        area,
+                        &self.view.prestige,
+                        typed,
+                        self.config.number_format,
+                    );
                 }
                 // Draws from `dev` and nothing else — the menu is about its own dialled
                 // values, not about the run behind it, so there is no projection here
@@ -2166,7 +2206,7 @@ impl App {
                 #[cfg(debug_assertions)]
                 Modal::Dev => {
                     if let Some(dev) = &self.dev {
-                        dev::render(frame, area, dev);
+                        dev::render(frame, area, dev, self.config.number_format);
                     }
                 }
             }
@@ -2333,7 +2373,7 @@ mod tests {
     // preference — so all three are imported here rather than at the top of the file,
     // where a release build would find them unused.
     use crate::{
-        config::{SubTabKeys, ToastDuration},
+        config::{NumberFormat, SubTabKeys, ToastDuration},
         keymap, palette,
         toast::TOAST_TTL,
     };
@@ -2883,6 +2923,45 @@ mod tests {
         assert!(
             four_seconds_later(ToastDuration::Lingering).contains("no boost charge"),
             "an eight-second announcement was gone after four"
+        );
+    }
+
+    /// **The separator, measured on the frame the player is looking at.**
+    ///
+    /// The signature change enumerated the call sites; nothing about it proves they
+    /// were threaded from the *preference* rather than from a `NumberFormat::default()`
+    /// somebody reached for to make the compiler stop. So this turns the row and reads
+    /// the Inventory table, whose figures are wide enough to be punctuated at all, and
+    /// asserts the comma arrives and the space leaves.
+    ///
+    /// A pile is granted first because a fresh run holds nothing, and `0` reads the
+    /// same in all three formats.
+    #[test]
+    fn turning_the_number_format_row_repunctuates_the_screen() {
+        let mut app = session();
+        app.state.dev_grant(Item::Raw(Material::Iron), 1_234_567);
+        app.screen = Screen::Inventory;
+        app.cursors.material = Material::Iron;
+        app.sync_view(Instant::now());
+        assert!(
+            whole_frame(&render_to_buffer(&app)).contains("1 234 567"),
+            "the default reading was not the spaced one"
+        );
+
+        // Down two rows to `Number format`, then one step right: Spaced → Comma.
+        app.update(Action::OpenSettings);
+        app.update(Action::CursorDown);
+        app.update(Action::CursorDown);
+        app.update(Action::AdjustRight);
+        app.update(Action::CloseModal);
+        assert_eq!(app.config.number_format, NumberFormat::Comma);
+
+        app.sync_view(Instant::now());
+        let frame = whole_frame(&render_to_buffer(&app));
+        assert!(frame.contains("1,234,567"), "{frame}");
+        assert!(
+            !frame.contains("1 234 567"),
+            "a call site kept the old separator: {frame}"
         );
     }
 
@@ -5578,7 +5657,7 @@ mod tests {
         app.sync_view(Instant::now());
         let box_frame = whole_frame(&render_to_buffer(&app));
 
-        let price = denominations(app.view.prestige.cost);
+        let price = denominations(app.view.prestige.cost, NumberFormat::default());
         assert!(panel.contains(&price), "{panel}");
         assert!(box_frame.contains(&price), "{box_frame}");
     }

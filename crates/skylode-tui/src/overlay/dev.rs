@@ -26,6 +26,7 @@ use ratatui::{Frame, layout::Rect};
 use skylode_core::{material::Material, tunables::LEVEL_CAP};
 
 use crate::{
+    config::NumberFormat,
     cursor::{step_in, step_index},
     format::grouped,
 };
@@ -240,8 +241,8 @@ impl DevState {
     /// **The arrows are added by [`DevRow::adjustable`] and not by each arm**, so a row
     /// that draws a spinner is exactly a row `←/→` moves. Written the other way, the two
     /// facts would be stated twice and the second one to be edited would be the lie.
-    fn value(&self, row: DevRow) -> String {
-        let amount = grouped(self.amount());
+    fn value(&self, row: DevRow, format: NumberFormat) -> String {
+        let amount = grouped(self.amount(), format);
         let value = match row {
             DevRow::FreeUpgrades => (if self.free_upgrades { "on" } else { "off" }).to_owned(),
             DevRow::Amount => amount,
@@ -291,7 +292,7 @@ const VALUE_COLUMN: usize = 18;
 /// wireframe — there is no wireframe. The nine rows plus a blank line and a key hint
 /// fit inside the 80×24 budget [`too_small`](crate::overlay::too_small) already
 /// guarantees, so the box never needs to scroll and this module needs no scrollbar.
-pub fn render(frame: &mut Frame, area: Rect, dev: &DevState) {
+pub fn render(frame: &mut Frame, area: Rect, dev: &DevState, format: NumberFormat) {
     let width = VALUE_COLUMN;
     let mut lines: Vec<String> = vec![String::new()];
     for row in ROWS {
@@ -299,7 +300,7 @@ pub fn render(frame: &mut Frame, area: Rect, dev: &DevState) {
         // naming a colour — the same route every list row in the crate takes.
         let mark = if row == dev.row { "▸" } else { " " };
         let label = row.label();
-        let value = dev.value(row);
+        let value = dev.value(row, format);
         lines.push(format!(" {mark} {label:<width$}{value}"));
     }
     lines.push(String::new());
@@ -365,7 +366,9 @@ mod tests {
     use super::*;
 
     fn draw(dev: &DevState) -> String {
-        crate::overlay::render_to_string(|frame, area| render(frame, area, dev))
+        crate::overlay::render_to_string(|frame, area| {
+            render(frame, area, dev, NumberFormat::default());
+        })
     }
 
     #[test]

@@ -1,8 +1,10 @@
 //! Text formatting shared across screens.
 //!
-//! [`grouped`] enforces the cross-cutting rule that numbers are **exact, with a
-//! thousands separator, and never abbreviated** (UI.md §5.6): `1 240`, `418 297`,
-//! never `1.2k`. [`justified`] lays a label and a value on one row with the value
+//! [`grouped`] enforces the cross-cutting rule that numbers are **exact and never
+//! abbreviated** (UI.md §5.6): `1 240`, `418 297`, never `1.2k`. *How* the thousands
+//! are punctuated is the player's to choose ([`NumberFormat`]) and travels as a
+//! parameter; *that* they are never shortened is not, and has no parameter.
+//! [`justified`] lays a label and a value on one row with the value
 //! flush to the right — the shape a roadmap row, a stat line and a table row all
 //! repeat. [`xp_progress`] is the one reading that has a *non-numeric* answer, and it
 //! is here so all three screens that print it give the same one. [`roman`] and
@@ -18,19 +20,28 @@ use skylode_core::{
     tunables::{RAW_PER_COMPRESSED, TICKS_PER_SECOND},
 };
 
+use crate::config::NumberFormat;
+
 /// The glyph a truncated line ends on, and the one column [`truncate`] must keep for
 /// it.
 const ELLIPSIS: char = '…';
 
-/// Groups `n` into space-separated thousands: `1240` becomes `"1 240"`.
+/// Groups `n` into thousands the way the player asked: `1240` becomes `"1 240"`,
+/// `"1,240"` or `"1240"`.
 ///
-/// A **plain space**, not a comma or a dot, because the wireframes are drawn that
-/// way (`1 240 / 2 300`) and because the two punctuation choices are the two that
-/// collide with a decimal point in the locales this reader lives between. The
-/// separator is the ASCII space so the rendered row matches the frame byte for
-/// byte, which is what the layout tests assert against.
-pub fn grouped(n: u32) -> String {
-    grouped_u64(u64::from(n))
+/// **The `format` is a parameter and not a default**, and that is the whole reason the
+/// signature changed rather than gaining an optional argument: this crate reads a
+/// number in ~46 places, and only a signature the compiler refuses to call the old way
+/// could enumerate them. A default would have left the ones nobody thought of quietly
+/// printing spaces at a player who asked for commas.
+///
+/// The space stays the *default* — the wireframes are drawn that way (`1 240 / 2 300`),
+/// and it is an ASCII space so the rendered row matches the frame byte for byte, which
+/// is what the layout tests assert against. The alternatives exist because the two
+/// punctuation marks collide with a decimal point in the locales this reader lives
+/// between; see [`NumberFormat`].
+pub fn grouped(n: u32, format: NumberFormat) -> String {
+    grouped_u64(u64::from(n), format)
 }
 
 /// [`grouped`], for a count that outgrows a [`u32`].
@@ -41,17 +52,23 @@ pub fn grouped(n: u32) -> String {
 /// space in one reading of a number and a comma in the other.
 ///
 /// [`OfflineReport::blocks`]: skylode_core::game::OfflineReport
-pub fn grouped_u64(n: u64) -> String {
+pub fn grouped_u64(n: u64, format: NumberFormat) -> String {
+    let digits = n.to_string();
+    // `Plain` is the digits themselves, and answering it here rather than with an empty
+    // separator inside the loop is what keeps *"no grouping"* one branch instead of a
+    // push of nothing repeated every third digit.
+    let Some(separator) = format.separator() else {
+        return digits;
+    };
     // Built from the least-significant digit up — grouping counts from the right,
     // so the string is assembled reversed and flipped once at the end rather than
     // repeatedly measuring how far the current digit sits from the decimal point.
-    let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (count, ch) in digits.chars().rev().enumerate() {
         // A separator every third digit, but never a leading one: `count == 0` is
         // the first digit and `count % 3 == 0` there would prepend a stray space.
         if count > 0 && count % 3 == 0 {
-            out.push(' ');
+            out.push(separator);
         }
         out.push(ch);
     }
@@ -223,13 +240,17 @@ pub fn justified(left: &str, right: &str, width: usize) -> String {
 ///
 /// A total under [`RAW_PER_COMPRESSED`] is bare, including zero: `0 held` is what a
 /// penniless player holds, and `0 Compressed + 0` states it twice.
-pub fn denominations(total: u32) -> String {
+pub fn denominations(total: u32, format: NumberFormat) -> String {
     let compressed = total / RAW_PER_COMPRESSED;
     let raw = total % RAW_PER_COMPRESSED;
     match (compressed, raw) {
-        (0, _) => grouped(raw),
-        (_, 0) => format!("{} Compressed", grouped(compressed)),
-        _ => format!("{} Compressed + {}", grouped(compressed), grouped(raw)),
+        (0, _) => grouped(raw, format),
+        (_, 0) => format!("{} Compressed", grouped(compressed, format)),
+        _ => format!(
+            "{} Compressed + {}",
+            grouped(compressed, format),
+            grouped(raw, format)
+        ),
     }
 }
 
@@ -250,11 +271,15 @@ pub fn denominations(total: u32) -> String {
 /// `0 Compressed + 0` states nothing twice.
 ///
 /// [`Inventory::raw_value`]: skylode_core::inventory::Inventory::raw_value
-pub fn holding(compressed: u32, raw: u32) -> String {
+pub fn holding(compressed: u32, raw: u32, format: NumberFormat) -> String {
     if compressed == 0 && raw == 0 {
         return "0".to_owned();
     }
-    format!("{} Compressed + {}", grouped(compressed), grouped(raw))
+    format!(
+        "{} Compressed + {}",
+        grouped(compressed, format),
+        grouped(raw, format)
+    )
 }
 
 /// Roman numerals `I`..=`XV` — exactly the range an Efficiency level can take, since
@@ -297,12 +322,12 @@ pub fn roman(level: u8) -> &'static str {
 /// prestige, and `roman(0)` answers `"?"` because an enchant at level 0 is one the
 /// player does not own. A rank of 0 *is* owned — it is where everyone starts — so it
 /// prints as `0`.
-pub fn prestige_rank(rank: u32) -> String {
+pub fn prestige_rank(rank: u32, format: NumberFormat) -> String {
     match u8::try_from(rank) {
         Ok(0) => "0".to_owned(),
         // Roman while the table covers it; the numeral is what §5.5 and §6.8 draw.
         Ok(small) if usize::from(small) <= ROMAN.len() => roman(small).to_owned(),
-        _ => grouped(rank),
+        _ => grouped(rank, format),
     }
 }
 
@@ -373,9 +398,9 @@ pub fn rung_label(tier: PickaxeTier, efficiency: u8) -> String {
 /// the Stats Progression panel and the Levels title — and three independent
 /// `map_or`s would be three chances to word the capped case differently, or to
 /// divide by the zero a sentinel would have handed them.
-pub fn xp_progress(xp: u32, to_next: Option<u32>) -> String {
+pub fn xp_progress(xp: u32, to_next: Option<u32>, format: NumberFormat) -> String {
     match to_next {
-        Some(needed) => format!("{} / {}", grouped(xp), grouped(needed)),
+        Some(needed) => format!("{} / {}", grouped(xp, format), grouped(needed, format)),
         None => MAXED.to_owned(),
     }
 }
@@ -402,6 +427,14 @@ pub fn xp_ratio(xp: u32, to_next: Option<u32>) -> f64 {
 mod tests {
     use super::*;
 
+    /// The default, and the one the wireframes are drawn in.
+    ///
+    /// Nearly every assertion below is about the grouping *arithmetic* — where the
+    /// breaks fall — which is the same question whatever the separator is. Spelling the
+    /// format once here keeps those tests reading as they did, and leaves
+    /// `every_format_punctuates_the_same_digits` to be the one that is about the choice.
+    const SPACED: NumberFormat = NumberFormat::Spaced;
+
     /// The player counts the rungs they own; the core indexes the table they sit in.
     ///
     /// Both ends of both mine tracks are checked because both are load-bearing: the
@@ -420,60 +453,110 @@ mod tests {
 
     #[test]
     fn a_number_below_a_thousand_is_left_untouched() {
-        assert_eq!(grouped(0), "0");
-        assert_eq!(grouped(9), "9");
-        assert_eq!(grouped(680), "680");
+        assert_eq!(grouped(0, SPACED), "0");
+        assert_eq!(grouped(9, SPACED), "9");
+        assert_eq!(grouped(680, SPACED), "680");
+    }
+
+    /// **The three choices punctuate the same digits and lose none of them.**
+    ///
+    /// The second assertion is the load-bearing one and the reason it is written as a
+    /// filter rather than as three literals: `docs/DECISIONS.md` settles that a figure
+    /// is never abbreviated, so whatever the player picks, stripping the punctuation
+    /// has to give back the number itself. A format that rounded, truncated or shortened
+    /// would pass any single `assert_eq!` against a hand-written expectation and fail
+    /// here.
+    #[test]
+    fn every_format_punctuates_the_same_digits_and_drops_none() {
+        assert_eq!(grouped(1_234_567, NumberFormat::Spaced), "1 234 567");
+        assert_eq!(grouped(1_234_567, NumberFormat::Comma), "1,234,567");
+        assert_eq!(grouped(1_234_567, NumberFormat::Plain), "1234567");
+
+        for format in [
+            NumberFormat::Spaced,
+            NumberFormat::Comma,
+            NumberFormat::Plain,
+        ] {
+            for n in [0, 9, 680, 1_000, 418_297, u32::MAX] {
+                let bare: String = grouped(n, format)
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .collect();
+                assert_eq!(bare, n.to_string(), "{format:?} lost a digit of {n}");
+            }
+        }
+    }
+
+    /// The wide reading punctuates like the narrow one, on the same three choices.
+    ///
+    /// The two share an implementation precisely so they cannot disagree, and this is
+    /// what holds them to it: the offline summary's block count is the one figure that
+    /// needs the `u64`, and it sits three lines under figures that went through
+    /// [`grouped`].
+    #[test]
+    fn the_wide_reading_agrees_with_the_narrow_one() {
+        for format in [
+            NumberFormat::Spaced,
+            NumberFormat::Comma,
+            NumberFormat::Plain,
+        ] {
+            assert_eq!(
+                grouped_u64(1_234_567, format),
+                grouped(1_234_567, format),
+                "{format:?} split a u64 differently"
+            );
+        }
     }
 
     #[test]
     fn a_thousand_gets_one_separator() {
-        assert_eq!(grouped(1_240), "1 240");
-        assert_eq!(grouped(2_300), "2 300");
+        assert_eq!(grouped(1_240, SPACED), "1 240");
+        assert_eq!(grouped(2_300, SPACED), "2 300");
     }
 
     #[test]
     fn separators_repeat_every_three_digits() {
-        assert_eq!(grouped(418_297), "418 297");
-        assert_eq!(grouped(1_000_000), "1 000 000");
+        assert_eq!(grouped(418_297, SPACED), "418 297");
+        assert_eq!(grouped(1_000_000, SPACED), "1 000 000");
     }
 
     #[test]
     fn the_boundary_at_exactly_a_thousand_groups_correctly() {
         // 1000 is the first value that groups: the separator sits after the 1, not
         // before it, which is the off-by-one `count > 0` guards against.
-        assert_eq!(grouped(1_000), "1 000");
+        assert_eq!(grouped(1_000, SPACED), "1 000");
     }
 
     #[test]
     fn a_total_below_a_compressed_unit_is_quoted_bare() {
         // Including zero, which is what a penniless player holds: `0 Compressed + 0`
         // says the same thing twice and reads as two shortfalls.
-        assert_eq!(denominations(0), "0");
-        assert_eq!(denominations(40), "40");
-        assert_eq!(denominations(99), "99");
+        assert_eq!(denominations(0, SPACED), "0");
+        assert_eq!(denominations(40, SPACED), "40");
+        assert_eq!(denominations(99, SPACED), "99");
     }
 
     #[test]
     fn a_whole_number_of_units_drops_the_raw_half() {
         // `CostLine::requirements`' own rule, repeated: a denomination that rounds to
         // nothing is not owed, so naming it would quote a payment nobody makes.
-        assert_eq!(denominations(100), "1 Compressed");
-        assert_eq!(denominations(1_000), "10 Compressed");
+        assert_eq!(denominations(100, SPACED), "1 Compressed");
+        assert_eq!(denominations(1_000, SPACED), "10 Compressed");
     }
 
     #[test]
     fn a_mixed_total_names_both_denominations_in_the_order_they_are_paid() {
         // The wireframes' own form, and the number that started this: a price of 650
         // is `6 Compressed + 50`, never the flat `650` the same value would make.
-        assert_eq!(denominations(650), "6 Compressed + 50");
-        assert_eq!(denominations(101), "1 Compressed + 1");
+        assert_eq!(denominations(650, SPACED), "6 Compressed + 50");
+        assert_eq!(denominations(101, SPACED), "1 Compressed + 1");
     }
 
     #[test]
     fn the_compressed_count_is_grouped_like_every_other_number() {
         // The cross-cutting rule of §5.6 reaches inside a price too: a six-figure
         // count of units is still read by a human.
-        assert_eq!(denominations(1_240_000), "12 400 Compressed");
+        assert_eq!(denominations(1_240_000, SPACED), "12 400 Compressed");
     }
 
     #[test]
@@ -500,7 +583,7 @@ mod tests {
 
     #[test]
     fn xp_below_the_cap_reads_as_a_grouped_fraction() {
-        assert_eq!(xp_progress(1_240, Some(2_300)), "1 240 / 2 300");
+        assert_eq!(xp_progress(1_240, Some(2_300), SPACED), "1 240 / 2 300");
         assert_eq!(xp_ratio(1_150, Some(2_300)), 0.5);
     }
 
@@ -509,25 +592,25 @@ mod tests {
         // The pairing is the point: a capped player has earned every level there
         // is, so the word and the bar must both say *finished* rather than the
         // word saying finished over an empty bar.
-        assert_eq!(xp_progress(4_900, None), MAXED);
+        assert_eq!(xp_progress(4_900, None, SPACED), MAXED);
         assert_eq!(xp_ratio(4_900, None), 1.0);
     }
 
     /// Rank 0 is where every run starts, so it is the one this has to get right.
     #[test]
     fn a_prestige_rank_is_roman_but_starts_at_zero() {
-        assert_eq!(prestige_rank(0), "0");
-        assert_eq!(prestige_rank(1), "I");
-        assert_eq!(prestige_rank(3), "III");
+        assert_eq!(prestige_rank(0, SPACED), "0");
+        assert_eq!(prestige_rank(1, SPACED), "I");
+        assert_eq!(prestige_rank(3, SPACED), "III");
     }
 
     /// The rank is unbounded by design, so past the numerals the number is the answer
     /// — `roman`'s `?` would refuse to name a rank the player actually holds.
     #[test]
     fn a_rank_past_the_numerals_is_named_in_digits_rather_than_refused() {
-        assert_eq!(prestige_rank(15), "XV");
-        assert_eq!(prestige_rank(16), "16");
-        assert_eq!(prestige_rank(1_200), "1 200");
+        assert_eq!(prestige_rank(15, SPACED), "XV");
+        assert_eq!(prestige_rank(16, SPACED), "16");
+        assert_eq!(prestige_rank(1_200, SPACED), "1 200");
     }
 
     #[test]
