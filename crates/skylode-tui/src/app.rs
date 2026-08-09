@@ -33,7 +33,7 @@ use crate::{
     action::Action,
     announce,
     capability::Capabilities,
-    config::Config,
+    config::{Config, MiningInput},
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     flash::Flashes,
     format::{
@@ -292,6 +292,26 @@ pub struct App {
     /// press and a release inside one window is not a gesture a human can make, and a
     /// queue would be a mechanism for a case that cannot occur.
     mine_key_edge: Option<MineKeyEdge>,
+    /// Whether [`MiningInput::PressToStart`] currently has the pickaxe swinging.
+    ///
+    /// **Flipped on the *rising edge* of "the key is down", never on a key event**, and
+    /// that is what makes the mode work on a terminal that cannot report a release.
+    /// Auto-repeat sends a stream of presses while the key is held — at a rate the
+    /// operating system lets the player set, anywhere from 30 ms to half a second — so a
+    /// latch toggled per event would strobe. [`HOLD_WINDOW`] is already sized to outlast
+    /// the longest initial repeat delay a system can be set to, so the predicate it
+    /// answers stays true for the whole hold and rises exactly once.
+    ///
+    /// **Not saved.** [`Config`] stores the *mode*; this is the state of a key, and a
+    /// run reopened with the pickaxe mid-swing would be a save deciding what the
+    /// player's hands are doing.
+    mining_latch: bool,
+    /// What [`mining_latch`](App::mining_latch) compared against on the previous
+    /// [`advance`](App::advance) — the other half of an edge.
+    ///
+    /// A *level* is what the hold path computes; an *edge* is a change in that level,
+    /// and a change needs two readings. This is the older one.
+    key_was_down: bool,
 }
 
 impl App {
@@ -349,6 +369,8 @@ impl App {
             next_tick: now + SIM_PERIOD,
             last_mine_key: None,
             mine_key_edge: None,
+            mining_latch: false,
+            key_was_down: false,
         }
     }
 
@@ -2043,10 +2065,35 @@ impl App {
             None => {}
         }
 
+        // The hold path's answer, and now also the level the latch takes its edge from.
+        let key_is_down = self
+            .last_mine_key
+            .is_some_and(|last| now.duration_since(last) < HOLD_WINDOW);
+        // **Only on the way up.** See `mining_latch` for why an edge and not an event:
+        // auto-repeat keeps this predicate true for the whole hold, so a key held down
+        // toggles once whatever the repeat rate is, and a terminal that *can* report a
+        // release simply lets it fall sooner. The latch is turned in both modes rather
+        // than only in `PressToStart`, so switching mode mid-run cannot land on a stale
+        // one from before the setting was changed.
+        if key_is_down && !self.key_was_down {
+            self.mining_latch = !self.mining_latch;
+        }
+        self.key_was_down = key_is_down;
+
         let input = Input {
-            space_held: self
-                .last_mine_key
-                .is_some_and(|last| now.duration_since(last) < HOLD_WINDOW),
+            // **`&& Screen::Mine` is the two modes being made to agree, not an exception
+            // carved out of the latch.** `Hold` already behaves this way, but by
+            // accident of three unrelated mechanics: `keymap` only decodes `Space` on
+            // the Mine screen, so leaving it stops refreshing `last_mine_key` and the
+            // window lapses on its own — up to `HOLD_WINDOW` later. Saying it here
+            // makes the latch survive a tab change (so mining resumes on coming back)
+            // while producing nothing anywhere else, and turns three implicit causes
+            // into one line a test can aim at.
+            space_held: self.screen == Screen::Mine
+                && match self.config.mining_input {
+                    MiningInput::Hold => key_is_down,
+                    MiningInput::PressToStart => self.mining_latch,
+                },
         };
 
         let mut events = Vec::new();
@@ -3285,6 +3332,178 @@ mod tests {
         app.advance(wake);
 
         assert_eq!(app.next_tick, wake + SIM_PERIOD);
+    }
+
+    /// A session in press-to-start, on the Mine screen where mining happens.
+    fn tapping() -> App {
+        let mut app = session();
+        app.config.mining_input = MiningInput::PressToStart;
+        app
+    }
+
+    /// **A held key toggles once, whatever the repeat rate.**
+    ///
+    /// This is the whole reason the latch takes its edge from the hold *predicate*
+    /// rather than from the key event. A terminal with no release protocol reports a
+    /// hold as a stream of presses, at a rate the operating system lets the player set
+    /// anywhere from 30 ms to half a second — so a latch flipped per event would strobe
+    /// the pickaxe on and off for as long as the key was down.
+    ///
+    /// The repeat count is **even** on purpose, and that is what makes the assertion
+    /// bite: a per-event toggle would land back on `false` after ten of them, where one
+    /// rising edge leaves it `true`.
+    #[test]
+    fn a_held_key_with_auto_repeat_toggles_the_latch_exactly_once() {
+        let mut app = tapping();
+        let start = step_due(&app);
+
+        for repeat in 0..10 {
+            app.update(Action::MinePressed);
+            app.advance(start + Duration::from_millis(100) * repeat);
+        }
+
+        assert!(app.mining_latch, "the latch strobed with the auto-repeat");
+        assert!(
+            app.state.current_mine().break_ratio() > 0.0,
+            "a held key in press-to-start stopped swinging"
+        );
+    }
+
+    /// **The latch outlives the key**, which is the mode's entire promise: one press
+    /// starts, and the pickaxe keeps swinging with nothing held down.
+    ///
+    /// The second press is made two seconds later because [`HOLD_WINDOW`] has to lapse
+    /// in between — on a terminal that cannot report a release, that window is the only
+    /// thing that can say the key came up. See the kitty test below for the case where
+    /// it can.
+    #[test]
+    fn a_tap_starts_the_swing_and_the_next_tap_stops_it() {
+        let mut app = tapping();
+        let start = step_due(&app);
+
+        app.update(Action::MinePressed);
+        app.advance(start);
+        assert!(app.mining_latch, "the first tap did not start mining");
+
+        // **Blocks and not the field**, because the field is not the claim. A
+        // `PressToStart` that quietly read the key back would leave `mining_latch`
+        // looking exactly right and the pickaxe stopped, which is the one bug this mode
+        // exists to avoid.
+        //
+        // Advanced a second at a time rather than in one jump: `MAX_CATCHUP_TICKS` caps
+        // a pass at twenty steps and drops the rest, so a single leap of two seconds is
+        // one second of mining. The real loop calls this every ten milliseconds.
+        let before = app.state.blocks_broken();
+        app.advance(start + Duration::from_secs(1));
+        let lapsed = start + Duration::from_secs(2);
+        app.advance(lapsed);
+        assert!(app.mining_latch, "the latch fell with the key it came from");
+        assert!(
+            app.state.blocks_broken() > before,
+            "the swing stopped when the key's own window lapsed"
+        );
+
+        app.update(Action::MinePressed);
+        app.advance(lapsed + SIM_PERIOD);
+        assert!(!app.mining_latch, "the second tap did not stop mining");
+
+        // And it is genuinely stopped: two more seconds break nothing at all.
+        let stopped = app.state.blocks_broken();
+        app.advance(lapsed + Duration::from_secs(1));
+        app.advance(lapsed + Duration::from_secs(2));
+        assert_eq!(
+            app.state.blocks_broken(),
+            stopped,
+            "the second tap left the pickaxe swinging"
+        );
+    }
+
+    /// Where a release *is* reported, the second tap needs no wait at all.
+    ///
+    /// The two paths are one mechanism rather than two — a kitty release is an early cut
+    /// of the same window — so this asserts the cut and nothing else: the same two taps
+    /// as above, one simulation period apart instead of two seconds.
+    #[test]
+    fn a_reported_release_makes_the_next_tap_immediate() {
+        let mut app = tapping();
+        let start = step_due(&app);
+
+        app.update(Action::MinePressed);
+        app.advance(start);
+        assert!(app.mining_latch);
+
+        app.update(Action::MineReleased);
+        app.advance(start + SIM_PERIOD);
+        app.update(Action::MinePressed);
+        app.advance(start + SIM_PERIOD * 2);
+
+        assert!(
+            !app.mining_latch,
+            "a tap inside the hold window was swallowed on a terminal that reports releases"
+        );
+    }
+
+    /// **`Hold` is bit-for-bit what it was**, and the latch it now shares a function
+    /// with cannot reach it.
+    ///
+    /// Asserted with the latch deliberately set the *wrong* way — on, with no key down —
+    /// because that is the only state in which a mode confusion is visible: any test
+    /// that let the two agree would pass whichever field `advance` had read.
+    #[test]
+    fn the_hold_mode_reads_the_key_and_never_the_latch() {
+        let mut app = session();
+        app.mining_latch = true;
+        let start = step_due(&app);
+
+        app.advance(start);
+        assert_eq!(
+            app.state.current_mine().break_ratio(),
+            0.0,
+            "a latch left on made the hold mode swing at nothing"
+        );
+
+        app.update(Action::MinePressed);
+        app.advance(start + SIM_PERIOD);
+        assert!(
+            app.state.current_mine().break_ratio() > 0.0,
+            "the hold mode stopped following its own key"
+        );
+    }
+
+    /// **Mining happens on the Mine screen and nowhere else, in both modes.**
+    ///
+    /// `Hold` already behaved this way, but by accident of three unrelated mechanics —
+    /// `keymap` decodes `Space` on one screen, so leaving stops refreshing the window
+    /// and it lapses up to 1.1 s later. Now it is one line, so it is instant, and the
+    /// latch is what makes coming back resume rather than restart: the player never
+    /// pressed anything to stop.
+    #[test]
+    fn a_latched_swing_pauses_off_the_mine_screen_and_resumes_on_return() {
+        let mut app = tapping();
+        let start = step_due(&app);
+
+        app.update(Action::MinePressed);
+        app.advance(start);
+        assert!(app.mining_latch);
+
+        // Away: the latch is untouched, and the swing forfeits at once rather than
+        // trailing for the rest of the window.
+        app.update(Action::SelectScreen(2));
+        app.advance(start + SIM_PERIOD);
+        assert!(app.mining_latch, "leaving the tab cancelled the latch");
+        assert_eq!(
+            app.state.current_mine().break_ratio(),
+            0.0,
+            "the pickaxe went on swinging from the Inventory screen"
+        );
+
+        // Back, with nothing pressed: the latch is still the answer.
+        app.update(Action::ToMine);
+        app.advance(start + SIM_PERIOD * 2);
+        assert!(
+            app.state.current_mine().break_ratio() > 0.0,
+            "coming back did not resume the swing"
+        );
     }
 
     #[test]
