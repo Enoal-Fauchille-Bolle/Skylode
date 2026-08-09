@@ -1264,6 +1264,7 @@ which the frame already drew as `▸` apart from `●` and which phase 7 simply 
                          ┌────────────────────────────┐
                          │  ▸  Continue               │
                          │     New game               │
+                         │     Settings               │
                          │     Quit                   │
                          └────────────────────────────┘
 
@@ -1294,9 +1295,14 @@ Nine things the implementation settled:
   same function, so a `New game` quotes back the run in the words the player was
   already reading.
 
-- **`Settings` is not drawn yet.** It is phase 9's screen, and a row that highlights
-  and does nothing teaches the player that the caret is decorative. The row returns
-  with the screen behind it.
+- **`Settings` is the third row, above `Quit`**, and it opens §6.10 *in place of* the
+  menu rather than over it — see §8.3. It sits there and not at the bottom because a
+  fresh install offers it before it offers anything else, precisely so a player who
+  cannot read the 256-colour palette can fix that **before** their first run. The
+  preferences it turns are the title's own: they are carried into whichever run
+  `Continue` or `New game` opens next, and reach the disk on that run's first autosave.
+  The cost is accepted knowingly — changing a setting and then quitting from the title
+  without playing loses it, since there is no run to write.
 - **`3h ago`, not `3 hours ago`.** One elapsed-time vocabulary across the crate — the
   same `format::age` the Stats history prints in its stamp column.
 - **The version is read from the manifest** (`env!("CARGO_PKG_VERSION")`), so this
@@ -1778,14 +1784,12 @@ follows.
 
 ```text
 0---------1---------2---------3---------4---------5---------6---------7---------
-┌─ Settings ─────────────────────────┐┌────────────────────────────────────────┐
-│ ▸ Colour            256            ││ Colour                                 │
-│   Mining input      Hold           ││                                        │
-│   Number format     1 234 567      ││ 256   every block gets its own swatch  │
-│   Toast duration    3s             ││ 16    one colour per mine; the value   │
-│   Sub-tab keys      ⇧← ⇧→          ││       cell's stipple is what still     │
-│                                    ││       tells it from the common one     │
-│                                    ││                                        │
+┌ Settings ──────────────────────────┐┌ Colour ────────────────────────────────┐
+│ ▸ Colour             256           ││ 256   every block gets its own swatch  │
+│   Mining input       Hold          ││ 16    one colour per mine; the value   │
+│   Number format      1 234 567     ││       cell's stipple is what still     │
+│   Toast duration     3s            ││       tells it from the common one     │
+│   Sub-tab keys       ⇧← ⇧→         ││                                        │
 │                                    ││ Your terminal reports: 256 supported   │
 │                                    ││                                        │
 │                                    ││ Stored in the save. There is no config │
@@ -1800,14 +1804,83 @@ follows.
 │                                    ││                                        │
 │                                    ││                                        │
 │                                    ││                                        │
+│                                    ││                                        │
+│                                    ││                                        │
 └────────────────────────────────────┘└────────────────────────────────────────┘
- ↑↓  select     ← →  change     Esc  back
+ ↑↓  select     ← →  change     r  default     Esc  back
 ```
 
 **Every config field, and no game-state field.** That rule is only auditable if the
 list is short enough to read at a glance, and this frame is what makes the audit
 possible: every line is a preference and nothing here is state. A setting is what you
 add when a preference is genuinely contested — not a way of declining to decide.
+
+**The row's name is the pane's title**, which is where its accent comes from. §4.4's
+rule is that colour doubles a glyph and never replaces one, so the only admissible way
+to lift that line was to make it a thing that is *already* accented — a block title —
+rather than to paint a body line. The footnote below is muted for the complementary
+reason: `MUTED` carries no meaning anywhere in the interface, so stepping a paragraph
+back into it makes no information depend on a hue.
+
+**`r` restores the row under the cursor**, and there is deliberately **no reset-all**.
+It is the only destructive gesture on the one screen with no confirmation, and every
+ladder here is short enough to walk back by hand in at most three presses — so a global
+reset would buy two keystrokes at the price of the only key that can undo work the
+player meant to keep.
+
+**One renderer, two doors.** The same frame is a modal stacked over the six tabs when
+`s` opens it from a game, and a screen drawn *in place of* the title's menu when it is
+reached from §6.1's fourth row — see §8.3. It therefore takes plain data (a `Config`, a
+row, what the terminal declared) and neither a run nor a session: a renderer that
+reached for the run could only ever have served the first door, and the title has no
+run to give it.
+
+**`q` is swallowed here, on both doors.** Opened from a game the letter never arrives —
+§9's rule 2 gives a modal first refusal on every key — and opened from the title it used
+to end the process, so one frame answered one key two ways depending on where the player
+came from. Getting out is `Esc` and then `q`. `Ctrl-C` is the single exception, and it
+is the same rank §9 gives it over a game's modals: the terminal's key belongs to no
+frame.
+
+The second row is the one whose pane carries a rule rather than a description:
+
+```text
+0---------1---------2---------3---------4---------5---------6---------7---------
+┌ Settings ──────────────────────────┐┌ Mining input ──────────────────────────┐
+│   Colour             256           ││ Hold            mine while the key is  │
+│ ▸ Mining input       Hold          ││                 held down              │
+│   Number format      1 234 567     ││ Press to start  one press starts, the  │
+│   Toast duration     3s            ││                 next stops             │
+│   Sub-tab keys       ⇧← ⇧→         ││                                        │
+│                                    ││ Mining only happens on Mine: leaving   │
+│                                    ││ pauses it, coming back resumes it.     │
+│                                    ││                                        │
+│                                    ││ Press to start also stops on its own   │
+│                                    ││ after 15m with no key pressed at all,  │
+│                                    ││ and says so — a session left running   │
+│                                    ││ overnight must not pay full rate.      │
+│                                    ││                                        │
+│                                    ││ On a terminal that cannot report a key │
+│                                    ││ release, allow about a second between  │
+│                                    ││ two presses.                           │
+│                                    ││                                        │
+│                                    ││ Stored in the save. There is no config │
+│                                    ││ file; Settings is the only way to      │
+│                                    ││ change these — which is what keeps the │
+│                                    ││ HMAC quiet when you change a colour.   │
+└────────────────────────────────────┘└────────────────────────────────────────┘
+ ↑↓  select     ← →  change     r  default     Esc  back
+```
+
+**The dead-man's switch is stated where the mode is chosen, not only where it fires.**
+A bound a player meets for the first time as a toast is a bound nobody told them about,
+and this is the one line of the pane describing something the game does *to* them rather
+than something they asked for. The delay is read from the constant, so the sentence and
+the behaviour cannot drift apart. §9.1 has the mechanism.
+
+The pane fills its twenty-one lines exactly on this row, which is what the wireframe is
+for: the next sentence added to any row pushes the footnote off the bottom, and a
+`Paragraph` truncates without complaining.
 
 ### 6.11 Help
 
@@ -2014,6 +2087,15 @@ above is amended in one row; the rest is left as written.
   re-projected shows a **frozen** beat — harmless today, since a step raises the dirty flag
   twenty times a second whatever the player does, but it is a note phase 8 is owed: the
   first session state that pauses the tick must clear the flash on the way in.
+  **Answered twice since, and both answers were "the case does not arise".** Phase 8's
+  offline summary is the one state that pauses a running tick, and the `App` under it has
+  just been built from the file, so it holds no flash to freeze. Phase 9's Settings screen
+  raised the question again and settled it the other way round: **Settings does not pause
+  the game**, exactly as Help does not. The run keeps ticking behind both, so a flash
+  behind an open Settings screen goes on resolving normally, and there was nothing to
+  clear. A settings screen that stopped the world would also be a place to park a run in —
+  and the mine would go on being emptied by the auto-miner regardless, so the pause would
+  buy nothing and cost the one invariant this note is about.
 
 ---
 
@@ -2111,6 +2193,7 @@ stateDiagram-v2
     state "Save recovery, nothing left ⚠ hardcoded" as RecNoBak
     state "Update the game ⚠ hardcoded" as Future
     state "Splash ⚠ hardcoded chrome" as Splash
+    state "Settings ⚠ hardcoded chrome" as Set
     state "Offline summary" as Off
     state "Game" as Game
 
@@ -2136,6 +2219,9 @@ stateDiagram-v2
     Splash --> Off: Continue, the absence paid something
     Splash --> Game: Continue, it paid nothing
     Splash --> Game: New game (confirmed if there is a run)
+    Splash --> Set: Settings
+    Set --> Splash: Esc
+    Set --> [*]: Ctrl-C
     Splash --> [*]: Quit
 
     Off --> Game: Enter
@@ -2155,6 +2241,13 @@ stateDiagram-v2
         Starting over is NOT offered:
         the file is good, and an older
         build would write over it.
+    end note
+    note right of Set
+        Drawn in place of the menu,
+        not over it. q is swallowed
+        here; only Ctrl-C leaves.
+        Its preferences ride the
+        Splash into the next run.
     end note
 ```
 
@@ -2284,14 +2377,14 @@ never switches a sub-tab, and the sub-tab key is the configurable binding
 | `1`..`6` | jump to screen N | six tabs since the Levels view (§5.7.5) |
 | `Esc` | back to the Mine screen | **global, not shown** in footers, like `s` and `q`; lives in Help. Inside a modal it closes the modal instead — the box is offered every key first (§8.1) |
 | `?` | open Help | **shown in every footer** — the only place the hidden bindings below are discoverable |
-| `s` | open Settings | **global, not shown** in footers; lives in Help |
+| `s` | open Settings | **global, not shown** in footers; lives in Help. It closes §6.10 as well as opening it, like `?` for Help — a key that leads nowhere else should be a toggle |
 | `q` | quit to Splash | **global, not shown** in footers, exactly like `s`; lives in Help. The process itself exits only from Splash → Quit |
 
 **Contextual — one screen each**
 
 | Screen | Key | Action |
 | --- | --- | --- |
-| **Mine** | `Space` | mine (hold; or start/stop under the accessibility toggle) |
+| **Mine** | `Space` | mine (hold; or start/stop under the `Mining input` preference, §6.10 and §9.1) |
 | | `b` | fire one boost charge from the reserve (§5.4.4) |
 | **Mines** | `↑↓` | select mine |
 | | `Enter` | mine it — jump to the Mine screen (the one screen-to-screen edge, §6.1) |
@@ -2360,6 +2453,7 @@ not _screen or overlay_.
 | Overlay | Keys |
 | --- | --- |
 | Splash | `↑↓` select · `Enter` confirm · `q` quit (process) |
+| Splash → Settings | `↑↓` select · `←/→` change · `r` default · `Esc` back. `q` **swallowed**; `Ctrl-C` still quits |
 | Terminal too small | `q` quit; dismisses itself on `Resize` |
 | Save recovery | `↑↓` select · `Enter` confirm |
 | Offline summary | `Enter` collect |
@@ -2367,7 +2461,7 @@ not _screen or overlay_.
 | Dip modal | `Enter` buy · `n` not yet · `Esc` |
 | Prestige preview | `Enter` (→ confirm, if affordable) · `Esc` back |
 | Prestige confirm | type `PRESTIGE` · `Enter` · `Esc` |
-| Settings | `↑↓` select · `←/→` change · `Esc` back |
+| Settings | `↑↓` select · `←/→` change · `r` restore this row's default · `s` / `Esc` back |
 | Help (`?`) | `Esc` / `?` close |
 
 **What the table settles.** Coherent by the §8 decision: `←/→` is value-adjust
@@ -2454,6 +2548,38 @@ swallowing it would leave the pickaxe swinging behind the box.
 The accepted cost is up to 1.1 s of over-mining after a release on a terminal
 without the protocol. It is invisible against a seven-day offline cap, and the
 alternative — a shorter window — is a stutter the player feels on every hold.
+
+**`Mining input` is a third layer over the same state, not a fourth path.** §6.10's
+second preference switches `Press to start` on, and it is implemented as a latch
+flipped on the **rising edge of the predicate above** — never on a key event. That is
+what makes it work on a terminal with no release protocol: auto-repeat sends a stream
+of presses at a rate the operating system lets the player set, so a latch toggled per
+event would strobe, while `HOLD_WINDOW` is already sized to outlast the longest initial
+repeat delay and therefore stays true for the whole hold. One rising edge, one toggle,
+whatever the repeat rate. No capability detection, no branch per terminal — which
+matters because this is an **accessibility** option, and a mode offered only where the
+kitty protocol exists would be absent from exactly the machines most likely to need it.
+
+Two consequences the mode makes explicit rather than inherits:
+
+- **Mining happens on the Mine screen and nowhere else, in both modes.** `Hold` already
+  behaved that way, but by accident of three unrelated mechanics — `Space` is decoded on
+  one screen only, so leaving stops refreshing the window and it lapses up to 1.1 s
+  later. Written as one condition it is instant, and the latch *survives* the tab change,
+  so coming back resumes rather than restarts: the player never pressed anything to stop.
+- **A latched swing puts itself down after 15 minutes with no key at all**, and says so
+  in a toast. This is a **dead-man's switch, not a cutoff**, and the distinction is the
+  whole design: a toggle says *this holds until I change it*, so a timer expiring under
+  it would make the mode one the game silently revokes. The two are reconciled by scale
+  and by voice — long enough that a present player never meets it, audible when it does
+  fire. It is not an anti-cheat measure (a strip of tape over `Space` defeats any bound);
+  what it protects is the balance distinction between active play and idle accrual.
+  `docs/DECISIONS.md` has both halves.
+
+On a terminal without the release protocol the *stop* tap needs about a second after the
+start tap, since the window has to lapse before it can rise again. §6.10's pane says so,
+and the kitty release makes the second tap immediate — the same early cut, in a third
+place.
 
 ## 10. Ratatui mapping
 
