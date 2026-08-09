@@ -4243,6 +4243,53 @@ mod tests {
         );
     }
 
+    /// No real roadmap row can meet its own XP column at 80 columns.
+    ///
+    /// **The measurement the Levels screen's second mark column rests on**, asserted here
+    /// rather than on that screen because [`grants_line`] is private to this module — and
+    /// it is the *real* bundle that matters. `docs/UI.md` §5.6's wireframe abbreviates
+    /// (`+40 Crying Obs.`, `A. Debris`) where the game writes [`Material::name`] in full,
+    /// so the frame verified at 80 columns is **not** the widest row the game draws. The
+    /// widest spend **74 of the 75** a row has, leaving exactly one column of slack —
+    /// which is why the waiting mark had to be found inside the row rather than added to
+    /// it. The first of them is level 18, `+90 Quartz, +63 Netherrack, +27 Ancient
+    /// Debris, +45 Emerald`: a four-line bundle (the Emerald garnish lands on every third
+    /// level) in the widest of the three number formats.
+    ///
+    /// [`justified`](crate::format::justified) does not truncate. It pads by whatever is
+    /// left over, and once the two ends meet that is nothing, so a row that outgrew this
+    /// would quietly print `…+67 Emerald2 700` rather than fail anywhere. Hence a test:
+    /// a longer material name or a re-tuned `LEVEL_REWARD_BASE` is what would spend the
+    /// last column, and neither of those is edited by anyone looking at this screen.
+    #[test]
+    fn no_real_level_row_collides_with_its_xp_column() {
+        // 80 columns, less the panel's two borders, less the scrollbar's one, less the
+        // two `levels::render` keeps so the XP never abuts the bar.
+        const WIDTH: usize = 75;
+        // Everything on the row before the grants: the four-column position field, the
+        // three-column number, and the space-mark-space that carries the waiting column.
+        const CHROME: usize = 10;
+
+        for format in [
+            NumberFormat::Spaced,
+            NumberFormat::Comma,
+            NumberFormat::Plain,
+        ] {
+            for level in 1..=LEVEL_CAP {
+                let grants = grants_line(reward::reward_for_level(level).as_ref(), format);
+                let xp = Player::xp_for_level(level)
+                    .map_or_else(|| NOTHING.to_owned(), |xp| grouped(xp, format));
+                let used = CHROME + grants.chars().count() + xp.chars().count();
+                // Strictly less, not "at most": the two fields meeting is already the
+                // failure, since a row with no gap reads as one number glued to a word.
+                assert!(
+                    used < WIDTH,
+                    "level {level} spends {used} of {WIDTH} columns in {format:?}: {grants}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_fresh_runs_ladder_opens_on_the_rung_the_player_stands_on() {
         let state = fresh_run();

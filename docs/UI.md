@@ -1174,28 +1174,28 @@ History below it.
 0---------1---------2---------3---------4---------5---------6---------7---------
  1 Mine │ 2 Mines │ 3 Inventory │ 4 Upgrades │ 5 Stats │ [6 Levels]
 ┌─ Levels ─── Lv 23 · 1 240 / 2 300 XP to Lv 24 ───────────────────────────────┐
-│     Lv   Grants                                                         XP   │
-│  ✓ 13   +65 Lapis, +45 Gold, +19 Diamond                             1 300  ░│
-│  ✓ 14   +70 Lapis, +49 Gold, +21 Diamond                             1 400  ░│
-│  ✓ 15   The Nether opens, +1 charge                                  1 500  ░│
-│  ✓ 16   +80 Quartz, +56 Netherrack, +24 A. Debris                    1 600  ░│
-│  ✓ 17   +85 Quartz, +59 Netherrack, +25 A. Debris                    1 700  ░│
-│  ✓ 18   +90 Quartz, +63 Netherrack, +27 A. Debris, +45 Emerald       1 800  █│
-│  ✓ 19   +95 Quartz, +66 Netherrack, +28 A. Debris                    1 900  █│
-│  ✓ 20   +100 Quartz, +70 Netherrack, +30 A. Debris, +1 charge        2 000  █│
-│  ✓ 21   +105 Quartz, +73 A. Debris, +31 Obsidian, +52 Emerald        2 100  █│
-│  ✓ 22   +110 Quartz, +77 A. Debris, +33 Obsidian                     2 200  █│
-│ ▸● 23   +115 Quartz, +80 A. Debris, +34 Obsidian                     2 300  █│
-│    24   +120 Quartz, +84 A. Debris, +36 Obsidian, +60 Emerald        2 400  █│
-│    25   +125 Quartz, +87 A. Debris, +37 Obsidian, +1 charge          2 500  █│
-│    26   +130 Quartz, +91 Obsidian, +39 Crying Obs.                   2 600  ░│
-│    27   +135 Quartz, +94 Obsidian, +40 Crying Obs., +67 Emerald      2 700  ░│
-│    28   +140 Quartz, +98 Obsidian, +42 Crying Obs.                   2 800  ░│
-│    29   +145 Quartz, +101 Obsidian, +43 Crying Obs.                  2 900  ░│
-│    30   The End opens, +1 charge                                     3 000  ░│
-│    31   +233 End Stone, +77 Amethyst                                 3 100  ░│
+│    Lv    Grants                                                         XP   │
+│  ✓ 13  ~ +65 Lapis, +45 Gold, +19 Diamond                            1 300  ░│
+│  ✓ 14    +70 Lapis, +49 Gold, +21 Diamond                            1 400  ░│
+│  ✓ 15    The Nether opens, +1 charge                                 1 500  ░│
+│  ✓ 16    +80 Quartz, +56 Netherrack, +24 A. Debris                   1 600  ░│
+│  ✓ 17    +85 Quartz, +59 Netherrack, +25 A. Debris                   1 700  ░│
+│  ✓ 18    +90 Quartz, +63 Netherrack, +27 A. Debris, +45 Emerald      1 800  █│
+│  ✓ 19    +95 Quartz, +66 Netherrack, +28 A. Debris                   1 900  █│
+│  ✓ 20    +100 Quartz, +70 Netherrack, +30 A. Debris, +1 charge       2 000  █│
+│  ✓ 21  ~ +105 Quartz, +73 A. Debris, +31 Obsidian, +52 Emerald       2 100  █│
+│  ✓ 22    +110 Quartz, +77 A. Debris, +33 Obsidian                    2 200  █│
+│ ▸● 23  ~ +115 Quartz, +80 A. Debris, +34 Obsidian                    2 300  █│
+│    24    +120 Quartz, +84 A. Debris, +36 Obsidian, +60 Emerald       2 400  █│
+│    25    +125 Quartz, +87 A. Debris, +37 Obsidian, +1 charge         2 500  █│
+│    26    +130 Quartz, +91 Obsidian, +39 Crying Obs.                  2 600  ░│
+│    27    +135 Quartz, +94 Obsidian, +40 Crying Obs., +67 Emerald     2 700  ░│
+│    28    +140 Quartz, +98 Obsidian, +42 Crying Obs.                  2 800  ░│
+│    29    +145 Quartz, +101 Obsidian, +43 Crying Obs.                 2 900  ░│
+│    30    The End opens, +1 charge                                    3 000  ░│
+│    31    +233 End Stone, +77 Amethyst                                3 100  ░│
 └──────────────────────────────────────────────────────────────────────────────┘
- ↑↓  scroll     Home  jump to Lv 23     Tab  next screen     ?  help
+ ↑↓  scroll     Enter  claim     A  claim all (3)     Home  Lv 23     ?  help
 ```
 
 **A roadmap with no detail pane, unlike Upgrades and Mines.** The rule was never
@@ -1244,13 +1244,25 @@ reward is lost to a prestige, like everything else a run accumulates.
 
 Four departures follow from it, and one does not:
 
-- **`~` is a fourth mark**, for a level whose reward is still waiting, and it
-  **outranks `✓`** on a row that is both — which every waiting row is, since a reward
-  can only be owed for a level already reached. `✓` says *you passed this*, which the
-  row's own place in the list already says; `~` says *there is something here for
-  you*. It still loses to `▸` and `●`, which are about where the player is. §6.11's
-  legend glosses it in the same breath as its Upgrades sense: a thing of yours that
-  takes one more action to become useful.
+- **`~` is a fourth mark, and it gets a column of its own** — the one between the level
+  number and the grants, where the frame above spent nothing but spacing. It was first
+  written into the mark field beside `▸ ● ✓`, ranked below them, and that ladder hid it
+  on the row that most often carries one: a level is announced the instant it is crossed
+  and collected some time afterwards, so the level being played is at once the likeliest
+  to owe a reward and the one wearing `▸●`. The footer's count says *how many* are
+  waiting and never *which*, so a run owed a single reward — its own current level's —
+  showed the player nothing at all. Two questions, two columns: the field before the
+  number says *where you are*, the column after it says *something is waiting here*, and
+  neither can silence the other. It also gives `✓` back to a reached-and-waiting level,
+  which the ladder used to take away, so the left field answers one question on every
+  row instead of two depending on the row.
+  The column had to be **found inside the row rather than added to it**: at 80 columns a
+  row has 75 to spend and the widest bundles already take 74 — level 18's `+90 Quartz,
+  +63 Netherrack, +27 Ancient Debris, +45 Emerald` is the first, since the frame above
+  abbreviates (`A. Debris`) where the game writes the material's name in full — so a
+  wider mark field would leave the justifier nothing to pad with and print the grants
+  hard against the XP. §6.11's legend glosses `~` in the same breath as its Upgrades
+  sense: a thing of yours that takes one more action to become useful.
 - **The footer is conditional.** With something waiting it reads
   `↑↓ scroll · Enter claim · A claim all (3) · Home Lv 23 · ? help`; with nothing
   waiting the two claim keys are dropped and `Tab next screen` comes back. A footer is

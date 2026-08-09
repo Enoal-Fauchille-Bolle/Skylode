@@ -409,8 +409,8 @@ mod tests {
         // 80-column count in `docs/UI.md` would be back in question.
         for row in [
             " Overworld                        Lv 1  ✓",
-            " ▸● 23   The Nether opens                ",
-            "  ✓ 15   Iron Mine                       ",
+            " ▸● 23  ~ The Nether opens               ",
+            "  ✓ 15  ~ Iron Mine                      ",
             " ▸ Iron Mine                        12x7 ",
             " Nether     Lv 15                      ✗ ",
             " Cost  6 540 Amethyst    Held  0        ~",
@@ -451,9 +451,16 @@ mod tests {
     fn two_marks_on_one_row_are_styled_apart() {
         // The Levels screen's `▸●`, which is the reason `CURRENT` is not a second
         // green: the two marks are adjacent, so they must not merge into one span.
-        let line = marked(" ▸● 23   The Nether opens");
+        // The row's third mark rides two columns further along — that screen carries
+        // two mark columns — and is asserted here for the same reason: three roles on
+        // one line, three spans.
+        let line = marked(" ▸● 23  ~ The Nether opens");
         assert_eq!(style_of(&line, '▸'), Some(Style::default().fg(ACCENT)));
         assert_eq!(style_of(&line, '●'), Some(Style::default().fg(CURRENT)));
+        assert_eq!(
+            style_of(&line, '~'),
+            Some(Style::default().fg(COMPRESS_FIRST))
+        );
     }
 
     #[test]

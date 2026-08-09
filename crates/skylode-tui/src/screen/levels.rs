@@ -2,10 +2,13 @@
 //!
 //! A roadmap with **no detail pane**, unlike Upgrades and Mines: each level *is*
 //! one line, so there is nothing to break out into a second panel. What it does
-//! carry is two distinct marks — `●` for the level the player is on, `▸` for the
-//! list cursor — which coincide (`▸●`) until the cursor scrolls away, plus a `✓`
-//! on every level already reached. On this screen `✓` reads "already yours":
-//! nothing is bought here (UI.md §6.11).
+//! carry is **two mark columns**, each answering one question and neither able to
+//! silence the other. The field before the number says *where you are*: `●` for the
+//! level the player is on, `▸` for the list cursor — which coincide (`▸●`) until the
+//! cursor scrolls away — and `✓` on every level already reached. The single column
+//! between the number and the grants says *whether something is waiting there*: `~`,
+//! or nothing. On this screen `✓` reads "already yours": nothing is bought here
+//! (UI.md §6.11).
 //!
 //! The distance to the next level rides in the **Block title**, spending no row,
 //! and a `Scrollbar` on the right edge stands in for the whole ladder that the rows
@@ -89,10 +92,16 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     let lines: Vec<Line> = levels.rows[range.clone()]
         .iter()
         .map(|row| {
+            // The two mark columns and the gap between them, in one `format!`: four
+            // columns of position, three of level number, then the waiting column at
+            // **column 8**, flanked by a space on either side. `Grants` still starts at
+            // column 10, which is what makes this a re-spend of the gap rather than a
+            // widening of the row — see [`waiting`].
             let left = format!(
-                "{}{:<3}   {}",
-                mark(row, current, selected),
+                "{}{:<3} {} {}",
+                position(row, current, selected),
                 row.level,
+                waiting(row),
                 row.grants,
             );
             // This is the row the whole mark palette was designed around: on the
@@ -134,34 +143,59 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     );
 }
 
-/// The four-column mark field: which of `✓ ● ▸ ~` (or a pair) a level shows.
+/// The four-column field before the number: `✓ ● ▸` (or a pair), or nothing.
 ///
 /// `▸` is the cursor and `●` the current level; they combine to `▸●` when they
 /// coincide. A level below the current one that is *not* the cursor reads `✓`,
 /// "already yours". Every arm is padded to four columns so the level numbers
 /// beside it line up whatever mark is drawn.
 ///
-/// **`~` is the level with a reward waiting**, and it beats `✓` on a row that is both
-/// — which every unclaimed row is, since a reward can only be waiting for a level
-/// already reached. The two glyphs answer different questions: `✓` says *you passed
-/// this*, which the row's position in the list already says, and `~` says *there is
-/// something here for you*, which nothing else on the screen does. When the more
-/// informative mark loses to the redundant one, the column stops being worth reading.
-///
-/// `~` and not a fourth glyph, because §6.11's legend already glosses it as *"you have
-/// it but not in the form you need"* — a thing of yours that takes one more action to
-/// become useful, which is exactly an uncollected reward. The position marks still
-/// win over it: `▸` and `●` are about *where you are*, and losing them would leave the
-/// player unable to find the cursor they are moving.
-fn mark(row: &LevelRow, current: u32, selected: u32) -> &'static str {
+/// **One question only: where the player is on the ladder.** Whether a reward is
+/// waiting is [`waiting`]'s column, and the split is the whole point — see there.
+fn position(row: &LevelRow, current: u32, selected: u32) -> &'static str {
     match (row.level == selected, row.level == current) {
         (true, true) => " ▸● ",
         (true, false) => "  ▸ ",
         (false, true) => "  ● ",
-        _ if row.unclaimed => "  ~ ",
         _ if row.level < current => "  ✓ ",
         _ => "    ",
     }
+}
+
+/// The one-column field between the number and the grants: `~` if this level's reward
+/// is still waiting, a space otherwise.
+///
+/// **A second column, because one column cannot hold two answers.** `~` used to live in
+/// [`position`]'s field, below `▸` and `●` in a priority ladder, and the ladder hid the
+/// mark on precisely the row that most often needs it: the level just crossed is the one
+/// the toast announced and the one the player has not collected yet, and it is also the
+/// row wearing `▸●`. The footer's count says *how many* are waiting and never *which*, so
+/// a run with one uncollected reward — on the current level — showed the player nothing at
+/// all. Two questions, two columns, and neither can silence the other.
+///
+/// It also gives `✓` back to every level already reached. Under the ladder, `~`
+/// *replaced* the tick, so a reached-and-waiting row lost it and the left field answered
+/// a different question depending on the row.
+///
+/// **Here, and not a fifth column of [`position`]'s field**, because there is no room:
+/// at 80 columns a row has `75` to spend, and the widest bundles in the game already take
+/// 74 of them with their XP — level 18's `+90 Quartz, +63 Netherrack, +27 Ancient Debris,
+/// +45 Emerald` is the first. One more column of chrome would leave [`justified`] nothing
+/// to pad with, and it does not truncate, so those rows would print their grants hard
+/// against their XP. The gap between the number and the grants, on the other hand, was
+/// three literal spaces beside `{:<3}`'s own padding, so spending its middle column costs
+/// nothing — `no_real_level_row_collides_with_its_xp_column` in [`crate::view`] pins the
+/// slack this rests on.
+///
+/// A happy consequence of the placement: the glyph abuts the bundle it is about, so the
+/// row reads *"this is waiting for you: +90 Quartz, …"* rather than merely flagging the
+/// line.
+///
+/// `~` and not a new glyph, because §6.11's legend already glosses it as *"you have it
+/// but not in the form you need"* — a thing of yours that takes one more action to become
+/// useful, which is exactly an uncollected reward.
+fn waiting(row: &LevelRow) -> &'static str {
+    if row.unclaimed { "~" } else { " " }
 }
 
 /// `↑↓` walks the ladder, `Home` jumps back to the player's own level, `Enter`
@@ -400,28 +434,77 @@ mod tests {
     }
 
     #[test]
-    fn the_mark_column_tells_the_four_states_and_their_overlap() {
+    fn the_position_column_tells_the_four_states_and_their_overlap() {
         // The cursor overlaps the current level (▸●); a reached level below the
         // cursor is ticked; a future level is blank; and a cursor parked away from
         // the current level shows ▸ and ● apart, which scrolling will produce.
-        assert_eq!(mark(&row(23, false), 23, 23), " ▸● ");
-        assert_eq!(mark(&row(15, false), 23, 23), "  ✓ ");
-        assert_eq!(mark(&row(24, false), 23, 23), "    ");
-        assert_eq!(mark(&row(23, false), 23, 20), "  ● ");
-        assert_eq!(mark(&row(20, false), 23, 20), "  ▸ ");
+        assert_eq!(position(&row(23, false), 23, 23), " ▸● ");
+        assert_eq!(position(&row(15, false), 23, 23), "  ✓ ");
+        assert_eq!(position(&row(24, false), 23, 23), "    ");
+        assert_eq!(position(&row(23, false), 23, 20), "  ● ");
+        assert_eq!(position(&row(20, false), 23, 20), "  ▸ ");
     }
 
     #[test]
-    fn a_waiting_reward_outranks_the_tick_and_yields_to_the_position_marks() {
-        // `~` beats `✓`, because "there is something here for you" is news and
-        // "you passed this" is what the row's own place in the list already says.
-        assert_eq!(mark(&row(15, true), 23, 23), "  ~ ");
-        // But not `▸` or `●`: losing those would leave the player unable to find the
-        // cursor they are moving, and the reward is still legible from the footer's
-        // count and from every other waiting row.
-        assert_eq!(mark(&row(23, true), 23, 23), " ▸● ");
-        assert_eq!(mark(&row(20, true), 23, 20), "  ▸ ");
-        assert_eq!(mark(&row(23, true), 23, 20), "  ● ");
+    fn a_waiting_reward_marks_its_own_column_and_changes_no_other() {
+        // The two channels, asserted as independent — which is the whole fix. Every
+        // one of these rows is waiting, and not one of them loses a position mark for
+        // it; the row that used to be silenced is the first.
+        assert_eq!(waiting(&row(23, true)), "~");
+        assert_eq!(position(&row(23, true), 23, 23), " ▸● ");
+        // And the pairing the priority ladder could not draw at all: a reached level
+        // keeps its tick while its reward is still owed.
+        assert_eq!(waiting(&row(15, true)), "~");
+        assert_eq!(position(&row(15, true), 23, 23), "  ✓ ");
+        // A collected level says nothing in that column rather than saying something
+        // else in it — the space is what keeps the grants beside it aligned.
+        assert_eq!(waiting(&row(15, false)), " ");
+    }
+
+    #[test]
+    fn the_level_the_player_is_on_shows_a_reward_that_is_still_waiting() {
+        // The regression, and it is the bug report: the fixture's player is on level 23
+        // and level 23 is uncollected, so this exact frame was already being rendered
+        // by every test run — with the `~` swallowed by `▸●`. It is the row that most
+        // often carries one, since a level is announced the instant it is crossed and
+        // collected some time afterwards.
+        let frame = whole_frame(&render_screen());
+        let current = row_with(&frame, "+115 Quartz");
+        assert!(current.contains("▸●"), "{current:?}");
+        assert!(
+            current.contains('~'),
+            "the current level hid its waiting reward: {current:?}"
+        );
+    }
+
+    /// The column the `~` lands in, on the first row of `view` that carries one.
+    fn waiting_column(view: &View) -> Option<usize> {
+        whole_frame(&render_view(view, 80, 24))
+            .lines()
+            .find(|line| line.contains('~'))
+            .and_then(|line| line.chars().position(|glyph| glyph == '~'))
+    }
+
+    #[test]
+    fn the_waiting_column_does_not_move_with_the_width_of_the_level_number() {
+        // `{:<3}` on the number is what holds the two mark columns apart: without it a
+        // one-digit level would pull its `~` two columns left, and a mark that moves per
+        // row is not a column the eye can scan down.
+        let mut view = View::sample();
+        for row in &mut view.levels.rows {
+            row.unclaimed = false;
+        }
+        // A cursor near the foot of the ladder, so the window opens on the rows where
+        // the level number is one digit wide and the ones just past it.
+        view.levels.selected = 5;
+
+        let mut single = view.clone();
+        single.levels.rows[4].unclaimed = true;
+        let mut double = view.clone();
+        double.levels.rows[14].unclaimed = true;
+
+        assert!(waiting_column(&single).is_some(), "level 5 drew no mark");
+        assert_eq!(waiting_column(&single), waiting_column(&double));
     }
 
     /// The foreground of the first cell drawn with `glyph`. See the same helper on
@@ -443,6 +526,9 @@ mod tests {
         assert_eq!(fg_of(&buffer, "▸"), Some(theme::ACCENT));
         assert_eq!(fg_of(&buffer, "●"), Some(theme::CURRENT));
         assert_eq!(fg_of(&buffer, "✓"), Some(theme::AFFORDABLE));
+        // The second mark column takes its own hue from the same table, which is what
+        // stops a waiting reward reading as a third position mark.
+        assert_eq!(fg_of(&buffer, "~"), Some(theme::COMPRESS_FIRST));
         assert_ne!(theme::ACCENT, theme::CURRENT);
     }
 }
