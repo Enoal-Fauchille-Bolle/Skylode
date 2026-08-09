@@ -24,6 +24,7 @@ use skylode_core::world::World;
 
 use crate::{
     action::Action,
+    config::SubTabKeys,
     cursor::{MineTrack, UpgradeTab},
     format::{MAXED, grouped, justified, roman, shown_rung},
     screen::{panel, scrollbar, window},
@@ -55,7 +56,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
     ])
     .areas(area);
 
-    subtab_bar(frame, bar_area, upgrades);
+    subtab_bar(frame, bar_area, upgrades, view.sub_tab_keys);
 
     let (list_area, detail_area) = master_detail(frame, box_area);
     let subtab = upgrades.active_subtab();
@@ -70,7 +71,13 @@ pub fn render(frame: &mut Frame, area: Rect, view: &View) {
 
 /// The sub-tab bar: the three names with the active one bracketed, and the two
 /// right-hand hints.
-fn subtab_bar(frame: &mut Frame, area: Rect, upgrades: &UpgradesView) {
+///
+/// **The hint is the configured pair and not the default one.** It reads `keys` for
+/// the reason Help does (UI.md §6.11): an aid that printed `⇧←→` while the player had
+/// chosen `h`/`l` would teach a key that does nothing — and this bar is the *only*
+/// place the binding is named on the screen it works on, so it was the worst line in
+/// the game to leave hard-coded.
+fn subtab_bar(frame: &mut Frame, area: Rect, upgrades: &UpgradesView, keys: SubTabKeys) {
     let label = |tab: UpgradeTab| {
         let name = tab_name(tab);
         if tab == upgrades.active {
@@ -104,7 +111,7 @@ fn subtab_bar(frame: &mut Frame, area: Rect, upgrades: &UpgradesView) {
     // property of the whole row, so it is computed once, on the whole row.
     let line = justified(
         &format!("{before}{active}{after}"),
-        "⇧←→  sub-tab           M  max ",
+        &format!("{}  sub-tab           M  max ", keys.label()),
         area.width as usize,
     );
     // The tail is whatever `justified` added — the pad and the right-hand hints. Its
@@ -1071,13 +1078,39 @@ mod tests {
             "{bar:?}"
         );
         assert!(
-            bar.contains("⇧←→  sub-tab") && bar.contains("M  max"),
+            bar.contains("⇧← ⇧→  sub-tab") && bar.contains("M  max"),
             "{bar:?}"
         );
         // Switching sub-tab moves the brackets, not the set of names.
         let enchants = whole_frame(&render_tab(UpgradeTab::Enchants));
         let bar = row_with(&enchants, "Pickaxe");
         assert!(bar.contains("[Enchants]"), "{bar:?}");
+    }
+
+    /// **The bar advertises the binding that actually works.**
+    ///
+    /// The one line in the game that names the sub-tab keys *on the screen they switch*
+    /// had been printing the default in hard-coded text since phase 0, while `keymap`
+    /// answered whatever the player had chosen and Help printed that. Walked over all
+    /// three choices rather than one, because what is under test is that the bar reads
+    /// the preference at all — a hint moved from one literal to another would pass a
+    /// single case.
+    #[test]
+    fn the_bar_names_the_configured_pair_and_not_the_default_one() {
+        for keys in [
+            SubTabKeys::ShiftArrows,
+            SubTabKeys::HL,
+            SubTabKeys::Brackets,
+        ] {
+            let mut view = View::sample();
+            view.sub_tab_keys = keys;
+            let frame = whole_frame(&render_view(&view));
+            let bar = row_with(&frame, "Pickaxe");
+            assert!(
+                bar.contains(&format!("{}  sub-tab", keys.label())),
+                "{keys:?} was not advertised: {bar:?}"
+            );
+        }
     }
 
     #[test]

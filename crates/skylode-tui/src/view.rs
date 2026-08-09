@@ -40,7 +40,7 @@ use skylode_core::{
 
 use crate::{
     announce,
-    config::Config,
+    config::{Config, SubTabKeys},
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     flash::{FlashStage, Flashes},
     format::{MAXED, boost_seconds, duration_hm, grouped, roman, rung_label, shown_rung},
@@ -1266,11 +1266,21 @@ pub struct View {
     /// the save and is edited on the Settings screen.
     ///
     /// **Copied into the read model rather than read from [`Config`] by the screen that
-    /// wants it**, which is the route every preference a *screen* consults will take:
+    /// wants it**, which is the route every preference a *screen* consults takes:
     /// `Screen::render` is handed a `&View` and nothing else, so a screen that reached
     /// for the config would need a second parameter added to all six signatures for the
     /// sake of the one that uses it. The copy costs a `Copy` enum per projection.
     pub colour_mode: ColourMode,
+    /// Which key pair switches Upgrades sub-tabs, for the bar that advertises it.
+    ///
+    /// Here for [`colour_mode`](View::colour_mode)'s reason, and it closes the last
+    /// place where this preference was displayed from a guess: the field has been
+    /// configurable since phase 0, [`crate::keymap`] has answered the configured pair
+    /// since phase 9, and Help has printed it from config throughout — while the
+    /// Upgrades bar went on advertising the default in hard-coded text. A player who
+    /// moved the binding was told the old keys by the one line that names them where
+    /// they are used.
+    pub sub_tab_keys: SubTabKeys,
 }
 
 impl View {
@@ -1389,10 +1399,11 @@ impl View {
             levels: levels_view(state, cursors),
             prestige: prestige_view(player),
             stats: stats_view(state, cursors, toasts, now),
-            // The preference, at last, where it used to be a hard-wired default. The
-            // field and its one consumer (`screen::mine`'s grid) have existed since the
-            // palette landed; what was missing was the wire, and this is it.
+            // The preferences, at last, where they used to be hard-wired defaults. The
+            // colour field and its one consumer (`screen::mine`'s grid) have existed
+            // since the palette landed; what was missing was the wire, and this is it.
             colour_mode: config.colour,
+            sub_tab_keys: config.sub_tab_keys,
         }
     }
 
@@ -1483,6 +1494,7 @@ impl View {
             mines: sample_mines(),
             upgrades: sample_upgrades(),
             colour_mode: ColourMode::default(),
+            sub_tab_keys: SubTabKeys::default(),
         }
     }
 }
