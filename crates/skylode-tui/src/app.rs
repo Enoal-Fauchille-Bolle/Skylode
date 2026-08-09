@@ -38,7 +38,7 @@ use crate::{
     flash::Flashes,
     format::{
         boost_seconds, denominations, grouped, multiplier, prestige_rank, roman, rung_label,
-        shown_rung,
+        shown_rung, span,
     },
     overlay::{
         Conversion, Modal, compression, dip, help,
@@ -99,6 +99,30 @@ const SIM_PERIOD: Duration = Duration::from_nanos(1_000_000_000 / TICKS_PER_SECO
 /// against a seven-day offline cap; the alternative cost is a stutter the player feels
 /// every single time.
 const HOLD_WINDOW: Duration = Duration::from_millis(1_100);
+
+/// How long without **any** keystroke before the game concludes the player has left,
+/// and puts a latched [`MiningInput::PressToStart`] down.
+///
+/// **A dead-man's switch and not a cutoff, and the difference is the whole design.** A
+/// toggle says *this state holds until I change it*; a timer that expires under it says
+/// the opposite, and a mode built from both would be one the game silently revokes. The
+/// two are reconciled by scale and by voice: fifteen minutes is long enough that a
+/// player watching their mine never meets it, and when it does fire it **announces
+/// itself**, so the latch is never turned off behind the player's back.
+///
+/// **It is not an anti-cheat measure**, and `docs/DECISIONS.md` is what settles that: a
+/// strip of tape over the mine key defeats any bound this could have, and this project
+/// answers that class of question the same way every time — single-player, offline, no
+/// leaderboard. What the switch protects is the *balance* distinction between active
+/// play and idle accrual, which the ~1 h–2.3 h prestige band was measured against: a
+/// session left running overnight must not pay eight hours at the manual rate. Fifteen
+/// minutes cuts that to about 3 % of itself.
+///
+/// Fifteen *seconds* was the figure first written down, and it was chosen against the
+/// exploit rather than against play — at that scale *"I am watching my mine"* and *"I
+/// have left"* are not distinguishable, so it made the toggle into a tap-every-fifteen-
+/// seconds. See `docs/DECISIONS.md`.
+pub(crate) const ABSENCE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The most simulation steps one [`App::advance`] will run before giving up and
 /// resynchronising.
@@ -312,6 +336,23 @@ pub struct App {
     /// A *level* is what the hold path computes; an *edge* is a change in that level,
     /// and a change needs two readings. This is the older one.
     key_was_down: bool,
+    /// Whether **any** key arrived since the last [`advance`](App::advance).
+    ///
+    /// A flag and not an instant, for [`mine_key_edge`](App::mine_key_edge)'s reason:
+    /// [`update`](App::update) is the only thing that sees a keystroke and it has no
+    /// clock, so the fact is recorded here and stamped one line below by the function
+    /// that does. Collapsed rather than counted — *did anything happen* is the whole
+    /// question [`ABSENCE_TIMEOUT`] asks.
+    key_seen: bool,
+    /// When any key was last heard from, or [`None`] if none has been yet.
+    ///
+    /// [`ABSENCE_TIMEOUT`]'s anchor, and deliberately **not** [`last_mine_key`] with a
+    /// longer window: the cutoff exists to notice a player who has left, and a player
+    /// walking the Upgrades ladder with the arrows has not left. Reading only the mine
+    /// key would stop the pickaxe on someone who is very much still there.
+    ///
+    /// [`last_mine_key`]: App::last_mine_key
+    last_any_key: Option<Instant>,
 }
 
 impl App {
@@ -371,6 +412,8 @@ impl App {
             mine_key_edge: None,
             mining_latch: false,
             key_was_down: false,
+            key_seen: false,
+            last_any_key: None,
         }
     }
 
@@ -463,6 +506,11 @@ impl App {
     /// overlays will do the same, which is why the split lives here in one line and
     /// not as a condition repeated in each arm.
     pub fn update(&mut self, action: Action) {
+        // **Above the modal branch, so a gesture a modal swallows still counts.** This
+        // records nothing but *that a key arrived*, which is what `ABSENCE_TIMEOUT` asks:
+        // a player reading Help with the pickaxe latched is present, and one whose
+        // arrow keys are being eaten by a dialog is very much at the keyboard.
+        self.key_seen = true;
         // Returns `true` when the stacked modal consumed the gesture, so the screen
         // below never sees it.
         if self.update_modal(&action) {
@@ -2080,6 +2128,31 @@ impl App {
         }
         self.key_was_down = key_is_down;
 
+        // The dead-man's switch, stamped here because `update` has no clock. The latch
+        // is turned *off* rather than merely ignored, so the next press starts mining
+        // instead of stopping something the player can no longer see running — and it
+        // says so, which is what keeps a toggle that expires from being a toggle that
+        // lies. Nothing else is needed to make the swing stop: a released tick forfeits
+        // the block in progress in the core, the same rule a hold already obeys.
+        if self.key_seen {
+            self.last_any_key = Some(now);
+            self.key_seen = false;
+        }
+        if self.mining_latch
+            && self
+                .last_any_key
+                .is_some_and(|last| now.duration_since(last) >= ABSENCE_TIMEOUT)
+        {
+            self.mining_latch = false;
+            self.toasts.push_at(
+                format!("Mining stopped — no input for {}", span(ABSENCE_TIMEOUT)),
+                Tone::Neutral,
+                Salience::Normal,
+                self.config.toast_ttl(),
+                now,
+            );
+        }
+
         let input = Input {
             // **`&& Screen::Mine` is the two modes being made to agree, not an exception
             // carved out of the latch.** `Hold` already behaves this way, but by
@@ -3415,6 +3488,78 @@ mod tests {
             app.state.blocks_broken(),
             stopped,
             "the second tap left the pickaxe swinging"
+        );
+    }
+
+    /// **The dead-man's switch**: a latch left running with nobody at the keyboard puts
+    /// itself down, and says so.
+    ///
+    /// It is not an anti-cheat measure — see [`ABSENCE_TIMEOUT`] — but the balance
+    /// distinction between active play and idle accrual, which the prestige band was
+    /// measured against. What makes it compatible with a *toggle* is scale and voice:
+    /// long enough that a present player never meets it, and audible when it fires.
+    ///
+    /// Advanced a second at a time for `MAX_CATCHUP_TICKS`' reason, then measured on
+    /// the blocks: the claim is that the pickaxe *stopped*, not that a field flipped.
+    #[test]
+    fn a_latched_swing_gives_up_once_the_player_has_clearly_left() {
+        let mut app = tapping();
+        let start = step_due(&app);
+
+        app.update(Action::MinePressed);
+        app.advance(start);
+        assert!(app.mining_latch);
+
+        // Nothing is touched for the whole delay.
+        let silence = ABSENCE_TIMEOUT.as_secs();
+        for second in 1..=silence {
+            app.advance(start + Duration::from_secs(second));
+        }
+        assert!(!app.mining_latch, "the latch outlived the player");
+
+        // **And it said so**, which is what keeps a toggle that expires from being a
+        // toggle that lies: the player is never left wondering why the mine went quiet.
+        assert!(
+            whole_frame(&render_at(&app, start + Duration::from_secs(silence)))
+                .contains("Mining stopped"),
+            "the switch fired without announcing itself"
+        );
+
+        let stopped = app.state.blocks_broken();
+        app.advance(start + Duration::from_secs(silence + 1));
+        app.advance(start + Duration::from_secs(silence + 2));
+        assert_eq!(
+            app.state.blocks_broken(),
+            stopped,
+            "the pickaxe went on swinging past the switch"
+        );
+    }
+
+    /// **Any key postpones it, not just the mine key**, which is what stops the switch
+    /// from firing on a player who is walking the Upgrades ladder with the arrows.
+    ///
+    /// The gesture chosen is one that reaches no screen at all — a `CursorUp` on the
+    /// Mine screen, which has no list — so what is under test is *a key arrived* and
+    /// nothing it did.
+    #[test]
+    fn any_key_at_all_postpones_the_cutoff() {
+        let mut app = tapping();
+        let start = step_due(&app);
+
+        app.update(Action::MinePressed);
+        app.advance(start);
+
+        for second in 1..=(ABSENCE_TIMEOUT.as_secs() * 2) {
+            // A keystroke every two minutes, and never the mine key.
+            if second % 120 == 0 {
+                app.update(Action::CursorUp);
+            }
+            app.advance(start + Duration::from_secs(second));
+        }
+
+        assert!(
+            app.mining_latch,
+            "the switch fired on a player who never stopped typing"
         );
     }
 

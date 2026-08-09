@@ -37,9 +37,11 @@ use ratatui::{
 
 use super::square;
 use crate::{
+    app::ABSENCE_TIMEOUT,
     capability::Capabilities,
     config::{Config, MiningInput, NumberFormat, SubTabKeys, ToastDuration},
     cursor::step_in,
+    format::span,
     palette::ColourMode,
     theme,
 };
@@ -248,9 +250,22 @@ impl SettingsRow {
                 " Press to start  one press starts, the".to_owned(),
                 "                 next stops".to_owned(),
                 String::new(),
-                " Mining only happens on the Mine screen".to_owned(),
-                " in both modes: leaving pauses it and".to_owned(),
-                " coming back resumes it.".to_owned(),
+                " Mining only happens on Mine: leaving".to_owned(),
+                " pauses it, coming back resumes it.".to_owned(),
+                String::new(),
+                // **The dead-man's switch, stated where the mode is chosen** and not
+                // only where it fires. A bound a player meets for the first time as a
+                // toast is a bound nobody told them about — and this is the one line of
+                // the pane describing something the game does *to* them rather than
+                // something they asked for. The delay is read from the constant, so the
+                // sentence and the behaviour cannot drift apart.
+                " Press to start also stops on its own".to_owned(),
+                format!(
+                    " after {} with no key pressed at all,",
+                    span(ABSENCE_TIMEOUT)
+                ),
+                " and says so — a session left running".to_owned(),
+                " overnight must not pay full rate.".to_owned(),
                 String::new(),
                 " On a terminal that cannot report a key".to_owned(),
                 " release, allow about a second between".to_owned(),
@@ -433,10 +448,10 @@ mod tests {
     fn the_detail_pane_describes_whichever_row_is_selected() {
         let mining = frame_of(&Config::default(), SettingsRow::MiningInput);
         assert!(mining.contains("one press starts"), "{mining}");
-        assert!(
-            mining.contains("only happens on the Mine screen"),
-            "{mining}"
-        );
+        assert!(mining.contains("only happens on Mine"), "{mining}");
+        // The dead-man's switch is stated here and not only when it fires.
+        assert!(mining.contains("stops on its own"), "{mining}");
+        assert!(mining.contains("15m with no key"), "{mining}");
 
         let toasts = frame_of(&Config::default(), SettingsRow::ToastDuration);
         assert!(toasts.contains("keeps the whole history"), "{toasts}");
@@ -628,6 +643,25 @@ mod tests {
             Some(ratatui::style::Color::Reset),
             "the choices were muted along with the footnote"
         );
+    }
+
+    /// **The pane fits, on every row, with nothing clipped off the bottom.**
+    ///
+    /// The `Mining input` pane now fills its twenty-one lines exactly, so the next
+    /// sentence anyone adds to any row pushes the footnote off the frame — silently,
+    /// because a `Paragraph` truncates rather than complaining. Asserted on the
+    /// footnote's **last** line, since that is what falls first.
+    #[test]
+    fn every_rows_pane_still_ends_inside_the_frame() {
+        let last = FOOTNOTE[FOOTNOTE.len() - 1].trim();
+        for row in ROWS {
+            let frame = frame_of(&Config::default(), row);
+            assert!(
+                frame.contains(last),
+                "{}'s pane overflowed the frame: {frame}",
+                row.label()
+            );
+        }
     }
 
     #[test]
