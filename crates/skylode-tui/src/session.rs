@@ -61,7 +61,7 @@ use crate::{
         splash, too_small,
     },
     persist::{self, PersistError, SaveSlots},
-    toast::{Salience, TOAST_TTL, Tone},
+    toast::{Salience, Tone},
 };
 
 /// The shortest gap between two draws — a **ceiling on the redraw rate**, not a
@@ -886,7 +886,7 @@ impl Session {
                         format!("Save failed: {error}"),
                         Tone::Refusal,
                         Salience::Normal,
-                        TOAST_TTL,
+                        app.config.toast_ttl(),
                     );
                 }
                 // Rewritten on every failure, not only the first: a disk that goes from
@@ -900,7 +900,7 @@ impl Session {
                         "Saving works again".to_owned(),
                         Tone::Success,
                         Salience::Normal,
-                        TOAST_TTL,
+                        app.config.toast_ttl(),
                     );
                 }
                 // The state clears. A toast never could — nothing leaves that buffer —
@@ -1350,7 +1350,7 @@ impl Session {
                 "Restored from the backup save".to_owned(),
                 Tone::Neutral,
                 Salience::Normal,
-                TOAST_TTL,
+                app.config.toast_ttl(),
             );
         }
         if self.slots.is_none() {
@@ -1360,7 +1360,7 @@ impl Session {
                 "No save file: this session will not be kept".to_owned(),
                 Tone::Refusal,
                 Salience::Normal,
-                TOAST_TTL,
+                app.config.toast_ttl(),
             );
         }
         // **The summary appears when the report *paid* something**, and that is derived

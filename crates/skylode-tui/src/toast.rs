@@ -51,10 +51,19 @@ use ratatui::{
 
 use crate::theme;
 
-/// How long a toast stays on screen before [`Toasts::render`] stops drawing it.
+/// How long a toast stays on screen before [`Toasts::render`] stops drawing it, when
+/// the player has expressed no preference.
 ///
 /// It bounds the *drawing* and not the *keeping*: the announcement stays in the buffer
 /// for the Stats history either way.
+///
+/// **It is a default now rather than the answer.** Every announcement is pushed with a
+/// ttl of its own, read from
+/// [`Config::toast_ttl`](crate::config::Config::toast_ttl) at the push site, so this
+/// constant reaches a real toast only through the rung
+/// [`ToastDuration::Normal`](crate::config::ToastDuration::Normal) — which is defined
+/// from it, so that the three seconds are written once and the wireframe's figure, the
+/// row's `3s` label and a fresh install's behaviour cannot drift apart.
 pub const TOAST_TTL: Duration = Duration::from_secs(3);
 
 /// How many announcements the buffer keeps before the oldest starts falling off.

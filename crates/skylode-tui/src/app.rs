@@ -47,7 +47,7 @@ use crate::{
     },
     screen::Screen,
     theme,
-    toast::{Salience, TOAST_TTL, Toasts, Tone},
+    toast::{Salience, Toasts, Tone},
     view::{CompressHint, UpgradeDetail, View},
 };
 
@@ -755,7 +755,7 @@ impl App {
                                 format!("Free upgrades {state}"),
                                 Tone::Neutral,
                                 Salience::Normal,
-                                TOAST_TTL,
+                                self.config.toast_ttl(),
                             );
                         }
                         true
@@ -833,7 +833,8 @@ impl App {
                 // player is waiting for.
                 for event in &events {
                     let (text, tone, salience) = announce::of(event);
-                    self.toasts.push(text, tone, salience, TOAST_TTL);
+                    self.toasts
+                        .push(text, tone, salience, self.config.toast_ttl());
                 }
                 format!("+{} xp", grouped(amount))
             }
@@ -856,8 +857,12 @@ impl App {
         // action. The flag it used to raise lives in `Session` now, and reaching up
         // into the loop to raise it again would be saying twice what the key already
         // said once.
-        self.toasts
-            .push(message, Tone::Success, Salience::Normal, TOAST_TTL);
+        self.toasts.push(
+            message,
+            Tone::Success,
+            Salience::Normal,
+            self.config.toast_ttl(),
+        );
     }
 
     /// Rewinds the offline mark by `by` and resumes, returning what was credited.
@@ -1005,7 +1010,7 @@ impl App {
                     ),
                     Tone::Success,
                     Salience::Normal,
-                    TOAST_TTL,
+                    self.config.toast_ttl(),
                 );
             }
             outcome => self.announce_core_refusal(outcome),
@@ -1094,8 +1099,12 @@ impl App {
             ),
             Conversion::Decompress => format!("Nothing to decompress — no Compressed {name} held"),
         };
-        self.toasts
-            .push(refusal, Tone::Refusal, Salience::Normal, TOAST_TTL);
+        self.toasts.push(
+            refusal,
+            Tone::Refusal,
+            Salience::Normal,
+            self.config.toast_ttl(),
+        );
     }
 
     /// Performs the conversion the dialog is set to, announces it, and closes.
@@ -1137,7 +1146,8 @@ impl App {
             }
             Err(refusal) => (refusal.to_string(), Tone::Refusal),
         };
-        self.toasts.push(message, tone, Salience::Normal, TOAST_TTL);
+        self.toasts
+            .push(message, tone, Salience::Normal, self.config.toast_ttl());
         self.modal = None;
     }
 
@@ -1243,7 +1253,8 @@ impl App {
             ),
             _ => (self.free_purchase_label(), Tone::Success),
         };
-        self.toasts.push(message, tone, Salience::Normal, TOAST_TTL);
+        self.toasts
+            .push(message, tone, Salience::Normal, self.config.toast_ttl());
     }
 
     /// How many free steps a [`Reach`] asks for on a track whose rungs are independent.
@@ -1395,7 +1406,7 @@ impl App {
             format!("Bought {label}"),
             Tone::Success,
             Salience::Normal,
-            TOAST_TTL,
+            self.config.toast_ttl(),
         );
     }
 
@@ -1460,7 +1471,7 @@ impl App {
             format!("Bought {} {}", kind.name(), roman(level)),
             Tone::Success,
             Salience::Normal,
-            TOAST_TTL,
+            self.config.toast_ttl(),
         );
     }
 
@@ -1512,7 +1523,7 @@ impl App {
             format!("Bought {bought_label} — {} held", grouped(held)),
             Tone::Success,
             Salience::Normal,
-            TOAST_TTL,
+            self.config.toast_ttl(),
         );
     }
 
@@ -1555,8 +1566,12 @@ impl App {
                 running.map_or(1.0, Boost::multiplier)
             )
         };
-        self.toasts
-            .push(message, Tone::Success, Salience::Normal, TOAST_TTL);
+        self.toasts.push(
+            message,
+            Tone::Success,
+            Salience::Normal,
+            self.config.toast_ttl(),
+        );
     }
 
     /// Buys the next level of the mine track under the cursor, or every level it can
@@ -1610,7 +1625,7 @@ impl App {
             format!("{} {what} → level {level}", kind.name()),
             Tone::Success,
             Salience::Normal,
-            TOAST_TTL,
+            self.config.toast_ttl(),
         );
     }
 
@@ -1673,7 +1688,8 @@ impl App {
                 Tone::Refusal,
             ),
         };
-        self.toasts.push(message, tone, Salience::Normal, TOAST_TTL);
+        self.toasts
+            .push(message, tone, Salience::Normal, self.config.toast_ttl());
     }
 
     /// Toasts whatever a core purchase refused with, verbatim.
@@ -1691,7 +1707,7 @@ impl App {
                 refusal.to_string(),
                 Tone::Refusal,
                 Salience::Normal,
-                TOAST_TTL,
+                self.config.toast_ttl(),
             );
         }
     }
@@ -1857,14 +1873,18 @@ impl App {
         match self.state.claim_level(level) {
             Ok(reward) => {
                 let message = format!("Claimed Lv {level} — {}", announce::payout(&reward.payout));
-                self.toasts
-                    .push(message, Tone::Success, Salience::Normal, TOAST_TTL);
+                self.toasts.push(
+                    message,
+                    Tone::Success,
+                    Salience::Normal,
+                    self.config.toast_ttl(),
+                );
             }
             Err(refusal) => self.toasts.push(
                 refusal.to_string(),
                 Tone::Neutral,
                 Salience::Normal,
-                TOAST_TTL,
+                self.config.toast_ttl(),
             ),
         }
     }
@@ -1900,7 +1920,8 @@ impl App {
         } else {
             Tone::Success
         };
-        self.toasts.push(message, tone, Salience::Normal, TOAST_TTL);
+        self.toasts
+            .push(message, tone, Salience::Normal, self.config.toast_ttl());
     }
 
     /// Slides the selected mine's richness dial one step, silently at its bounds.
@@ -1953,7 +1974,7 @@ impl App {
                     refusal.to_string(),
                     Tone::Refusal,
                     Salience::Normal,
-                    TOAST_TTL,
+                    self.config.toast_ttl(),
                 );
             }
         }
@@ -2026,7 +2047,8 @@ impl App {
             // loop is what feeds §5.5's History, and a step's news being `Silent` is a
             // statement about the slot rather than about the record — filtering here
             // would empty the history of exactly the events a run is mostly made of.
-            self.toasts.push_at(text, tone, salience, TOAST_TTL, now);
+            self.toasts
+                .push_at(text, tone, salience, self.config.toast_ttl(), now);
 
             // **The same event, consumed twice and independently** (UI.md §7). The toast
             // above says *what* fired; this says *where*, and neither waits for the
@@ -2306,10 +2328,15 @@ mod tests {
     };
 
     use super::*;
-    // Both belong to the loop, which lives in `session` now — so they are imported
-    // here rather than at the top of the file, where a release build would find them
-    // unused.
-    use crate::{config::SubTabKeys, keymap, palette};
+    // `keymap` and `palette` belong to the loop, which lives in `session` now, and
+    // `TOAST_TTL` stopped being named in production the day the duration became a
+    // preference — so all three are imported here rather than at the top of the file,
+    // where a release build would find them unused.
+    use crate::{
+        config::{SubTabKeys, ToastDuration},
+        keymap, palette,
+        toast::TOAST_TTL,
+    };
 
     /// The seed every test session starts from.
     ///
@@ -2825,6 +2852,37 @@ mod tests {
             plain.len(),
             1,
             "sixteen colours should give the mine one hue: {plain:?}"
+        );
+    }
+
+    /// **The toast duration measured where it means something: on the frame.**
+    ///
+    /// `Config::toast_ttl` is a one-line accessor, so a test of *it* would prove
+    /// nothing; what was actually wired is the ~30 push sites that stopped naming
+    /// `TOAST_TTL` and started asking the config. So this drives a real announcement
+    /// through a real gesture and reads the same instant against two rungs: four
+    /// seconds after the fact the two-second rung is gone and the eight-second one is
+    /// still up. A push site left on the constant would answer three seconds to both
+    /// and fail the first half.
+    #[test]
+    fn the_configured_rung_is_how_long_an_announcement_is_drawn() {
+        /// The frame four seconds after an announcement made on `rung`.
+        fn four_seconds_later(rung: ToastDuration) -> String {
+            let mut app = session();
+            app.config.toast_duration = rung;
+            // A boost fired on an empty reserve: the shortest path from a gesture to an
+            // announcement, and it changes nothing on the way.
+            app.update(Action::FireBoost);
+            whole_frame(&render_at(&app, Instant::now() + Duration::from_secs(4)))
+        }
+
+        assert!(
+            !four_seconds_later(ToastDuration::Brief).contains("no boost charge"),
+            "a two-second announcement was still up after four"
+        );
+        assert!(
+            four_seconds_later(ToastDuration::Lingering).contains("no boost charge"),
+            "an eight-second announcement was gone after four"
         );
     }
 
