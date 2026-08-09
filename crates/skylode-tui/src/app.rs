@@ -323,7 +323,14 @@ impl App {
         // Nothing has fired yet, so the buffer is about no mine at all — which is the
         // state its `Default` already spells, rather than one this line has to choose.
         let flash = Flashes::new();
-        let view = View::from_state(&state, cursors, None, &toasts, &flash, now);
+        // **The defaults, and not the preferences this session will play on**, because
+        // those arrive afterwards through [`with_config`](App::with_config). Harmless
+        // rather than a bug: `Session` opens with its `dirty` flag raised, so
+        // [`sync_view`](App::sync_view) reprojects before the first frame is drawn and
+        // this snapshot never reaches a terminal. Built once into a binding so the
+        // projection and the field cannot end up reading two different defaults.
+        let config = Config::default();
+        let view = View::from_state(&state, &config, cursors, None, &toasts, &flash, now);
         Self {
             leaving: None,
             screen: Screen::Mine,
@@ -335,7 +342,7 @@ impl App {
             view,
             cursors,
             refused: None,
-            config: Config::default(),
+            config,
             capabilities: Capabilities::default(),
             #[cfg(debug_assertions)]
             dev: None,
@@ -409,6 +416,7 @@ impl App {
     pub(crate) fn sync_view(&mut self, now: Instant) {
         self.view = View::from_state(
             &self.state,
+            &self.config,
             self.cursors,
             self.refused.as_ref(),
             &self.toasts,
@@ -2765,6 +2773,59 @@ mod tests {
         app.config.sub_tab_keys = SubTabKeys::HL;
         app.update(Action::ResetSetting);
         assert_eq!(app.config.sub_tab_keys, SubTabKeys::HL);
+    }
+
+    /// **The Colour row's real consequence**, measured on the drawn frame rather than
+    /// on the field it sets.
+    ///
+    /// The whole point of the preference is that the mine repaints, and the chain that
+    /// makes it repaint has four links — `config.colour`, `View::colour_mode`,
+    /// `MineGrid::mode`, `palette::swatch` — of which only the last two had a test. So
+    /// this drives the gesture the player makes and counts *backgrounds*: at 256 a mine
+    /// draws its common and value blocks in two hues, at 16 it draws one, and the
+    /// stipple is what still tells them apart.
+    ///
+    /// The modal is closed before drawing, because Settings clears the frame it is
+    /// stacked over — a grid measured with the screen still up would be measuring the
+    /// panel.
+    #[test]
+    fn turning_the_colour_row_repaints_the_mine_grid() {
+        /// The distinct background colours a frame was painted in, ignoring the ones
+        /// the chrome uses: `Reset` is an untouched cell and `Black` is a broken one.
+        fn backgrounds(buffer: &Buffer) -> Vec<Color> {
+            let mut seen = Vec::new();
+            for y in 0..buffer.area.height {
+                for x in 0..buffer.area.width {
+                    let colour = buffer[(x, y)].bg;
+                    if !matches!(colour, Color::Reset | Color::Black) && !seen.contains(&colour) {
+                        seen.push(colour);
+                    }
+                }
+            }
+            seen
+        }
+
+        let mut app = session();
+        app.sync_view(Instant::now());
+        let rich = backgrounds(&render_to_buffer(&app));
+        assert!(
+            rich.len() >= 2,
+            "the default palette drew one colour: {rich:?}"
+        );
+
+        // The caret opens on `Colour`, so one `→` is the whole gesture.
+        app.update(Action::OpenSettings);
+        app.update(Action::AdjustRight);
+        app.update(Action::CloseModal);
+        assert_eq!(app.config.colour, crate::palette::ColourMode::Ansi16);
+
+        app.sync_view(Instant::now());
+        let plain = backgrounds(&render_to_buffer(&app));
+        assert_eq!(
+            plain.len(),
+            1,
+            "sixteen colours should give the mine one hue: {plain:?}"
+        );
     }
 
     /// The caret walks and wraps, like every other list in the crate.

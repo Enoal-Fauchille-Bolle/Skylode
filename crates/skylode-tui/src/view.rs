@@ -40,6 +40,7 @@ use skylode_core::{
 
 use crate::{
     announce,
+    config::Config,
     cursor::{self, Cursors, MineTrack, UpgradeTab},
     flash::{FlashStage, Flashes},
     format::{MAXED, boost_seconds, duration_hm, grouped, roman, rung_label, shown_rung},
@@ -1261,8 +1262,14 @@ pub struct View {
     pub mines: MinesView,
     /// The Upgrades screen's three sub-tabs (UI.md §5.4).
     pub upgrades: UpgradesView,
-    /// How many colours to ask the terminal for — a player preference that lives
-    /// in the save, and that the Settings screen will edit in phase 7.
+    /// How many colours to ask the terminal for — a player preference that lives in
+    /// the save and is edited on the Settings screen.
+    ///
+    /// **Copied into the read model rather than read from [`Config`] by the screen that
+    /// wants it**, which is the route every preference a *screen* consults will take:
+    /// `Screen::render` is handed a `&View` and nothing else, so a screen that reached
+    /// for the config would need a second parameter added to all six signatures for the
+    /// sake of the one that uses it. The copy costs a `Copy` enum per projection.
     pub colour_mode: ColourMode,
 }
 
@@ -1283,8 +1290,12 @@ impl View {
     /// breaks this function until someone decides where it comes from, where before it
     /// would have silently taken a wireframe's value into a real run.
     ///
-    /// Four parameters and not one, because four of the answers are not in the run:
+    /// Six parameters and not one, because six of the answers are not in the run:
     ///
+    /// - `config` is what the player asked the front-end to look like. It is the one
+    ///   argument that *is* in the save — preferences travel inside it — but it is not
+    ///   in the [`GameState`], and deliberately: a keybinding is not a game rule, and
+    ///   the determinism contract must not see one.
     /// - `cursors` is where the player is *pointing*, which is front-end state by
     ///   definition — a list selection has no business reaching a save.
     /// - `refused` is the last compress-first refusal
@@ -1299,7 +1310,7 @@ impl View {
     ///   beat a cell is drawn on and the age the history prints cannot come from two
     ///   readings of the clock that disagree.
     ///
-    /// Four positional parameters is more than this crate likes, and the reason it is
+    /// Six positional parameters is more than this crate likes, and the reason it is
     /// tolerable here rather than a `struct` is that no two of them share a type: a
     /// misordered call does not compile. That is precisely the hazard
     /// [`Input`](skylode_core::game::Input) exists to guard against one crate down,
@@ -1310,6 +1321,7 @@ impl View {
     /// cost is paid when the state changes, not thirty times a second.
     pub fn from_state(
         state: &GameState,
+        config: &Config,
         cursors: Cursors,
         refused: Option<&CompressHint>,
         toasts: &Toasts,
@@ -1377,7 +1389,10 @@ impl View {
             levels: levels_view(state, cursors),
             prestige: prestige_view(player),
             stats: stats_view(state, cursors, toasts, now),
-            colour_mode: ColourMode::default(),
+            // The preference, at last, where it used to be a hard-wired default. The
+            // field and its one consumer (`screen::mine`'s grid) have existed since the
+            // palette landed; what was missing was the wire, and this is it.
+            colour_mode: config.colour,
         }
     }
 
@@ -3585,6 +3600,7 @@ mod tests {
     fn projected(state: &GameState) -> View {
         View::from_state(
             state,
+            &Config::default(),
             Cursors::new(
                 state.current_mine().kind(),
                 upgrade::position(&upgrade::ladder(), state.player().get_pickaxe()),
@@ -3696,6 +3712,32 @@ mod tests {
             view.haul.value.is_none(),
             "the Stone mine drops one material"
         );
+    }
+
+    /// **The one field of the read model that comes from the preferences.**
+    ///
+    /// Asserted on *both* answers rather than on the non-default one alone: a
+    /// projection that had simply swapped one hard-wired constant for the other would
+    /// pass a single assertion and still be ignoring what it was handed.
+    #[test]
+    fn the_colour_preference_is_what_the_read_model_carries() {
+        let state = fresh_run();
+        for colour in [ColourMode::Ansi256, ColourMode::Ansi16] {
+            let config = Config {
+                colour,
+                ..Config::default()
+            };
+            let view = View::from_state(
+                &state,
+                &config,
+                Cursors::new(MineKind::Stone, 0, 1),
+                None,
+                &Toasts::new(),
+                &Flashes::new(),
+                Instant::now(),
+            );
+            assert_eq!(view.colour_mode, colour);
+        }
     }
 
     #[test]
@@ -4233,6 +4275,7 @@ mod tests {
 
         let view = View::from_state(
             &state,
+            &Config::default(),
             cursors,
             None,
             &Toasts::new(),
@@ -4276,6 +4319,7 @@ mod tests {
 
         let view = View::from_state(
             &state,
+            &Config::default(),
             cursors,
             None,
             &Toasts::new(),
@@ -4345,6 +4389,7 @@ mod tests {
 
         let view = View::from_state(
             &state,
+            &Config::default(),
             cursors,
             None,
             &Toasts::new(),
@@ -4398,6 +4443,7 @@ mod tests {
             cursors.pickaxe_rung = rung;
             let view = View::from_state(
                 &state,
+                &Config::default(),
                 cursors,
                 None,
                 &Toasts::new(),
@@ -4439,6 +4485,7 @@ mod tests {
 
         let view = View::from_state(
             &state,
+            &Config::default(),
             cursors,
             None,
             &Toasts::new(),
@@ -4589,6 +4636,7 @@ mod tests {
             cursors.enchant = kind;
             let view = View::from_state(
                 &state,
+                &Config::default(),
                 cursors,
                 None,
                 &Toasts::new(),
@@ -4714,6 +4762,7 @@ mod tests {
         let cursors = upgrading(&state, UpgradeTab::Enchants);
         let view = View::from_state(
             &state,
+            &Config::default(),
             cursors,
             None,
             &Toasts::new(),
@@ -4775,6 +4824,7 @@ mod tests {
 
         let view = View::from_state(
             &state,
+            &Config::default(),
             cursors,
             None,
             &Toasts::new(),
@@ -4807,6 +4857,7 @@ mod tests {
             cursors.mine_track = (MineKind::Stone, track);
             let view = View::from_state(
                 &state,
+                &Config::default(),
                 cursors,
                 None,
                 &Toasts::new(),

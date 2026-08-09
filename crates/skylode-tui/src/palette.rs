@@ -307,10 +307,6 @@ pub enum ColourMode {
     Ansi16,
 }
 
-/// `allow` and not `expect`, for the reason [`Config`](crate::config) spells out: this
-/// method is dead building the binary and live building the tests, so an expectation
-/// would be unfulfilled in exactly one of the two compilations.
-#[allow(dead_code, reason = "awaiting the settings screen that draws the rows")]
 impl ColourMode {
     /// The value column's text on the Settings screen (`docs/UI.md` §6.10).
     ///
