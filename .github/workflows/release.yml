@@ -47,8 +47,8 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.target }}
 
@@ -88,7 +88,7 @@ jobs:
           Compress-Archive -Path $stage -DestinationPath "$stage.zip"
           "ASSET=$stage.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.target }}
           path: ${{ env.ASSET }}
@@ -105,11 +105,11 @@ jobs:
     steps:
       # `fetch-depth: 0` is not optional — git-cliff reads the history to build the
       # notes, and the default shallow clone has none of it.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
@@ -124,7 +124,7 @@ jobs:
       # is exactly the situation here: it emits the notes for this tag alone rather
       # than regenerating the whole history.
       - name: Generate the release notes
-        uses: orhun/git-cliff-action@v4
+        uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v4.8.0
         with:
           config: cliff.toml
           args: --current
@@ -132,12 +132,35 @@ jobs:
           OUTPUT: RELEASE_NOTES.md
           GITHUB_REPO: ${{ github.repository }}
 
+      # A hand-written body wins over the generated one.
+      #
+      # This is a general capability rather than a special case, though one release
+      # is what motivated it. git-cliff emits commit subjects, and those are written
+      # for a maintainer — `fix(tui): align the mine list's right-hand columns` — so
+      # any release meant to be read by a player can drop a file here and get prose
+      # instead.
+      #
+      # `v0.1.0` is the case where the generated body is not merely dry but
+      # meaningless. A changelog answers "what changed since the last release?", and
+      # a first release has no "since": git-cliff walks back to the root commit and
+      # returns the entire history, measured at 317 entries. No configuration fixes
+      # that, because a diff against nothing is the whole project.
+      - name: Prefer hand-written notes where they exist
+        run: |
+          hand=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$hand" ]; then
+            echo "Using the hand-written notes at $hand"
+            cp "$hand" RELEASE_NOTES.md
+          else
+            echo "No hand-written notes for ${GITHUB_REF_NAME}; keeping the generated body"
+          fi
+
       # `generate_release_notes` stays off. GitHub builds those from **merged pull
       # requests**, and this is a solo repository committing straight to `main`, so
       # it would produce an empty list while competing with git-cliff for the same
       # field.
       - name: Publish the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           name: ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md

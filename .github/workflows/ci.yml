@@ -52,7 +52,7 @@ jobs:
     name: Format, lint and docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # `rust-toolchain.toml` is what selects the compiler and provisions rustfmt
       # and clippy; rustup honours it on the first cargo call, so no install step
@@ -61,7 +61,7 @@ jobs:
       - name: Show the resolved toolchain
         run: rustup show
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -102,8 +102,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo test
         run: cargo test --workspace --all-features
 
@@ -112,8 +112,8 @@ jobs:
     name: Release build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo build --release
         run: cargo build --workspace --release
 
@@ -123,18 +123,18 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Its own cache: tarpaulin builds into `target/tarpaulin-llvm` (see
       # `tarpaulin.toml`) precisely so it does not evict the artifacts the other
       # jobs share, and a shared cache key here would undo that.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: tarpaulin
 
       # A prebuilt binary. Compiling cargo-tarpaulin from source costs several
       # minutes per run and measures nothing.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: cargo-tarpaulin
 
