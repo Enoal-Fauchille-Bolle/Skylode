@@ -34,6 +34,18 @@ trim = true
 [git]
 conventional_commits = true
 
+# Only `vX.Y.Z` tags delimit a release.
+#
+# Without this, *every* tag is a boundary, and this repository has one that is not
+# a version: `wip-responsive-backup`, a backup marker. git-cliff treated it as the
+# previous release and silently cut the history at it — 140 entries where the
+# history has 317. The bug is quiet in the worst way, because the output still
+# looks like a plausible changelog.
+#
+# `CONTRIBUTING.md` says the `v` prefix is what separates version tags from the
+# other kind; this line is where that separation is actually enforced.
+tag_pattern = "v[0-9]*"
+
 # Drop anything that does not parse rather than filing it under a catch-all.
 #
 # The catch-all is the usual setting, and it is wrong here: the only messages that
