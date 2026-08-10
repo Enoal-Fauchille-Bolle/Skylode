@@ -54,6 +54,68 @@ type(scope)!: subject
 - Types: `feat`, `fix`, `docs`, `refactor`, `chore`, `style`, `test`, `build`,
   `ci`. The list is closed: the `commit-msg` hook rejects anything else.
 
+## Versioning and releases
+
+One version covers the whole workspace. It lives in `[workspace.package]` at the
+repository root, and both crates inherit it with `version.workspace = true`. That
+is a claim about the product rather than about the code: the two crates always ship
+together, inside one binary, to one player. If `skylode-core` is ever consumed by
+something other than this front-end, its version becomes an API contract and has to
+move on its own.
+
+Releases are **annotated** tags named `vX.Y.Z` (`git tag -a v0.2.0 -m "…"`). The
+tag is the only thing that starts a release; nothing else does. Tags that are not
+versions (backup markers, for example) go without the `v` prefix, which is what
+keeps the two kinds apart.
+
+### What the three numbers promise
+
+Skylode is a game, not a library, so its public contract is not a set of `pub fn`
+signatures. It is what a player relies on: **their save file opens**, **the keys do
+what they did**, and **the run they are in the middle of still makes sense**. So the
+question to ask of any release is the one a player would ask — *if I update without
+doing anything, do I lose something?*
+
+- **Breaking** — a save from the previous version cannot be loaded, a binding
+  changed under the player's fingers, or progress they had banked is gone.
+- **Added** — new content or a new capability, with everything that worked still
+  working.
+- **Fixed** — corrections only; nothing moved.
+
+Note that "breaking" is about what the player experiences, not about what the code
+changed. A save-format change shipped **with a migration** is not breaking: the file
+still opens. A change that leaves every signature intact but desynchronises existing
+saves — a different RNG draw order, say — *is* breaking, and no compiler will say so.
+
+### Which number moves
+
+While the version is below `1.0.0`, **Cargo treats the minor as the breaking axis**
+(`0.2.3` resolves as `>=0.2.3, <0.3.0`), which differs from upstream SemVer's "no
+guarantees before 1.0". So, pre-1.0:
+
+| Change | Bump |
+| --- | --- |
+| Breaking, or added | `0.MINOR.0` |
+| Fixed | `0.x.PATCH` |
+
+Against the commit types above: `feat` and any `!` take the minor; `fix`,
+`refactor`, `style` and `perf` take the patch; `docs`, `chore`, `test`, `build` and
+`ci` do not justify a release on their own. Lower components reset to zero — after
+`0.4.7`, a feature gives `0.5.0`, not `0.5.7`.
+
+`1.0.0` is reserved for one condition, and it is checkable rather than a matter of
+taste: **the MVP list in [docs/ROADMAP.md](docs/ROADMAP.md) is complete**. Tagging it
+is a promise that breaking anything afterwards costs a `2.0.0`.
+
+### `SAVE_VERSION` is a separate number
+
+`skylode_core::save::SAVE_VERSION` is a migration selector, not a version of the
+game. It advances only when the on-disk document changes shape, for reasons that
+have nothing to do with the product's maturity — it reached `3` across two releases
+nobody shipped. Tying the two together would force a format bump for nothing, or
+make a bugfix release lie about the format. The relationship belongs in the release
+notes as prose (*"`SAVE_VERSION` 3 → 4, migrated on load"*), never in the numbers.
+
 ## Git hooks
 
 The hooks in [.githooks/](.githooks/) check the rules above so a broken commit
