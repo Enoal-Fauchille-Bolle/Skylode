@@ -1,0 +1,16 @@
+# The toolchain everyone builds with, locally and on CI.
+#
+# `stable` rather than a frozen version: a CI that never meets a newer compiler
+# finds out about a breaking change late, and new clippy lints then arrive forty
+# at a time instead of one. The workspace denies `clippy::correctness` and
+# `suspicious`, so a lint that lands upstream lands here as a build failure — it
+# should do that on the day it ships, while the change that provoked it is still
+# fresh, not six months later during a release.
+#
+# Naming the components is what makes `cargo fmt` and `cargo clippy` present
+# without an install step: rustup reads this file and provisions them on the first
+# cargo invocation, on a runner as much as on a fresh clone. The pre-commit hook
+# runs all four of the tools below, so all four have to be here.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
