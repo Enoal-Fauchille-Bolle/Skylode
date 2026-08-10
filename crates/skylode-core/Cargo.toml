@@ -1,7 +1,14 @@
 [package]
 name = "skylode-core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# `description` is not inherited: it is the one field where the two crates genuinely
+# differ, and crates.io rejects an upload without it. Naming the determinism here is
+# deliberate — it is the property that makes this crate worth depending on separately.
+description = "Deterministic, UI-agnostic game rules for Skylode, a terminal idle mining game"
 
 [dependencies]
 # `default-features = false` drops `thread_rng` and `os_rng`, so ambient OS

@@ -2,6 +2,26 @@
 resolver = "3"
 members = ["crates/skylode-core", "crates/skylode-tui"]
 
+# The fields both crates inherit rather than repeat. Cargo versions *packages*, not
+# workspaces: this table is a set of defaults a member opts into with
+# `key.workspace = true`, and a member that stays silent keeps its own value instead.
+#
+# One version for both is a claim about the product — the two crates always ship
+# together, inside one binary, to one player — and it holds only for as long as that
+# does. The day `skylode-core` is consumed by something other than this front-end its
+# version becomes an API contract and has to move on its own; splitting then is an
+# edit to this table, which is why coupling now costs nothing.
+#
+# `version` is read for real only by a publish or by a dependency that names it, and
+# `skylode-tui` depends on the core by `path` alone — so today this number's audience
+# is the release tag and the human reading it. `docs/` carries the maturity; the
+# number carries the compatibility promise, and nothing else.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Enoal-Fauchille-Bolle/Skylode"
+
 # Build configuration
 [profile.release]
 opt-level = 3

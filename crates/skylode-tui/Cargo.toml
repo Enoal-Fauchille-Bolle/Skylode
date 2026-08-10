@@ -1,7 +1,14 @@
 [package]
 name = "skylode-tui"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See the core's manifest for why `description` is the one field not inherited. This
+# one is written for a player rather than for a caller: this package is the product,
+# and its version is the number a release tag will carry.
+description = "Skylode, a terminal idle mining game — the ratatui front-end and its binary"
 
 # The package keeps the `-tui` suffix because it names a *place in the workspace*
 # — the front-end, next to `skylode-core` — and every `cargo run -p skylode-tui`,
