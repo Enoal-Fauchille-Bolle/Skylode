@@ -1,0 +1,145 @@
+# Tag in, downloadable game out.
+#
+# The tag is the only thing that starts a release: no manual dispatch, no push to a
+# branch, nothing else. That is one rule to remember rather than several, and it
+# makes the question "what shipped?" answerable with `git tag`.
+#
+# Versions are `vX.Y.Z`, annotated. What the three numbers promise — and why
+# `SAVE_VERSION` is deliberately not one of them — is in `CONTRIBUTING.md`
+# § Versioning and releases.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The full check suite, re-run against the tagged commit.
+  #
+  # Chosen over trusting the CI run that already exists for this SHA, because a tag
+  # can point at a commit whose CI never ran — tagging before pushing is the normal
+  # way that happens — and on a public repository the re-run is free. Everything
+  # below `needs:` this, so a red tag ships nothing.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          # macOS runners have been arm64 since macOS 14, so this is a native
+          # build and Intel Macs are **not** covered by this matrix. Adding
+          # `x86_64-apple-darwin` is a one-line matrix entry when someone asks.
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Every target here is native to its runner, so this is already installed —
+      # but naming it makes the output path predictable
+      # (`target/<triple>/release/`) instead of depending on whether `--target` was
+      # passed, which is what the packaging steps below rely on.
+      - name: Add the target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p skylode-tui
+
+      # The binary is `skylode`, not `skylode-tui`: `crates/skylode-tui/Cargo.toml`
+      # declares the `[[bin]]` target explicitly to separate the package name (a
+      # place in the workspace) from the name a player types. The archive carries
+      # the player's name for it.
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          stage="skylode-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/skylode" "$stage/"
+          cp README.md LICENSE "$stage/"
+          tar czf "$stage.tar.gz" "$stage"
+          echo "ASSET=$stage.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "skylode-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/skylode.exe" $stage
+          Copy-Item README.md, LICENSE $stage
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+          "ASSET=$stage.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # The one elevated permission in either workflow, and only on the job that
+      # needs it: creating the release and uploading its assets.
+      contents: write
+    steps:
+      # `fetch-depth: 0` is not optional — git-cliff reads the history to build the
+      # notes, and the default shallow clone has none of it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Named by prefix rather than `*`: the shell sets up the redirection and the
+      # glob in an order that would otherwise let `SHA256SUMS` list itself.
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum skylode-* > SHA256SUMS
+
+      # `--current` is the invocation for a tag that is already checked out, which
+      # is exactly the situation here: it emits the notes for this tag alone rather
+      # than regenerating the whole history.
+      - name: Generate the release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --current
+        env:
+          OUTPUT: RELEASE_NOTES.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      # `generate_release_notes` stays off. GitHub builds those from **merged pull
+      # requests**, and this is a solo repository committing straight to `main`, so
+      # it would produce an empty list while competing with git-cliff for the same
+      # field.
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          files: dist/*
+          fail_on_unmatched_files: true

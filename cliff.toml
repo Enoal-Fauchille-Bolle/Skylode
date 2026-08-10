@@ -1,0 +1,65 @@
+# git-cliff — the release notes, derived from the commit history.
+#
+# This config is unusually short for a reason: the `commit-msg` hook already
+# enforces Conventional Commits against a closed list of nine types, so every
+# commit in the history parses. There is no salvage layer here because there is
+# nothing to salvage — the guarantee was bought at commit time.
+#
+# The notes are generated into the GitHub release body and nowhere else; no
+# CHANGELOG.md is committed. See `CONTRIBUTING.md` § Versioning and releases.
+
+[changelog]
+# `trim = true` below strips the leading whitespace of every line, so the
+# indentation in these templates is for the reader of this file only.
+header = ""
+
+body = """
+{% if version %}\
+## {{ version | trim_start_matches(pat="v") }} — {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## Unreleased
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}\
+- {% if commit.scope %}**{{ commit.scope }}** — {% endif %}\
+{{ commit.message | upper_first }}
+{% endfor %}\
+{% endfor %}
+"""
+
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+
+# Drop anything that does not parse rather than filing it under a catch-all.
+#
+# The catch-all is the usual setting, and it is wrong here: the only messages that
+# can reach this repository unconventional are the ones git writes itself (merges,
+# reverts, `fixup!`), which `commit-msg` deliberately exempts. Those are noise in a
+# player-facing note, and a "Other" section would print them.
+filter_unconventional = true
+
+# Order is significant twice over. Within the list, the **first** parser that
+# matches wins — which is why the breaking-change pattern comes before `feat` and
+# `fix`, since a breaking commit also starts with one of those.
+#
+# Across the rendered sections, git-cliff sorts groups **alphabetically**, so the
+# `<!-- N -->` prefixes are what impose a reading order; `striptags` in the body
+# template removes them again before display.
+commit_parsers = [
+  { message = "^[a-z]+(\\(.+\\))?!:", group = "<!-- 0 -->Breaking changes" },
+  { message = "^feat", group = "<!-- 1 -->Features" },
+  { message = "^fix", group = "<!-- 2 -->Bug fixes" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = "^test", group = "<!-- 5 -->Tests" },
+  { message = "^(style|chore|build|ci)", group = "<!-- 6 -->Internal" },
+]
+
+protect_breaking_commits = true
+filter_commits = false
+topo_order = false
+sort_commits = "oldest"

@@ -1,0 +1,151 @@
+# The checks a machine runs, on every push and every pull request.
+#
+# This workflow exists because three gaps cannot be closed by the pre-commit hook:
+#
+#   1. Nothing runs the test suite. The hook has four active steps — fmt, check,
+#      clippy, doc. The fifth, tarpaulin, is the one that *executed* the tests, and
+#      it has been commented out since 20bbffa. `cargo check --all-targets` compiles
+#      the tests without running them, so the golden save and the RNG golden vector
+#      — the two tests that guard every save on disk — were verified only when a
+#      human typed `cargo test`.
+#   2. The hooks bypass every check on a `dev/*` branch, by design. A gate that
+#      lives only in a hook does not run where the risky work happens.
+#   3. `cargo build --release` is the one build nothing ever runs. The dev menu is
+#      `#[cfg(debug_assertions)]` all the way down, so release compiles a different
+#      tree than any local check has ever seen.
+#
+# Note what follows from (2): this workflow deliberately does **not** reproduce the
+# `dev/*` bypass. Being the gate that branch name cannot skip is the entire point,
+# and on a public repository the runner minutes are free.
+name: CI
+
+on:
+  # `branches` rather than a bare `push`, which would fire on tags too — and a tag
+  # already runs this whole workflow through `release.yml`'s `workflow_call`. The
+  # glob matches every branch, so nothing is narrowed except the tag case.
+  push:
+    branches: ['**']
+  pull_request:
+
+  # `release.yml` calls this workflow instead of restating the check list. The
+  # duplication that would otherwise happen is the exact drift the `check` job
+  # below warns about between the hook and CI; a third copy would make it worse.
+  workflow_call:
+
+# A newer push makes the run in progress irrelevant — it is measuring a commit
+# nobody is waiting on any more.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The pre-commit hook, reproduced step for step and flag for flag. The point of
+  # the duplication is that a green CI means exactly what a green hook means; if
+  # the two drift, one of them is lying about the state of the tree.
+  check:
+    name: Format, lint and docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `rust-toolchain.toml` is what selects the compiler and provisions rustfmt
+      # and clippy; rustup honours it on the first cargo call, so no install step
+      # is needed. This prints what it resolved, which is the one thing worth
+      # having in the log when a lint appears out of nowhere.
+      - name: Show the resolved toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo check
+        run: cargo check --all-targets --all-features
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # `--no-deps` is correctness rather than speed, per the hook's own comment:
+      # without it, `-D warnings` fails the run over a rustdoc warning inside
+      # `rand`, which is not ours to fix. `--document-private-items` is what makes
+      # the check see the intra-doc links to `pub(crate)` items, which is most of
+      # the interesting ones in this workspace.
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --document-private-items --all-features
+
+  # Closes gap 1. No tty is involved: `App::run` is generic over ratatui's
+  # `Backend` and over the `event::Events` trait, so the tests drive the real loop
+  # with a scripted event list against `TestBackend`.
+  #
+  # Windows is here because it is the one platform where this code genuinely
+  # diverges — `ProjectDirs::from("", "", "skylode")` in `persist` resolves a
+  # different directory, and crossterm has a separate backend. macOS is another
+  # Unix and compiles like Linux, so it earns its place in the release matrix
+  # rather than this one.
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Without this, a Windows failure cancels the Linux job and hides whether
+      # the failure is platform-specific — which is the only question worth asking
+      # when a matrix goes red.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --workspace --all-features
+
+  # Closes gap 3.
+  release-build:
+    name: Release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build --release
+        run: cargo build --workspace --release
+
+  # The gate that was deliberately removed from the hook, put where it cannot be
+  # skipped with a branch name and where it costs the committer nothing.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Its own cache: tarpaulin builds into `target/tarpaulin-llvm` (see
+      # `tarpaulin.toml`) precisely so it does not evict the artifacts the other
+      # jobs share, and a shared cache key here would undo that.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: tarpaulin
+
+      # A prebuilt binary. Compiling cargo-tarpaulin from source costs several
+      # minutes per run and measures nothing.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
+
+      # `--fail-under` is the only flag that belongs here. The engine, the skipped
+      # clean stage and the separate build directory live in `tarpaulin.toml`, so
+      # that a hand-run `cargo tarpaulin` reports the same number this gate refuses
+      # on. Two coverage figures for one repository is a bug report filed against
+      # nothing.
+      #
+      # 94 against a workspace sitting near 99: the margin is deliberate. A gate
+      # that trips on the commit adding a function, before the commit testing it,
+      # is a gate that gets worked around. It refuses a collapse, not a wobble.
+      - name: cargo tarpaulin
+        run: cargo tarpaulin --fail-under 94 --out Stdout
