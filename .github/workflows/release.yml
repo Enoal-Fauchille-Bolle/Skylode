@@ -120,40 +120,57 @@ jobs:
         working-directory: dist
         run: sha256sum skylode-* > SHA256SUMS
 
-      # `--current` is the invocation for a tag that is already checked out, which
-      # is exactly the situation here: it emits the notes for this tag alone rather
-      # than regenerating the whole history.
+      # Which body this release gets is decided **before** either producer runs.
+      #
+      # The first version generated first and overwrote afterwards, which cost a
+      # release: `v0.1.0` has a hand-written body, so git-cliff's output was going to
+      # be discarded — and git-cliff still failed the job on its way to producing it.
+      # A step whose result is about to be thrown away must not be able to stop the
+      # release, and the only reliable way to arrange that is not to run it.
+      - name: Decide where the release body comes from
+        id: notes
+        run: |
+          hand=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$hand" ]; then
+            echo "Hand-written notes found at $hand"
+            echo "hand=$hand" >> "$GITHUB_OUTPUT"
+          else
+            echo "No hand-written notes for ${GITHUB_REF_NAME}; generating from the commits"
+          fi
+
+      # A hand-written body is a general capability rather than a `v0.1.0` special
+      # case: git-cliff emits commit subjects, and those are written for a maintainer
+      # — `fix(tui): align the mine list's right-hand columns` — so any release meant
+      # to be read by a player can drop a file in `.github/release-notes/`.
+      #
+      # `v0.1.0` is where the generated body is not merely dry but meaningless. A
+      # changelog answers "what changed since the last release?", and a first release
+      # has no "since": git-cliff walks back to the root commit and returns the whole
+      # history, measured at 317 entries. No configuration fixes that, because a diff
+      # against nothing is the project itself.
+      - name: Use the hand-written notes
+        if: steps.notes.outputs.hand != ''
+        run: cp "${{ steps.notes.outputs.hand }}" RELEASE_NOTES.md
+
+      # `--current` is the invocation for a tag that is already checked out: it emits
+      # the notes for this tag alone rather than regenerating the whole history.
+      #
+      # **No `GITHUB_REPO` here, deliberately.** That variable is what switches on
+      # git-cliff's GitHub integration, which then calls the REST API to enrich the
+      # changelog — unauthenticated, since no token was supplied, against a limit of
+      # 60 requests an hour shared across every runner on that IP. It crashed the
+      # first real release. The template in `cliff.toml` uses no `github.*` value at
+      # all, so the integration was paying a network dependency for nothing; without
+      # the variable git-cliff reads local git history and touches no network. Adding
+      # a token would have fixed the symptom and kept the dependency.
       - name: Generate the release notes
+        if: steps.notes.outputs.hand == ''
         uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v4.8.0
         with:
           config: cliff.toml
           args: --current
         env:
           OUTPUT: RELEASE_NOTES.md
-          GITHUB_REPO: ${{ github.repository }}
-
-      # A hand-written body wins over the generated one.
-      #
-      # This is a general capability rather than a special case, though one release
-      # is what motivated it. git-cliff emits commit subjects, and those are written
-      # for a maintainer — `fix(tui): align the mine list's right-hand columns` — so
-      # any release meant to be read by a player can drop a file here and get prose
-      # instead.
-      #
-      # `v0.1.0` is the case where the generated body is not merely dry but
-      # meaningless. A changelog answers "what changed since the last release?", and
-      # a first release has no "since": git-cliff walks back to the root commit and
-      # returns the entire history, measured at 317 entries. No configuration fixes
-      # that, because a diff against nothing is the whole project.
-      - name: Prefer hand-written notes where they exist
-        run: |
-          hand=".github/release-notes/${GITHUB_REF_NAME}.md"
-          if [ -f "$hand" ]; then
-            echo "Using the hand-written notes at $hand"
-            cp "$hand" RELEASE_NOTES.md
-          else
-            echo "No hand-written notes for ${GITHUB_REF_NAME}; keeping the generated body"
-          fi
 
       # `generate_release_notes` stays off. GitHub builds those from **merged pull
       # requests**, and this is a solo repository committing straight to `main`, so
