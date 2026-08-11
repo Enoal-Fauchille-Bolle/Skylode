@@ -753,9 +753,23 @@ mod tests {
         ));
     }
 
-    /// A slot whose parent is an ordinary file, which every platform refuses without
-    /// anyone having to change a permission or be root. Both directions fail, and
-    /// **the backup answers nothing** — it is behind the same broken parent.
+    /// A slot whose parent is an ordinary file, which needs neither a permission
+    /// change nor root to arrange — but which **the two platforms do not agree is the
+    /// same thing**, so this test records the disagreement rather than picking a side.
+    ///
+    /// Unix separates *"this path is nonsense"* (`ENOTDIR`) from *"the file is not
+    /// there"*, and only the second is [`ErrorKind::NotFound`]. Windows reports both
+    /// as `ERROR_PATH_NOT_FOUND`, which `std` decodes as `NotFound` — so [`load`]'s
+    /// deliberate rule that **a missing file is `Ok(None)`** turns the unreachable
+    /// slot into an empty one there. That rule is not the bug; a fresh install really
+    /// is the ordinary opening of this game, and the loader has no way to tell the
+    /// two apart because the operating system did not.
+    ///
+    /// Writing refuses on both, since `create_dir_all` meets a file where it needs a
+    /// directory. And **the backup answers nothing** either way — it sits behind the
+    /// same broken parent as the primary.
+    ///
+    /// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
     #[test]
     fn a_location_that_cannot_be_reached_fails_both_ways() {
         let (dir, _) = slots();
@@ -765,8 +779,17 @@ mod tests {
         }
         let slots = SaveSlots::in_dir(&blocker.join("skylode"));
 
-        assert!(matches!(load(slots.primary()), Err(PersistError::Io(_))));
-        assert!(matches!(load(slots.backup()), Err(PersistError::Io(_))));
+        #[cfg(unix)]
+        {
+            assert!(matches!(load(slots.primary()), Err(PersistError::Io(_))));
+            assert!(matches!(load(slots.backup()), Err(PersistError::Io(_))));
+        }
+        #[cfg(windows)]
+        {
+            assert!(matches!(load(slots.primary()), Ok(None)));
+            assert!(matches!(load(slots.backup()), Ok(None)));
+        }
+
         assert!(matches!(
             save(&slots, &mut a_run(), &Config::default(), NOW),
             Err(PersistError::Io(_))
