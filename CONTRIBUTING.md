@@ -1,9 +1,12 @@
 # Contributing to Skylode
 
-Thanks for your interest in Skylode. The project is in a pre-MVP design phase:
-the design is settled (see [docs/](docs/)) but the game is not yet playable. Code
-contributions are welcome, but please open an issue to discuss before starting a
-large change, so effort stays aligned with the roadmap.
+Thanks for your interest in Skylode. The game is **playable and pre-1.0**: the
+mining loop, the six screens, the enchants, prestige and the save system all work.
+What stands between here and `1.0.0` is the tail of the balance work — see
+[docs/ROADMAP.md](docs/ROADMAP.md) for the scope, and the § *Versioning and
+releases* below for what that version number promises. Code contributions are
+welcome, but please open an issue to discuss before starting a large change, so
+effort stays aligned with the roadmap.
 
 ## Prerequisites
 
