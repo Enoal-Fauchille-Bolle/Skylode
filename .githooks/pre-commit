@@ -1,6 +1,16 @@
 #!/usr/bin/env sh
 # Git pre-commit hook
-# Runs cargo fmt, check, clippy, doc, and tarpaulin on all Rust code
+#
+# Runs four checks on all Rust code: cargo fmt, check, clippy and doc. A fifth,
+# tarpaulin, is written below and has been commented out since 20bbffa — this
+# header claimed otherwise for months, which is the kind of comment CONTRIBUTING
+# now calls worse than none. The coverage gate lives in `ci.yml` instead, where it
+# costs a commit nothing and cannot be skipped with a `dev/*` branch name.
+#
+# Nothing added by the CI beyond these four belongs here: `cargo-deny`,
+# `actionlint` and the MSRV toolchain all need a tool a fresh clone does not have,
+# and a hook that fails on a missing tool blocks a correct commit for a reason that
+# is not the code.
 
 # Set up colors
 RED_BOLD="\033[1;31m"
