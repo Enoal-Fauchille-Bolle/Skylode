@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 
 # `description` is not inherited: it is the one field where the two crates genuinely
 # differ, and crates.io rejects an upload without it. Naming the determinism here is

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 
 # See the core's manifest for why `description` is the one field not inherited. This
 # one is written for a player rather than for a caller: this package is the product,
@@ -26,7 +27,13 @@ path = "src/main.rs"
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
 ratatui = "0.30.2"
-skylode-core = { path = "../skylode-core" }
+# Both a `path` and a `version`, which is one dependency and not two: cargo follows the
+# path in this workspace and would resolve the version from the registry anywhere else.
+# The `path` alone is what `cargo publish` refuses — it names a directory that exists on
+# no other machine — so this line is the whole of what stood between this crate and
+# being publishable. It costs nothing today and is checked by nothing until that day,
+# which is exactly why it is worth writing while the two numbers are still equal.
+skylode-core = { path = "../skylode-core", version = "0.1.0" }
 
 # `Config` is the `C` of `skylode_core::save::Save<C>` — the type parameter that
 # carries the player's preferences through the core without the core ever learning

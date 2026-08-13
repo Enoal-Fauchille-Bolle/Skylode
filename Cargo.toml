@@ -22,6 +22,22 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/Enoal-Fauchille-Bolle/Skylode"
 
+# The oldest compiler that builds this workspace — **measured, not assumed**.
+#
+# The edition's own floor is 1.85, and that is what this line said until it was run:
+# 1.85 refuses both crates, for reasons that are unrelated to each other and equally
+# real. `skylode-core` uses `u32::is_multiple_of` (stable in 1.87) and `let` chains
+# (`if let Some(x) = a && …`, stable in 1.88 and only inside edition 2024).
+# `skylode-tui` inherits 1.88 from `ratatui`, `time` and `darling`. The two arrive at
+# the same number by coincidence, which is why one inherited value is honest here
+# rather than a rounding of two different promises.
+#
+# It is a promise made to whoever depends on `skylode-core` once it is published, so a
+# CI job compiles against exactly this toolchain: a version claimed and never exercised
+# is worse than none, because cargo repeats it to a user who then meets a compiler error
+# instead of a clear refusal.
+rust-version = "1.88"
+
 # Build configuration
 [profile.release]
 opt-level = 3
