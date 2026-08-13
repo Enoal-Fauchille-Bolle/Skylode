@@ -1,0 +1,82 @@
+# What the 227 crates in `Cargo.lock` are allowed to be.
+#
+# Ten direct dependencies become 227 transitive ones, and this project *redistributes*
+# them: `release.yml` compiles a binary and puts it on a downloads page, so every licence
+# in that tree is a term this repository ships under. Nobody reads 227 licences by hand,
+# which is the entire argument for the file.
+#
+# Split across two places on purpose, and the split is the same rule `release.yml`
+# already follows — *a step whose verdict cannot change the result must not be able to
+# stop it*:
+#
+#   * `bans`, `licenses` and `sources` run in `ci.yml`. Their answer is a function of
+#     `Cargo.lock` alone, so it changes only when someone changes something. That earns
+#     the right to refuse a commit.
+#   * `advisories` runs in `audit.yml`, weekly and on a `Cargo.lock` change. Its answer
+#     depends on a database that moves on its own, so a vulnerability published tonight
+#     would otherwise fail tomorrow's documentation commit — red for a reason its author
+#     did not cause and cannot fix in that commit.
+
+[licenses]
+# The list was produced by running `cargo deny list`, not by guessing what a Rust tree
+# usually contains. Every entry is here because a crate in *this* lock file needs it.
+#
+# Note what an allow-list means for a crate under `MIT OR Apache-2.0`: allowing either
+# one satisfies it. So this list is deliberately shorter than the set of licences the
+# tree mentions — `0BSD`, `BSD-2-Clause`, `BSL-1.0`, `Unlicense` and
+# `LGPL-2.1-or-later` all appear in the tree and none needs to be here, because every
+# crate offering them also offers MIT or Apache-2.0.
+allow = [
+    "MIT",
+    "Apache-2.0",
+
+    # Not an alternative — a requirement. `unicode-ident` is licensed
+    # `(MIT OR Apache-2.0) AND Unicode-3.0`, and an `AND` means the terms stack. It is
+    # the one crate here whose licence cannot be satisfied by picking a favourite.
+    "Unicode-3.0",
+
+    # The only crate in the tree offering nothing permissive: `option-ext`, reached
+    # through `directories`. MPL-2.0 is *file-scoped* copyleft — it obliges anyone who
+    # modifies an MPL file to publish that file, and says nothing about the program it
+    # is linked into. Skylode consumes the crate unmodified, so shipping a binary that
+    # contains it is exactly what the licence contemplates. Written out because it is
+    # the single entry here that is not "permissive, next".
+    "MPL-2.0",
+
+    # `foldhash`, ratatui's hasher, is Zlib and nothing else.
+    "Zlib",
+]
+
+# 0.8 is the default and is the right threshold: below it, a licence detected from prose
+# rather than from an SPDX declaration starts being guessed at.
+confidence-threshold = 0.8
+
+[bans]
+# Two versions of one crate in the tree — `hashbrown` 0.16 and 0.17, `getrandom` 0.2 and
+# 0.4 as this is written. Real, and not ours: they are pulled by different transitive
+# dependencies that each pinned a different major. Nothing in this repository can resolve
+# that, so refusing the build over it would produce a gate whose only available response
+# is to add an exception. It is reported and not enforced.
+multiple-versions = "warn"
+
+# A `version = "*"` requirement, on the other hand, *is* always ours and is always a
+# mistake: it lets a future major land without a single line changing, which is the exact
+# opposite of what a committed `Cargo.lock` is for.
+wildcards = "deny"
+
+[sources]
+# Everything comes from crates.io today. Saying so turns that from an accident into a
+# rule: a dependency added from an arbitrary git URL — the shape a typo-squat or a
+# hijacked fork takes — stops the build rather than blending in.
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[advisories]
+# Read by `audit.yml`, not by the `ci.yml` job. Kept in this file anyway so that a
+# hand-run `cargo deny check advisories` gates on exactly what the workflow gates on —
+# the same reason `tarpaulin.toml` holds the coverage settings instead of the command
+# line.
+#
+# `ignore` is empty and should stay explainable: an entry here is a decision to ship a
+# known vulnerability, so it takes an id *and* a reason.
+ignore = []

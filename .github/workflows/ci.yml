@@ -107,6 +107,54 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --all-features
 
+  # The MSRV in `[workspace.package]` is a promise; this is where it is kept.
+  #
+  # It exists because the number was wrong the first time it was written. The edition's
+  # floor is 1.85, which is what a reader would assume — and 1.85 refuses both crates,
+  # for unrelated reasons: the core reaches for `let` chains and `u32::is_multiple_of`,
+  # the front-end inherits 1.88 from ratatui. A `rust-version` nobody compiles against
+  # drifts silently upward with the first convenience anyone reaches for, and the person
+  # who finds out is a stranger on an older toolchain.
+  #
+  # `check` and not `test`: the promise is made to whoever *builds* this crate, so it
+  # covers compilation. Running the suite on an old compiler would measure the test
+  # harness rather than the claim.
+  #
+  # And deliberately **no `-D warnings`**: rustc 1.88 reports `MARKER_TEXT_COLUMNS` in
+  # `overlay/dev.rs` as dead, because its only use is inside a `const _: () = assert!(…)`
+  # and that compiler's dead-code analysis does not look there. Current stable does. The
+  # code is right on both; the question this job asks is whether it *compiles*, and
+  # promoting an old compiler's lint gaps to errors would answer a different one.
+  msrv:
+    name: Build on the oldest supported Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Read out of the manifest rather than repeated here. Written twice, the two
+      # would disagree the first time one moved, and the CI would then cheerfully
+      # prove a version nobody claims.
+      - name: Read the declared MSRV
+        id: msrv
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name=="skylode-core") | .rust_version')
+          echo "Declared MSRV: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install it
+        run: rustup toolchain install ${{ steps.msrv.outputs.version }} --profile minimal
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: msrv
+
+      # `cargo +1.88` and not a bare `cargo`: `rust-toolchain.toml` pins `stable` and
+      # would otherwise win here without saying so, leaving a job that installs an old
+      # compiler and then never uses it — green, and measuring nothing.
+      - name: cargo check on the MSRV
+        run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-features
+
   # Closes gap 3.
   release-build:
     name: Release build
@@ -122,6 +170,12 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # OIDC, so no Codecov token is stored anywhere. The runner proves *which workflow
+      # of which repository at which commit* it is, for the length of the job, and there
+      # is nothing left afterwards for anyone to steal.
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -147,5 +201,66 @@ jobs:
       # 94 against a workspace sitting near 99: the margin is deliberate. A gate
       # that trips on the commit adding a function, before the commit testing it,
       # is a gate that gets worked around. It refuses a collapse, not a wobble.
+      # `--fail-under` and the two output formats are the only things on this line. The
+      # engine, the skipped clean and the separate build directory stay in
+      # `tarpaulin.toml`, so a hand-run `cargo tarpaulin` measures what this gate
+      # refuses on.
+      #
+      # **`set -o pipefail` is the load-bearing line here, not a habit.** Without it a
+      # pipeline exits with the status of its *last* command, which is `tee` and always
+      # succeeds — so `--fail-under 94` would go on printing its refusal into a log
+      # while the step went green. The gate would become decorative, and nothing would
+      # say so.
       - name: cargo tarpaulin
-        run: cargo tarpaulin --fail-under 94 --out Stdout
+        run: |
+          set -o pipefail
+          cargo tarpaulin --fail-under 94 --out Stdout --out Xml | tee coverage.log
+
+      # The figure, on the run's own page.
+      #
+      # It is the honest half of "publish the coverage": a badge answers a stranger
+      # skimming the README, this answers the person who just pushed. `always()` because
+      # the number is *most* worth reading on the run where the gate refused — the step
+      # above having failed is exactly when someone wants to know how far.
+      - name: Report the figure
+        if: always()
+        run: |
+          grep -E '^[0-9.]+% coverage' coverage.log >> "$GITHUB_STEP_SUMMARY" || true
+
+      # `fail_ci_if_error: false` deliberately. The gate is `--fail-under` above, run
+      # locally on the runner and answerable to nobody; Codecov is a reporter, and a
+      # third party's outage must not be able to redden a build whose code is fine.
+      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        if: always()
+        with:
+          use_oidc: true
+          files: ./cobertura.xml
+          fail_ci_if_error: false
+
+  # What the 227 crates in `Cargo.lock` are allowed to be. `deny.toml` argues each
+  # setting; the split is the part that belongs here.
+  #
+  # These three checks and **not** `advisories`. Their verdict is a function of
+  # `Cargo.lock`, so it moves only when someone moves it — which is what a gate needs to
+  # be true. `advisories` reads a database that changes on its own, so it lives in
+  # `audit.yml` where it can report without failing an unrelated commit. That is the
+  # same rule `release.yml` learned the expensive way: a step whose result cannot change
+  # the outcome must not be able to stop it.
+  deny:
+    name: Dependency graph
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The same action this file already uses for tarpaulin, at the same pin. Choosing
+      # it over `EmbarkStudios/cargo-deny-action` is not a preference between equals: a
+      # second action is a seventh SHA to keep current, and keeping SHAs current is the
+      # problem this whole section exists to solve.
+      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+        with:
+          tool: cargo-deny
+
+      # No `rust-cache`: cargo-deny reads the lock file and the manifests. It compiles
+      # nothing of ours, so there are no artifacts for a cache to hold.
+      - name: cargo deny
+        run: cargo deny check bans licenses sources
