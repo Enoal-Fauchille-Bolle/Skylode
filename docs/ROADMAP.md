@@ -49,11 +49,32 @@ core is built in, see [PHASES.md](PHASES.md).
 - Skill / research tree (global multipliers).
 - Richer End content and enchant variety.
 - Special shop (Emerald currency).
-- Publish to crates.io (the game via `cargo install`, and `skylode-core` as a
-  library). Two things block it today: neither manifest declares `description` or
-  `license`, which crates.io rejects on upload; and `skylode-tui` depends on
-  `skylode-core` by `path` alone, which cannot be published — a path dependency
-  needs a `version` for the registry to resolve it.
+- ~~Publish to crates.io.~~ **Pulled out of this list on 2026-08-12 — decided and
+  wired.** Both blockers this entry named are gone, and one of them was never quite
+  right: `description`, `license` and `repository` landed with the versioning work, and
+  the missing `version` on the path dependency blocked publishing the **front-end**, not
+  the library. `skylode-core` depends only on registry crates, so it was publishable as
+  it stood — `cargo publish -p skylode-core --dry-run` succeeds on the tree that
+  carried this paragraph.
+
+  What exists now: a `publish-crate` job in `release.yml` that publishes the core on
+  every tag, authenticated by **Trusted Publishing** rather than a stored token — the
+  runner exchanges its OIDC identity for a credential that lives thirty minutes, so
+  there is no `CARGO_REGISTRY_TOKEN` in this repository to leak. The first push is
+  manual, because crates.io requires an existing version before a repository can be
+  linked as a trusted publisher.
+
+  Publishing the front-end as well — so that `cargo install` is a way to play — was
+  settled the same week: **yes, and without renaming the package**. That second half
+  is the interesting one. Publishing makes the *package* name public, and the argument
+  that had justified `skylode-tui` (it names a place in the workspace; the player only
+  ever types the binary's name) dies at that moment. It was replaced rather than
+  patched: `skylode` is the whole game, this package holds only the front-end, so
+  naming it `skylode` would be a false claim about its contents. The install line pays
+  one hyphen — `cargo install skylode-tui`, installing a binary called `skylode` — and
+  the source tree stays honest. Cargo's own ambiguity is the root of it: a package is
+  both a source unit and the unit `cargo install` delivers, and here the two want
+  different names.
 - Further future: multiplayer / self-host.
 
 ## Open questions
