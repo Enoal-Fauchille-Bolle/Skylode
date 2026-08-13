@@ -1,7 +1,7 @@
 # Skylode
 
 [![CI](https://github.com/Enoal-Fauchille-Bolle/Skylode/actions/workflows/ci.yml/badge.svg)](https://github.com/Enoal-Fauchille-Bolle/Skylode/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/Enoal-Fauchille-Bolle/Skylode/branch/main/graph/badge.svg)](https://codecov.io/gh/Enoal-Fauchille-Bolle/Skylode)
+[![codecov](https://codecov.io/gh/Enoal-Fauchille-Bolle/Skylode/graph/badge.svg?token=V5S115AW3C)](https://codecov.io/gh/Enoal-Fauchille-Bolle/Skylode)
 [![Release](https://img.shields.io/github/v/release/Enoal-Fauchille-Bolle/Skylode)](https://github.com/Enoal-Fauchille-Bolle/Skylode/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
