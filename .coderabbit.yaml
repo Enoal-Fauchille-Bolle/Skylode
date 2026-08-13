@@ -1,0 +1,111 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+# What an automated reviewer has to be told about this repository.
+#
+# The rules below are written out in full rather than referenced, because
+# `path_instructions` takes literal text and nothing else — there is no field that
+# points at a file. `CONTRIBUTING.md` carries the ones that concern the *form* of the
+# code and `docs/` carries the ones that concern the design, but neither can be reached
+# from here, so the review-relevant subset is restated.
+#
+# The bias throughout is towards flagging things a compiler cannot: this workspace
+# already denies clippy's `correctness` and `suspicious` groups and fails a build on a
+# rustdoc warning, so a reviewer that repeats those adds noise. What no tool here checks
+# is whether a change quietly breaks a *contract* — the draw order of the RNG, the shape
+# of a save on disk, the promise that the core never reads a clock.
+language: en
+
+reviews:
+  # Comments on what is wrong, not on what could be phrased differently. This is a solo
+  # learning project; a reviewer that files style opinions on every diff gets muted, and
+  # a muted reviewer catches nothing.
+  profile: chill
+  poem: false
+  high_level_summary: true
+
+  # It comments; it does not block. Nothing here has a second approver, so a requested
+  # change would be a gate only its author can open — ceremony rather than review.
+  request_changes_workflow: false
+
+  auto_review:
+    enabled: true
+    # A branch in progress is not asking for an opinion yet.
+    drafts: false
+    base_branches:
+      - main
+
+  path_instructions:
+    - path: "crates/skylode-core/**/*.rs"
+      instructions: |
+        This crate is the game's rules: deterministic, UI-agnostic, and free of I/O.
+        Those are contracts, not preferences, and the compiler only enforces part of
+        them. Flag anything that breaks one:
+
+        - No ambient input. A wall-clock read (`SystemTime::now`, `Instant::now`), a
+          filesystem or network access, or an environment variable inside this crate is
+          a defect: `now` is passed in by the caller. `rand`/`rand_chacha` are compiled
+          with `default-features = false` precisely so unseeded generators do not exist
+          here — flag any attempt to re-enable them.
+        - Changing the *order* in which the RNG is drawn from, or which enchant rolls
+          first, desynchronises every save already written. So does changing the shape
+          of the serialised save. Say so explicitly rather than treating it as a
+          refactor; a golden-vector test guards both, and a diff that edits the expected
+          values is the thing to question hardest.
+        - Rules that can refuse return `Result<_, CoreError>`. Flag `unwrap`, `expect`,
+          `panic!`, `todo!` and `unimplemented!` outside `#[cfg(test)]`.
+        - `validate` refuses; it never clamps. A validator that silently corrects an
+          out-of-range field turns a damaged save into a plausible one.
+        - A new field inside the save grandfathers in the migration and bumps
+          `SAVE_VERSION`. `#[serde(default)]` is not the shortcut it looks like: a
+          default can be *false* of an older file rather than merely absent, and for a
+          running timer a zero is a value `validate` is right to reject.
+        - The prestige multiplier applies once per swing with a carried remainder, never
+          per block — a small multiplier on a one-item drop truncates to nothing.
+
+    - path: "crates/skylode-tui/**/*.rs"
+      instructions: |
+        This crate renders core state and forwards input. It must not re-implement a
+        rule that belongs in `skylode-core`; flag arithmetic on game quantities that
+        looks like it is deciding an outcome rather than displaying one.
+
+        - Raw input becomes a semantic action exactly once, in `keymap`. A screen or
+          widget that inspects a `KeyEvent` directly has skipped that boundary and is
+          untestable without a terminal.
+        - A screen receives a `&View` and nothing else. Reading `Config` from inside a
+          screen re-opens a door the read model closed on purpose.
+        - `main` is the only place allowed to read the environment — the save location,
+          the clock, the terminal's capabilities, the command line.
+
+    - path: "crates/**/*.rs"
+      instructions: |
+        - Public rustdoc explains the constraint, not the mechanics: *why* a formula or
+          a visibility is shaped the way it is. Flag a doc comment that only restates
+          the signature, and flag prose that argues for behaviour the code no longer
+          has — a stale comment is worse than none, because it is believed.
+        - Tests are inline: one `#[cfg(test)] mod tests` per module, no `tests/`
+          directory. Test names are sentences
+          (`a_fresh_pickaxe_is_wooden_and_unenchanted`), not labels.
+        - Flag a new public function or a new branch with no test reaching it. The
+          coverage gate refuses a collapse, not a wobble, so a single untested path
+          passes it comfortably.
+
+    - path: ".github/workflows/*.yml"
+      instructions: |
+        - Every action is pinned by full commit SHA with its version in a trailing
+          comment. A tag is mutable by its maintainer; flag any `uses:` on a tag or a
+          branch, and any pin whose comment no longer matches its SHA.
+        - Permissions are declared per job and minimal. Flag `contents: write` on a job
+          that does not publish.
+        - A step whose result cannot change the outcome must not be able to stop it.
+          Flag a step that runs unconditionally to produce something a later step
+          discards.
+
+    - path: "docs/**.md"
+      instructions: |
+        `docs/` is the specification and runs ahead of the code on purpose. Flag prose
+        that describes behaviour the code has since changed, and flag a change that
+        contradicts a decision recorded in `docs/DECISIONS.md` without saying that it
+        does.
+
+chat:
+  auto_reply: true
