@@ -1,0 +1,56 @@
+# The one check whose answer changes when nothing in this repository does.
+#
+# `cargo deny check advisories` crosses the 227 exact versions in `Cargo.lock` against
+# the RustSec advisory database — a community-maintained list that grows without
+# anyone here pushing a commit. That property is why it is not in `ci.yml`: a
+# vulnerability disclosed tonight would turn tomorrow's documentation commit red, for a
+# cause its author neither introduced nor can fix in that commit. A gate that fails on
+# work unrelated to the failure is a gate people learn to ignore.
+#
+# The other three checks — bans, licenses, sources — depend only on `Cargo.lock`, so
+# they stay in `ci.yml` where they can refuse. `deny.toml` holds the configuration for
+# all four, so a hand-run `cargo deny check advisories` measures what this measures.
+name: Audit
+
+on:
+  # Monday morning, before the week's Dependabot pull requests land. The order is
+  # deliberate: knowing what is vulnerable is worth more just before a batch of
+  # updates arrives than just after.
+  schedule:
+    - cron: "0 6 * * 1"
+
+  # The deterministic half of the same question. A dependency that arrives *already*
+  # carrying a known advisory is something this commit did cause, and waiting up to a
+  # week to say so would be a strange kind of politeness.
+  push:
+    paths:
+      - "Cargo.lock"
+      - "deny.toml"
+      - ".github/workflows/audit.yml"
+
+  # Because "is this still clean?" is a question worth being able to ask on the day
+  # someone asks it, rather than on the following Monday.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  advisories:
+    name: Advisory database
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+        with:
+          tool: cargo-deny
+
+      # A failure here is a real one and should stay loud. What it must not do is block
+      # a commit, and on a schedule there is no commit to block: the notification is the
+      # whole output.
+      - name: cargo deny check advisories
+        run: cargo deny check advisories
