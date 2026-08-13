@@ -1,0 +1,74 @@
+# Who moves the pins, now that nothing else can.
+#
+# Every action in `.github/workflows/` is pinned by commit SHA, and that pin is the
+# whole of this repository's defence against a compromised action: a tag is a label its
+# maintainer can move, a SHA is the identity of a commit and cannot be made to mean
+# anything else. CVE-2025-30066 is the case that made the difference concrete —
+# `tj-actions/changed-files` had *every* tag from v1 to v45.0.7 rewritten to point at
+# code that leaked CI secrets into build logs, and the repositories pinned by SHA never
+# ran it.
+#
+# The cost of that immutability is that nothing updates either. A pin with no update
+# path does not remove a risk, it trades "I run changes I never reviewed" for "I never
+# receive a fix" — and the last hand-run of that lookup found four of seven actions had
+# skipped an entire major. This file is what makes the pin a decision that gets revisited
+# instead of a decision that was made once.
+#
+# Dependabot understands a SHA pin: it rewrites the SHA **and the trailing version
+# comment** together, so the two never drift apart.
+version: 2
+
+updates:
+  # The 227 crates in `Cargo.lock`, reached through ten direct dependencies.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+
+    # Wait a week before offering a version to anyone here.
+    #
+    # It buys distance from the *fast* failure mode, which is also the common one: a
+    # maintainer account taken over, a malicious version published, and the whole thing
+    # found and yanked within hours or days. Seven days of lag misses that episode
+    # entirely, for free.
+    #
+    # It is explicitly **not** a defence against the patient kind — the xz backdoor lived
+    # about a month after two years of trust-building, and no delay anyone would accept
+    # covers that. Naming the limit here so the setting is not mistaken for one.
+    cooldown:
+      default-days: 7
+
+    # One pull request for the whole ecosystem, not one per crate.
+    #
+    # Ungrouped, a week where everything moves is seventeen pull requests, which is the
+    # week the tool gets switched off. Grouped, it is at most two — and often none.
+    groups:
+      cargo:
+        patterns: ["*"]
+
+    # `commit-message.prefix` + `include: scope` renders `build(deps): bump …`.
+    #
+    # The `commit-msg` hook runs on a developer's machine and can never see a commit
+    # Dependabot writes on GitHub's servers, so nothing would *stop* an unconventional
+    # message — it would simply sit in a history where every one of 315 other commits
+    # parses. `cliff.toml` then files these under their own section rather than into the
+    # release notes a player reads.
+    commit-message:
+      prefix: "build"
+      include: "scope"
+
+  # The seven pinned actions. This is the entry that closes the open item above.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "build"
+      include: "scope"
