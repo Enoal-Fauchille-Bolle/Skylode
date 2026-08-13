@@ -1,5 +1,10 @@
 # Skylode
 
+[![CI](https://github.com/Enoal-Fauchille-Bolle/Skylode/actions/workflows/ci.yml/badge.svg)](https://github.com/Enoal-Fauchille-Bolle/Skylode/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/Enoal-Fauchille-Bolle/Skylode/branch/main/graph/badge.svg)](https://codecov.io/gh/Enoal-Fauchille-Bolle/Skylode)
+[![Release](https://img.shields.io/github/v/release/Enoal-Fauchille-Bolle/Skylode)](https://github.com/Enoal-Fauchille-Bolle/Skylode/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A solo, terminal-based (TUI) idle/incremental mining game written in Rust,
 inspired by PikaNetwork's SkyMines gamemode.
 
@@ -26,6 +31,20 @@ Download the archive for your platform from the
 [releases page](https://github.com/Enoal-Fauchille-Bolle/Skylode/releases),
 unpack it, and run `skylode`. Builds are published for Linux (x86_64), Windows
 (x86_64) and macOS (Apple Silicon); `SHA256SUMS` ships alongside them.
+
+`skylode --version` tells you which build you are holding once the archive name
+is gone.
+
+Every archive also carries a build provenance attestation, which answers a
+question `SHA256SUMS` cannot: that file detects a corrupted download, but it is
+published beside the binaries by the same account, so it says nothing about a
+substituted one. The attestation is signed against a public transparency log and
+names the workflow, the repository and the commit that produced the file:
+
+```sh
+gh attestation verify skylode-v0.1.0-x86_64-unknown-linux-gnu.tar.gz \
+  --repo Enoal-Fauchille-Bolle/Skylode
+```
 
 Or build it yourself:
 
