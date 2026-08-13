@@ -48,3 +48,18 @@ skip-clean = true
 # evict each other's artifacts, so every step pays a full rebuild. Separated,
 # the second run of either is free.
 target-dir = "target/tarpaulin-llvm"
+
+# Never measure a copy of this workspace that cargo made for itself.
+#
+# `cargo publish --dry-run` unpacks the crate under `target/package/<name>-<version>/`,
+# and those are real `.rs` files that tarpaulin will happily walk. No test reaches them —
+# they are a second copy of sources whose tests ran under their original paths — so they
+# land in the denominator as a block of zeroes. Measured: one dry-run took the workspace
+# from 98.6 % to 97.9 % without a line of code changing.
+#
+# It matters now in a way it did not before: publishing `skylode-core` makes
+# `cargo publish --dry-run` a normal gesture before a release, so the trap is on the
+# path someone will actually walk. A figure that drops for a reason invisible in `git
+# diff` is the worst kind of wrong number, because the first instinct is to go looking
+# for the test that broke.
+exclude-files = ["target/*"]

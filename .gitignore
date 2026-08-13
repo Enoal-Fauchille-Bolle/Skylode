@@ -1,1 +1,7 @@
 target/
+
+# Written by the CI coverage step (`--out Xml` plus the tee it greps).
+# Never committed: the number lives in the run summary and on Codecov, and a 200 KB
+# report of one machine's run is not a fact about this repository.
+cobertura.xml
+coverage.log
