@@ -35,6 +35,18 @@ compiled out of `--release` entirely. See [docs/DEV-MENU.md](docs/DEV-MENU.md).
 - Game rules belong in `skylode-core` (kept deterministic and testable); the TUI
   in `skylode-tui` only renders and forwards input. See
   [docs/SYSTEMS.md](docs/SYSTEMS.md).
+- Public items carry rustdoc that explains *why* a formula or a visibility is
+  shaped the way it is — the constraint, not the mechanics. `PickaxeTier::base_power`
+  and `Block::drop_amount` are the density to match.
+- Keep that rustdoc honest. A comment arguing for behaviour the code no longer
+  has is worse than no comment: the next reader trusts it and stops reading the
+  code.
+- Tests are inline — one `#[cfg(test)] mod tests` per module. There is no
+  `tests/` directory, and the coverage tool is configured on the assumption that
+  there is not.
+- Test names are sentences, not labels
+  (`a_fresh_pickaxe_is_wooden_and_unenchanted`). A failing test should read as
+  the claim it just disproved.
 
 ## Commit messages
 
