@@ -68,6 +68,22 @@ commit_parsers = [
   { message = "^refactor", group = "<!-- 3 -->Refactoring" },
   { message = "^docs", group = "<!-- 4 -->Documentation" },
   { message = "^test", group = "<!-- 5 -->Tests" },
+  # Dependency bumps, given a section of their own at the very end.
+  #
+  # Its **position in this list** is load-bearing and its **number** is not the same
+  # thing. `build(deps): …` also matches the `^(style|chore|build|ci)` pattern below, and
+  # the first parser to match wins — placed after it, this rule would never see a single
+  # commit. That is the same reason the breaking-change pattern sits at the top: a
+  # breaking commit begins with `feat` or `fix` too.
+  #
+  # The `<!-- 7 -->` marker is the *display* order, since git-cliff sorts groups
+  # alphabetically. So this rule is read seventh and shown last, which is the point:
+  # nobody reads a release note for the dependency list, but someone chasing a fix in a
+  # third-party crate needs to know which version carried it.
+  #
+  # `^build\(deps` without the closing parenthesis: Dependabot writes `build(deps)` for a
+  # production dependency and `build(deps-dev)` for a development one.
+  { message = "^build\\(deps", group = "<!-- 7 -->Dependencies" },
   { message = "^(style|chore|build|ci)", group = "<!-- 6 -->Internal" },
 ]
 
