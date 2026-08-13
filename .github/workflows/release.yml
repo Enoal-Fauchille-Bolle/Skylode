@@ -102,6 +102,13 @@ jobs:
       # The one elevated permission in either workflow, and only on the job that
       # needs it: creating the release and uploading its assets.
       contents: write
+      # The two that sign the archives. Both are OIDC-shaped rather than secret-shaped:
+      # `id-token` lets the runner prove who it is for the length of this job, and
+      # `attestations` lets it file the resulting statement. Nothing is stored, so
+      # nothing outlives the job to be stolen — which is the right answer to the worry
+      # that put every action in this repository on a SHA pin.
+      id-token: write
+      attestations: write
     steps:
       # `fetch-depth: 0` is not optional — git-cliff reads the history to build the
       # notes, and the default shallow clone has none of it.
@@ -119,6 +126,25 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum skylode-* > SHA256SUMS
+
+      # What `SHA256SUMS` structurally cannot say.
+      #
+      # That file answers *"did this download arrive intact?"* — and it is published by
+      # the same account, to the same page, under the same permissions as the archives
+      # it describes. Anyone able to replace a binary there is able to recompute the
+      # sums, so it detects an accident and not a substitution.
+      #
+      # An attestation answers the other question: *which workflow, of which repository,
+      # at which commit, produced this exact file.* It is signed against Sigstore's
+      # public transparency log using the job's short-lived OIDC identity, so there is no
+      # signing key for this repository to hold or leak, and a player checks it with
+      # `gh attestation verify <archive> --repo Enoal-Fauchille-Bolle/Skylode`.
+      #
+      # The **archives**, not `SHA256SUMS`: the subject has to be the artifact someone
+      # actually downloads and runs.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: 'dist/skylode-*'
 
       # Which body this release gets is decided **before** either producer runs.
       #
@@ -183,3 +209,57 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: dist/*
           fail_on_unmatched_files: true
+
+  # `skylode-core` on crates.io — the library half of what a tag ships.
+  #
+  # **`needs: verify`, not `needs: build`**, so this runs beside the three platform
+  # builds rather than behind them. The two publications answer to different audiences
+  # and neither depends on the other: a crates.io incident must not hold back binaries
+  # players are waiting for, and a failed macOS build must not silently skip the crate.
+  # Coupling them would only invent a shared failure they do not have.
+  #
+  # Only the core is published. `skylode-tui` is the product — a binary a player
+  # downloads, not a crate anyone depends on — and its manifest now carries the
+  # `version` on its path dependency, so publishing it is a decision rather than a
+  # blocker.
+  publish-crate:
+    name: Publish skylode-core
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Trusted Publishing: crates.io is told, once and out of band, to trust this
+      # workflow of this repository. The runner then exchanges its OIDC identity for a
+      # token that lives thirty minutes. No `CARGO_REGISTRY_TOKEN` exists to be read by
+      # a compromised action — the same reasoning as the attestation job above.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Decided before the publishing step exists, not discovered by its failure.
+      #
+      # `cargo publish` refuses a version already on the registry, and re-tagging is the
+      # ordinary way that happens — `v0.1.0` was re-tagged once already, and would have
+      # met this. Letting a doomed step fail the job is the shape §3 of the TODO paid
+      # for once; the fix there and here is the same, which is not to run it.
+      - name: Decide whether this version needs publishing
+        id: state
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name=="skylode-core") | .version')
+          echo "Manifest version: $v"
+          if curl -sfo /dev/null "https://crates.io/api/v1/crates/skylode-core/$v"; then
+            echo "Already on crates.io; nothing to do."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        if: steps.state.outputs.publish == 'true'
+        id: auth
+
+      - name: cargo publish
+        if: steps.state.outputs.publish == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p skylode-core
