@@ -8,7 +8,15 @@
 //! possible at all, and what keeps a saved run one continuous history rather
 //! than a fresh roll of the dice at every load.
 
-use rand::Rng as _;
+// `RngExt` and not `Rng`, since rand 0.10 split the two: `Rng` kept the raw
+// generator interface, and `random`, `random_range` and `random_bool` — the three
+// this module calls — moved to an extension trait blanket-implemented over it.
+// Importing the wrong one still compiles until a call site is reached, so the
+// error it produces names a missing *method* rather than a missing trait.
+//
+// `as _` binds no name, which matters twice here: none of these traits is ever
+// written out below, and this module already owns a type called `Rng`.
+use rand::RngExt as _;
 use rand::distr::Distribution as _;
 use rand::distr::weighted::WeightedIndex;
 use rand_chacha::ChaCha8Rng;
