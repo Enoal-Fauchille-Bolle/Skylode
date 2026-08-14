@@ -23,8 +23,24 @@ on:
   # `branches` rather than a bare `push`, which would fire on tags too — and a tag
   # already runs this whole workflow through `release.yml`'s `workflow_call`. The
   # glob matches every branch, so nothing is narrowed except the tag case.
+  #
+  # The one exception is Dependabot, and it is a duplicate rather than a gap. It
+  # pushes its branch and *then* opens the pull request, and with both triggers
+  # declared that is two runs of the same seven jobs on the same commit —
+  # `concurrency` cannot collapse them, since `github.ref` is
+  # `refs/heads/dependabot/…` for one and `refs/pull/N/merge` for the other. The
+  # `pull_request` run is the one to keep: it is what the PR page shows and what a
+  # merge is judged on. Written as a negative pattern inside `branches` rather than
+  # as `branches-ignore`, which cannot be combined with an inclusion filter and
+  # would have restated the tag argument above in a second, weaker form.
+  #
+  # Note what is deliberately *not* narrowed: every other branch still runs, `dev/*`
+  # included. Being the gate a branch name cannot skip is this file's second reason
+  # to exist, and a bot's branch is the only one that arrives with a PR attached.
   push:
-    branches: ['**']
+    branches:
+      - '**'
+      - '!dependabot/**'
   pull_request:
 
   # `release.yml` calls this workflow instead of restating the check list. The
