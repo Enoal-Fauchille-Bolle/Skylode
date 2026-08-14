@@ -26,8 +26,8 @@ description = "Deterministic, UI-agnostic game rules for Skylode, a terminal idl
 # generator as `{seed, stream, word_pos}`, and the crate pins that shape with a
 # format-stability test of its own — the same guarantee that put `ChaCha8Rng` here
 # instead of `StdRng` in the first place.
-rand = { version = "0.9", default-features = false, features = ["alloc", "unbiased"] }
-rand_chacha = { version = "0.9", default-features = false, features = ["serde"] }
+rand = { version = "0.10", default-features = false, features = ["alloc", "unbiased"] }
+rand_chacha = { version = "0.10", default-features = false, features = ["serde"] }
 
 # Serialisation is not optional: a build of this game that cannot write a save is
 # not a build anyone ships. Putting it behind a feature flag would double the
