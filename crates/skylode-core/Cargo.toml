@@ -11,6 +11,25 @@ rust-version.workspace = true
 # deliberate — it is the property that makes this crate worth depending on separately.
 description = "Deterministic, UI-agnostic game rules for Skylode, a terminal idle mining game"
 
+# A README of this crate's own, and not the repository's, because cargo packages a
+# directory: a `readme = "../../README.md"` names a file outside it and is refused.
+# Without this the crates.io page carries the description and nothing else, which is
+# what `0.1.0` shipped. The two files therefore say different things on purpose —
+# the root one is written for someone standing in the repository, this one for
+# someone deciding whether to depend on the crate.
+readme = "README.md"
+
+# Five is the ceiling crates.io enforces, so these are the five words someone would
+# plausibly search rather than a description broken into pieces. `mining` earns its
+# place over `terminal`: the terminal is the front-end's property, not this crate's
+# — this one compiles without one.
+keywords = ["game", "gamedev", "idle", "incremental", "mining"]
+
+# `game-development` and not `games`: this crate is not playable. Handing it the
+# category a player browses would put a library in front of an audience that cannot
+# use it, and hide it from the one that can.
+categories = ["game-development"]
+
 [dependencies]
 # `default-features = false` drops `thread_rng` and `os_rng`, so ambient OS
 # entropy is not merely unused in the core: it is not compiled in. Determinism is

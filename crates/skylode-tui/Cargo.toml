@@ -11,6 +11,23 @@ rust-version.workspace = true
 # and its version is the number a release tag will carry.
 description = "Skylode, a terminal idle mining game — the ratatui front-end and its binary"
 
+# See the core's manifest for why each crate carries its own README rather than the
+# repository's. This one matters more: it is the page a player lands on after
+# `cargo install skylode-tui`, so it is written for someone about to play rather
+# than for someone reading the source.
+readme = "README.md"
+
+# `terminal` and `tui` where the core has `mining` and `gamedev` — the two crates
+# are found by different searches, which is the whole reason `description` is not
+# inherited either.
+keywords = ["game", "tui", "terminal", "idle", "incremental"]
+
+# `games` rather than the core's `game-development`, and both are right: this half
+# is the thing a player runs. `command-line-utilities` is the second, because
+# `cargo install` is a real distribution channel for it and that is the shelf
+# people browse for a program rather than for a library.
+categories = ["games", "command-line-utilities"]
+
 # The package keeps the `-tui` suffix, and the reason had to be rewritten once the
 # decision to publish was taken.
 #
@@ -46,7 +63,7 @@ ratatui = "0.30.2"
 # no other machine — so this line is the whole of what stood between this crate and
 # being publishable. It costs nothing today and is checked by nothing until that day,
 # which is exactly why it is worth writing while the two numbers are still equal.
-skylode-core = { path = "../skylode-core", version = "0.1.0" }
+skylode-core = { path = "../skylode-core", version = "0.2.0" }
 
 # `Config` is the `C` of `skylode_core::save::Save<C>` — the type parameter that
 # carries the player's preferences through the core without the core ever learning

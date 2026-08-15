@@ -1517,7 +1517,7 @@ checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
 name = "skylode-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rand 0.10.2",
  "rand_chacha",
@@ -1527,7 +1527,7 @@ dependencies = [
 
 [[package]]
 name = "skylode-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "color-eyre",
  "crossterm",

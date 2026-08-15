@@ -17,7 +17,7 @@ members = ["crates/skylode-core", "crates/skylode-tui"]
 # is the release tag and the human reading it. `docs/` carries the maturity; the
 # number carries the compatibility promise, and nothing else.
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Enoal-Fauchille-Bolle/Skylode"
