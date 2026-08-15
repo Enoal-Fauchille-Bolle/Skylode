@@ -2,10 +2,13 @@
 # Git pre-commit hook
 #
 # Runs four checks on all Rust code: cargo fmt, check, clippy and doc. A fifth,
-# tarpaulin, is written below and has been commented out since 20bbffa — this
+# tarpaulin, ran here until 20bbffa, where it was removed deliberately — this
 # header claimed otherwise for months, which is the kind of comment CONTRIBUTING
 # now calls worse than none. The coverage gate lives in `ci.yml` instead, where it
-# costs a commit nothing and cannot be skipped with a `dev/*` branch name.
+# costs a commit nothing and cannot be skipped with a `dev/*` branch name, and the
+# argument for the 94 % figure lives in `tarpaulin.toml`, beside the setting it
+# defends. The step itself stayed here commented out until it had drifted into
+# announcing `[5/5]` among four; git remembers the lines, which is what git is for.
 #
 # Nothing added by the CI beyond these four belongs here: `cargo-deny`,
 # `actionlint` and the MSRV toolchain all need a tool a fresh clone does not have,
@@ -64,29 +67,6 @@ if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-priva
     printf "${RED_BOLD}cargo doc failed. Please fix the rustdoc warnings.${RESET}\n"
     exit 1
 fi
-
-# Run cargo test & coverage
-#
-# The backend, the build directory and the skipped clean stage live in
-# `tarpaulin.toml`, not here, so that a hand-run `cargo tarpaulin` measures the
-# same thing this gate does. Only the gate itself is a hook policy: a manual run
-# should report a low figure, not fail on it.
-#
-# 94, against a workspace sitting near 99. The old 70 had stopped being a gate: a
-# quarter of the tests could have been deleted without it noticing. The figure is
-# deliberately several points below where the code actually is rather than one —
-# a gate that trips on the commit that adds a function before the commit that
-# tests it is one that gets bypassed with a `dev/*` branch, and a bypassed gate
-# guards nothing. It refuses a collapse, not a wobble.
-#
-# The last uncovered lines are `main` and the crossterm polling thread, and they
-# stay uncovered: both need a real terminal, and `tarpaulin.toml` argues at
-# length against shrinking the denominator to flatter the number.
-# printf "${WHITE_BOLD}[5/5] Running cargo tarpaulin...${RESET}\n"
-# if ! cargo tarpaulin --fail-under 94 --out Stdout; then
-#     printf "${RED_BOLD}cargo tarpaulin failed. Please fix the failing tests or improve coverage.${RESET}\n"
-#     exit 1
-# fi
 
 printf "${GREEN_BOLD}All pre-commit checks passed successfully!${RESET}\n"
 exit 0
