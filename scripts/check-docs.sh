@@ -49,18 +49,11 @@ report() {
 
 # `git ls-files` and not `find`, and this is the load-bearing choice in the whole
 # script. It restricts every check to what is *tracked*, which means a scratch file, a
-# draft, or anything a contributor keeps gitignored can never fail someone else's
-# build. It also means the checks describe the repository as a stranger cloning it
-# sees it — which is the audience the whole documentation restructure is aimed at.
-#
-# `docs/archive/` is the one exemption, and it is exempt by definition rather than by
-# convenience: an archive is a document frozen at a date, and its links point into a
-# world that no longer exists. Linting one would demand that a snapshot keep up with
-# the tree it is a snapshot *of*, which is the opposite of what it is for. The
-# directory is expected to be short-lived — it exists so the working checklists enter
-# git once before being removed — so if `docs/archive/` is gone, this line should go
-# with it.
-mapfile -t DOCS < <(git ls-files '*.md' | grep -v '^docs/archive/')
+# draft, or a private working directory can never fail someone else's build — and it
+# is why `organization/` is not checked here and needs no exemption for it: gitignored
+# is already out of scope. It also means the checks describe the repository as a
+# stranger cloning it sees it, which is the audience this whole exercise is aimed at.
+mapfile -t DOCS < <(git ls-files '*.md')
 
 printf '%sChecking %d tracked markdown files…%s\n\n' "$BLUE" "${#DOCS[@]}" "$RESET"
 
