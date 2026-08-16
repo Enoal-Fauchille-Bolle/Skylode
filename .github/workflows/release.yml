@@ -26,7 +26,28 @@ jobs:
   # can point at a commit whose CI never ran — tagging before pushing is the normal
   # way that happens — and on a public repository the re-run is free. Everything
   # below `needs:` this, so a red tag ships nothing.
+  #
+  # The `permissions:` block is on this job and not at the top of the file, for the
+  # same reason every other one here is: raising the floor for all four jobs to suit
+  # one is how a workflow ends up over-permissioned by accretion. It is a **ceiling**
+  # rather than a grant — `ci.yml` still declares its own per job, and only
+  # `coverage` takes the OIDC token, to prove itself to Codecov without a stored one.
+  #
+  # It is here because a called workflow may only *reduce* the caller's permissions,
+  # never raise them, and `id-token` is stricter still: GitHub made it
+  # explicitly-granted-only in June 2023, since a reusable workflow able to mint its
+  # own OIDC identity is an escalation by definition. Without these two lines the run
+  # does not fail — it never starts, which is why nothing downstream can be blamed.
+  #
+  # The gap was invisible until `v0.2.0` and could not have been otherwise: pushed to
+  # a branch, `ci.yml` runs as itself and its own header is the ceiling, so `coverage`
+  # is green. Only `workflow_call` moves the ceiling here. And `release.yml` had never
+  # called a `ci.yml` that wanted OIDC — the Codecov upload landed the day *after*
+  # `v0.1.0` shipped.
   verify:
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/ci.yml
 
   build:
