@@ -554,11 +554,13 @@ procs, all from the seeded PRNG so a run is reproducible. Rendering is decoupled
 the TUI redraws on change at roughly 30 fps, reading the core state without
 driving it.
 
-The swing inside one tick is ordered **impact → procs → XP → loot → refill**, and
-the last step is the one that is easy to get wrong: the batch reset cannot fire on
-the break that empties the grid, because a blast can empty it too and the enchants
-that have not rolled yet would be handed a fresh full grid to blast on the balance
-sheet of one swing.
+The swing inside one tick resolves in a fixed order, and **that order is stated in the
+code, on `GameState::tick`** — it is an execution contract rather than a design
+intention, so it belongs where a reader can check it against the function that keeps it.
+What matters here is the step that is easy to get wrong: the batch reset is **last**. It
+cannot fire on the break that empties the grid, because a blast can empty it too, and
+the enchants that have not rolled yet would be handed a fresh full grid to blast on the
+balance sheet of one swing.
 
 `tick` **returns what happened** (`Vec<GameEvent>`) rather than only mutating. A
 front-end that had to diff the state between frames to notice an Excavator proc
@@ -638,25 +640,36 @@ this document.
 
 ### Core modules
 
-The core is split by concern, each unit testable in isolation:
+The core is split by concern, each unit testable in isolation. **Names are the code's**
+— singular, and with progression folded into `player`. This list sketched plural modules
+(`worlds`, `pickaxes`) plus a separate `progression` until 2026-08-16; where a sketch and
+a module disagree, the module wins, and the sketch is the thing to fix.
 
-- `worlds`, `materials`: the static data (which ores, their world, hardness, and
+- `world`, `material`, `block`: the static data (which ores, their world, hardness, and
   minimum pickaxe tier), plus the **per-dimension enchant ceiling** the five special
   enchants and Fortune share (`World::enchant_cap`) — one number per world, and a
   rule of the world rather than of any enchant.
-- `pickaxes`: tiers, Efficiency, Fortune, enchant levels, and `mining_power`. Owns
+- `pickaxe`: tiers, Efficiency, Fortune, enchant levels, and `mining_power`. Owns
   **Efficiency's** ceiling (`PickaxeTier::efficiency_cap`), the one keyed by the tier.
-- `mines`: the grid model, mixed content, break progress, batch reset, and size.
-- `progression`: mining XP and level, world unlocks, and the two-axis gating.
-- `enchants`: the five enchants and their effects, plus `max_level` — the dispatch
-  that picks whichever ceiling applies. It holds no cap of its own but Fortune's,
-  the only one keyed by neither tier nor world.
-- `economy`: costs (composite compressed plus raw), the compression denomination,
-  and boosts.
-- `prestige`: the reset and the permanent multiplier.
+- `mine`, `mine_kind`: the grid model, mixed content, break progress, batch reset, size
+  and richness; and which of the twelve canonical mines a grid is, with its block pool.
+- `player`: mining XP and level, world unlocks, prestige rank, and the two-axis gating.
+  There is no `progression` module — it would have held one struct's fields.
+- `enchant`: the seven enchants and their effects, the blast shapes and proc curves,
+  plus `max_level` — the dispatch that picks whichever ceiling applies.
+- `inventory`: what the player holds, and manual compression.
+- `economy`: costs (composite Compressed plus raw) and the purchases that spend them.
+- `boost`, `reward`, `upgrade`: the timed multiplier, the level-up bundles filed against
+  a level, and the upgrade tracks.
+- `prestige`: the arithmetic **only** — the multiplier and the carry. The reset itself is
+  `GameState::prestige`, because it clears nine of that struct's fields.
+- `game`: `GameState` and `tick`, the run in progress. It states the swing's order.
+- `rng`: the seeded source of every draw, and the only module naming `rand`.
+- `tunables`: the balance dials keyed by nothing.
+- `error`: `CoreError` — what the rules refuse.
 - `save`: serialization and migration **only**. The HMAC, the atomic write, the
   `.bak` recovery and the clock reading live outside the core, or it would stop
   being the pure, I/O-free library the rest of this section describes.
 
-The TUI (`skylode-tui`) holds the screens (Mine, Mines, Inventory, Upgrades,
-Stats), reads core state to render, and forwards keyboard input.
+The TUI (`skylode-tui`) holds the six screens (Mine, Mines, Inventory, Upgrades, Stats,
+Levels) and the overlays, reads core state to render, and forwards keyboard input.

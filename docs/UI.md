@@ -780,10 +780,11 @@ Efficiency is absent entirely, because it is capped by the pickaxe tier and live
 the ladder.
 
 Fortune is one of the six. This section used to read *"while Fortune's 10 is its
-own"*, which predates the amendment in
-[DECISIONS.md](DECISIONS.md) rows 31 and 50: the ceiling of 10 stands, but it is now
-reached in three steps rather than one, so that no lever in the game is maxable at
-level 1. `EnchantType::max_level` implements the amendment.
+own"*, which predates the amendments in
+[0020](decisions/0020-fortune-capped-at-10-but-reached-progressively-3-6-10.md) and
+[0039](decisions/0039-efficiency-stays-capped-by-the-tier-every-other.md): the ceiling
+of 10 stands, but it is now reached in three steps rather than one, so that no lever in
+the game is maxable at level 1. `EnchantType::max_level` implements the amendment.
 
 **The detail pane must name band boundaries.** `explosive_radius` is
 `1 + min((level - 1) / 3, 2)`, so the square is 3x3 at I-III, 5x5 at IV-VI and 7x7
