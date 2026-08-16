@@ -25,6 +25,24 @@ A debug build also carries a **dev menu** — ore out of nothing, free upgrades,
 skip — behind two gates: `SKYLODE_DEV=1 cargo run -p skylode-tui`, then `` ` ``. It is
 compiled out of `--release` entirely. See [docs/DEV-MENU.md](docs/DEV-MENU.md).
 
+## Scripts
+
+Three tools live in [scripts/](scripts/). Each argues its own purpose in its header;
+what follows is when you would reach for one.
+
+```sh
+scripts/check-docs.sh        # the documentation's linter — links, anchors, Rust names,
+                             # line width, and the decision records' numbering. Runs in CI.
+scripts/kitty-test.sh        # does this terminal speak the kitty keyboard protocol?
+scripts/unsaved-game.sh      # run the game where it cannot find or create a save (Linux)
+```
+
+`kitty-test.sh` answers a question that comes up as *"why does `Space` fire twice for
+me?"*. The mine key is two layers — a hold inferred from a time window everywhere, and a
+real key release where the protocol reports one — so the terminal's answer decides which
+path you are debugging. `unsaved-game.sh` reaches the no-persistence branch: the title
+screen's permanent warning, and an autosave that fails on the edge without being fatal.
+
 ## Code style
 
 - Format with `cargo fmt` before committing.
