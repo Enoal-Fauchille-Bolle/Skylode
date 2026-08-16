@@ -146,9 +146,23 @@ guarantees before 1.0". So, pre-1.0:
 | Fixed | `0.x.PATCH` |
 
 Against the commit types above: `feat` and any `!` take the minor; `fix`,
-`refactor`, `style` and `perf` take the patch; `docs`, `chore`, `test`, `build` and
-`ci` do not justify a release on their own. Lower components reset to zero — after
-`0.4.7`, a feature gives `0.5.0`, not `0.5.7`.
+`refactor` and `style` take the patch; `docs`, `chore`, `test`, `build` and `ci` do
+not justify a release on their own. Lower components reset to zero — after `0.4.7`,
+a feature gives `0.5.0`, not `0.5.7`.
+
+**That mapping is a first filter, not the answer**, because it reads the type and
+the contract above is about the player. The question that settles it is whether the
+change reaches **their binary or their save**, and the scope usually tells you:
+`fix(ci)`, `fix(test)` and a fix inside the dev menu all take the patch by the line
+above and are worth *no release at all*. The dev menu is the clearest of the three —
+it is `#[cfg(debug_assertions)]` throughout, so `cargo build --release` does not
+compile it, and the change cannot reach a player even in principle.
+
+The rule runs the other way too, which is the half that is easy to miss. A
+`build(deps)` bump justifies no release on its own — until it closes an advisory in
+a crate that ships inside the binary. At that point somebody downloading an archive
+is running the vulnerable code, and the release is the entire point. The commit type
+says no; the player says yes; the player wins.
 
 `1.0.0` is reserved for one condition, and it is checkable rather than a matter of
 taste: **the MVP list in [docs/ROADMAP.md](docs/ROADMAP.md) is complete**. Tagging it
