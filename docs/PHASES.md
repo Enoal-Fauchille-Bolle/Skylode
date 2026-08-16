@@ -17,17 +17,16 @@ the ones no harness exercises (proc rates, offline cap, dip magnitude, the XP cu
 — and the *deepening* of `GameState::validate` that phase 11 listed and deliberately
 left: the cross-field plausibility checks that reconcile an inventory and a level
 against the new counters. Those want balance bounds nothing has measured yet, and a
-`validate` tightened on a guess refuses honest runs. Each phase's heading keeps the objective it was written
-with; where a phase's implementation forced a decision the objective did not
-anticipate, the decision is recorded under that heading rather than rewritten into
-it.
+`validate` tightened on a guess refuses honest runs. Each phase's heading keeps the
+objective it was written with; where a phase's implementation forced a decision the
+objective did not anticipate, the decision is recorded under that heading rather than
+rewritten into it.
 
-Module names follow the code, which is singular and folds progression into
-`player` (`world`, `block`, `material`, `inventory`, `mine`, `mine_kind`, `pickaxe`,
-`enchant`, `player`, `economy`, `boost`, `reward`, `prestige`, `game`, `save`, `rng`,
-`tunables`, `error`). [SYSTEMS.md](SYSTEMS.md#core-modules) still lists the older
-plural sketch (`worlds`, `pickaxes`, `progression`, …); where the two differ, the
-code's names win.
+Module names follow the code, which is singular and folds progression into `player`.
+The list lives in [SYSTEMS.md](SYSTEMS.md#core-modules) and nowhere else. This
+paragraph used to carry a second copy of it, plus a note that SYSTEMS.md's was stale —
+a document annotating another document's rot instead of repairing it, which is the
+habit this whole directory was reorganised to break.
 
 ## Hard ordering constraints
 
@@ -171,8 +170,9 @@ level phase 8 resets it with — the same reason the unlocked worlds are not a f
 Add `tick(input)`, the fixed 20 tps step applying held-Space mining, the auto-miner,
 boost timers, XP, and enchant procs — all drawn from the seeded RNG
 (see [SYSTEMS.md](SYSTEMS.md#tick-loop)). The spatial procs themselves already exist
-(phase 4); wiring them up means calling them after a break and ordering the swing
-**impact → procs → refill**, which moves the batch reset out of the break that
+(phase 4); wiring them up means calling them after a break and putting the refill
+**last** — the shipped order is on `GameState::tick`, which grew two more steps than
+this objective anticipated — which moves the batch reset out of the break that
 empties the grid and to the end of the step — a blast may empty the mine too, and a
 refill in the middle would drop a full grid under the enchants that have not rolled
 yet. Add a basic flat-rate auto-miner (tiers and purchases are post-MVP); it never
@@ -248,7 +248,7 @@ front-end's preferences without ever learning what a palette is.
 Tune the numbers against the now-deterministic engine. Write simulation tests of the
 form "N ticks ⇒ this level, this inventory", made possible precisely by the phase-1
 determinism, and use them to fix the final values of the tunables left open in
-[ROADMAP.md](ROADMAP.md#open-questions).
+[ROADMAP.md](ROADMAP.md#where-this-stands).
 
 ## Phase 11 - The counters the Stats screen reads
 
