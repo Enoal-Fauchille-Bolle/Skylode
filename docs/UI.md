@@ -683,6 +683,25 @@ Four sub-tabs. Three of them are here because 96 rows of content do not fit in 2
 the fourth (§5.4.4) is here for the opposite reason, and the asymmetry is the point.
 Master-detail gives the dip warning a place to be read *before* it is bought.
 
+**Where the 96 comes from**, since it is the measurement that forced the whole shape and
+a re-count is the only way to know the shape is still needed:
+
+```txt
+  pickaxe roadmap   6 tiers + (5 tiers × Eff 1..5) + (Netherite Eff 1..15)    46
+  Fortune 0..10                                                              11
+  5 special enchants × the three world bands                                 15
+  12 mines × 2 tracks (size, richness)                                       24
+                                                                           ────
+                                                                             96
+```
+
+Against 21 rows of content — 24 less the tab row, the sub-tab row and the footer. So
+scrolling alone was never the answer: a flat 96-row list is navigable only by someone
+who already knows what is in it. Every term is a fact about the core rather than a
+layout choice (`PickaxeTier::ALL_TIERS`, `efficiency_cap`, `World::enchant_cap`,
+`MineKind::ALL`), which is what makes the count re-checkable — and what would make a
+thirteenth mine a two-row change to a budget that has 0 rows spare.
+
 ```text
 0---------1---------2---------3---------4---------5---------6---------7---------
  1 Mine │ 2 Mines │ 3 Inventory │ [4 Upgrades] │ 5 Stats │ 6 Levels
