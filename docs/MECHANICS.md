@@ -128,8 +128,9 @@ unenchanted Wooden pickaxe is worth 2, not 3.
 `mining_power` is a floating-point value so multiplicative haste can be
 fractional. Each tick, `break_progress += mining_power`. When
 `break_progress >= hardness * 30`, the block breaks, yields its drop times the
-[Fortune multiplier](#fortune), and `break_progress` resets to 0. Efficiency (additive) and Haste (multiplicative)
-act on different math layers, so they stack without conflict.
+[Fortune multiplier](#fortune), and `break_progress` resets to 0. Efficiency
+(additive) and Haste (multiplicative) act on different math layers, so they stack
+without conflict.
 
 The **30** is Minecraft's, and it is the conversion between two scales that are not
 the same one: `getDestroyProgress` reads `dig_speed / hardness / 30` per tick and

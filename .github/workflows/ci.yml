@@ -98,6 +98,27 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --document-private-items --all-features
 
+  # The same gate as `cargo doc` above, for the corpus that never had one.
+  #
+  # `broken_intra_doc_links` has kept the rustdoc honest for as long as the hook has
+  # run; the markdown has been unwatched for exactly as long, and the two have drifted
+  # by amounts that say so. `scripts/check-docs.sh` argues each of its four checks and
+  # names what it deliberately cannot do.
+  #
+  # A job of its own rather than a step in `check`, for two reasons that point the same
+  # way. It installs no toolchain and compiles nothing — it greps `crates/` for names —
+  # so it finishes in seconds while `check` is still linking, and folding it in would
+  # hide its verdict behind a four-minute compile. And a documentation finding and a
+  # clippy finding are answered by different people on different days; two red dots say
+  # that, one does not.
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: check-docs
+        run: bash scripts/check-docs.sh
+
   # Closes gap 1. No tty is involved: `App::run` is generic over ratatui's
   # `Backend` and over the `event::Events` trait, so the tests drive the real loop
   # with a scripted event list against `TestBackend`.
