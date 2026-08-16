@@ -156,14 +156,21 @@ convention, and how versions and releases work.
 
 ## Documentation
 
+**[docs/README.md](docs/README.md) routes by what you came to do** — it is the one to
+open first. In short:
+
 - [Design](docs/DESIGN.md): concept, scope, gameplay loop, screens.
 - [Mechanics](docs/MECHANICS.md): mining, worlds, pickaxe, enchants, auto-miner,
   offline, prestige.
+- [Balance](docs/BALANCE.md): every price, generated from the code.
 - [Systems](docs/SYSTEMS.md): save system, tech stack, architecture.
 - [UI](docs/UI.md): the front-end's screens, states and render loop.
-- [Phases](docs/PHASES.md): the dependency-ordered build plan and its objectives.
-- [Roadmap](docs/ROADMAP.md): MVP scope, post-MVP, open questions.
-- [Decisions](docs/DECISIONS.md): settled decisions and rejected ideas.
+- [Decisions](docs/decisions/): 157 numbered records — every settled decision and
+  every rejected idea, one file each.
+- [Guides](docs/guides/): how to add a mine, retune a curve, change the save format,
+  add a screen.
+- [Roadmap](docs/ROADMAP.md): MVP scope and what is left before `1.0.0`.
+- [Phases](docs/PHASES.md): the dependency-ordered build plan, all of it shipped.
 - [Dev menu](docs/DEV-MENU.md): reaching a state a test cannot play to.
 
 ## Contributing
