@@ -35,6 +35,18 @@ unpack it, and run `skylode`. Builds are published for Linux (x86_64), Windows
 `skylode --version` tells you which build you are holding once the archive name
 is gone.
 
+If you have a Rust toolchain, the registry is the shorter route:
+
+```sh
+cargo install skylode-tui
+skylode
+```
+
+The package is `skylode-tui` and the binary is `skylode`. That is deliberate:
+`skylode` is the whole game, rules and front-end together, while the package
+holds only the second — so the name a player types belongs to the binary, and
+the name the source tree carries belongs to the directory.
+
 Every archive also carries a build provenance attestation, which answers a
 question `SHA256SUMS` cannot: that file detects a corrupted download, but it is
 published beside the binaries by the same account, so it says nothing about a
@@ -42,7 +54,7 @@ substituted one. The attestation is signed against a public transparency log and
 names the workflow, the repository and the commit that produced the file:
 
 ```sh
-gh attestation verify skylode-v0.1.0-x86_64-unknown-linux-gnu.tar.gz \
+gh attestation verify skylode-v0.2.0-x86_64-unknown-linux-gnu.tar.gz \
   --repo Enoal-Fauchille-Bolle/Skylode
 ```
 
