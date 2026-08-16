@@ -10,9 +10,11 @@
 //!
 //! [`GameState`] is that `self`, and [`tick`](GameState::tick) is what calls them.
 //! This module composes rather than invents: almost nothing here is a new rule,
-//! and what it adds is an **order** — the swing resolves impact → procs → XP →
-//! loot → refill, and every one of those steps is where it is because an earlier
-//! phase wrote down why.
+//! and what it adds is an **order**. That order is stated once, on
+//! [`tick`](GameState::tick), and every one of its steps is where it is because an
+//! earlier phase wrote down why. It is quoted in fragments elsewhere — a caller
+//! usually cares about one adjacency rather than the whole sequence — so `tick` is
+//! the one to read when the question is what the whole of it is.
 //!
 //! **No clock is read here.** [`last_seen`](GameState) is a [`SystemTime`] the
 //! *caller* supplies; core never calls `SystemTime::now`. That is the determinism

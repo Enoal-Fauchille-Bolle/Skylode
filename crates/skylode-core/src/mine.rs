@@ -559,9 +559,10 @@ impl Mine {
     /// **Does not reset the mine, even when the blast empties it** — and neither
     /// does [`dig`](Mine::dig), for the same reason: other enchants may still be
     /// about to fire on the same swing, and a refill here would drop a full grid
-    /// under the ones that have not rolled yet. The whole swing orders itself
-    /// impact → procs → [refill](Mine::refill_if_empty), and every step but the last
-    /// leaves the mine as empty as it found it.
+    /// under the ones that have not rolled yet. The swing puts
+    /// [refill](Mine::refill_if_empty) **last** — see
+    /// [`GameState::tick`](crate::game::GameState::tick) for the whole order — and
+    /// every step before it leaves the mine as empty as it found it.
     ///
     /// `pub(crate)`, and for [`take`](Mine::take)'s reason: it is **free**. It
     /// consults no [`break_progress`](Mine::break_ratio) and no mining power, so a
@@ -746,8 +747,9 @@ impl Mine {
     /// drop a *full* grid under those, and they would blast cells the player never
     /// mined down to — paying out a grid and a half for one swing.
     ///
-    /// So the order the swing owner imposes is **impact → procs → refill**, and
-    /// this is its last step. That order costs the arrangement `dig`'s rustdoc used
+    /// So the swing owner puts **procs before refill**, and this is its last step —
+    /// [`GameState::tick`](crate::game::GameState::tick) states the whole order and
+    /// is the one place that does. That order costs the arrangement `dig`'s rustdoc used
     /// to argue for — "two calls to chain is one call to forget" — and the answer to
     /// the forgetting is no longer visibility but the **return value**: it is
     /// `#[must_use]`, so a caller who drops the answer is told, and the one caller
@@ -2255,8 +2257,9 @@ mod tests {
     /// the break that takes the last cell, because there the break and the
     /// emptiness are one event. A blast is not: other enchants may still fire on
     /// the same swing, and a refill here would drop a full grid under the ones that
-    /// have not rolled yet. Ordering impact → procs → refill is the phase-7 tick's,
-    /// and this test is what pins the half `blast` deliberately does not do.
+    /// have not rolled yet. Putting refill after the procs is the tick's business
+    /// ([`GameState::tick`](crate::game::GameState::tick)), and this test is what
+    /// pins the half `blast` deliberately does not do.
     #[test]
     fn a_blast_that_empties_the_mine_does_not_refill_it() {
         let mut mine = built(MineKind::Stone, 0, 0, &mut rng());
