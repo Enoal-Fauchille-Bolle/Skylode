@@ -40,8 +40,8 @@ re-laying anything out.
 
 ## 2. The states
 
-**Seventeen states plus a cross-cutting toast component.** Six are the tab ring;
-eleven are overlays, split by who opens them.
+**Sixteen states plus a cross-cutting toast component.** Six are the tab ring; ten
+are overlays, split by who opens them.
 
 ### 2.1 The ring
 
