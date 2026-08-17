@@ -23,17 +23,22 @@ balance work, and it is three items:
   felt earned — so they are the starting point for this pass, not a competing opinion.
   Note that the first two pull against the measured band: shortening the XP curve or
   slowing the swing both lengthen a run, and the band is guarded at both ends.
-- **The level-up bundle pays in the prestige currency, and nothing has measured how
-  much of a rank that finances.** The budget is linear in the level, so **65.9 % of it
-  lands on levels 31 to 50** — all of them past the End's unlock — and half of every
-  bundle is the world's enchant material
-  ([0012](decisions/0012-the-level-up-bundle-shares-the-enchant-fuel-table.md)), which
-  in the End is Amethyst. About **4 050 of the 12 290 raw items** a full climb is
-  granted are therefore the very currency a rank is bought with
+- **The level-up bundle finances four fifths of a first rank, and nothing chose that
+  share.** The budget is linear in the level, so **65.9 % of it lands on levels 31 to
+  50** — all of them past the End's unlock, where a bundle's whole budget splits between
+  End Stone and Amethyst on the recipe ramp instead of following the three-way fuel
+  split ([0012](decisions/0012-the-level-up-bundle-shares-the-enchant-fuel-table.md)).
+  A full climb therefore credits **13 181 raw items** — the 12 290 of budget plus the
+  `LEVEL_REWARD_EMERALD_PERMILLE` garnish on top — of which **4 916 are Amethyst**, the
+  currency a rank is bought with
   ([0066](decisions/0066-prestige-currency-amethyst-condition-a-fully-realised.md)).
-  Whether that is a third of a first rank or a tenth of one is unknown, and the harness
-  cannot answer it: it counts Amethyst in the bank without separating what was mined
-  from what was given.
+  The first rank costs `AMETHYST_PER_CLIMB` plus `PRESTIGE_SURCHARGE_BASE`, **6 100**,
+  so the climb hands over **81 %** of it before the player mines any. The harness says
+  where the remainder comes from: it banks *exactly* 4 916 at every rank for the
+  completionist and 5 109 to 5 167 for the speedrunner, so the grant is the floor of the
+  bank and mining adds about 4 % on top. What is unmeasured is whether 81 % is the
+  intended share — and it pulls the same way as *levelling reads as too easy* above: if
+  reaching the cap nearly buys a rank by itself, the two readings have one cause.
 - **The deepening of `GameState::validate`** that phase 11 listed and deliberately
   left: the cross-field plausibility checks reconciling an inventory and a level against
   the counters. It waits on the tunables above, because a `validate` tightened against a
