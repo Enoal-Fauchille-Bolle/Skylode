@@ -8,9 +8,9 @@ documents:
   offline, prestige.
 - [SYSTEMS.md](SYSTEMS.md): save system, tech stack, architecture.
 - [ROADMAP.md](ROADMAP.md): MVP scope, post-MVP, open questions.
-- [PHASES.md](PHASES.md): the dependency-ordered build plan for the core, phase by
-  phase.
-- [DECISIONS.md](DECISIONS.md): settled decisions and rejected ideas.
+- [PHASES.md](PHASES.md): the dependency-ordered build plan for both crates, phase
+  by phase.
+- [decisions/](decisions/): settled decisions and rejected ideas, one record each.
 
 **Status:** pre-MVP design.
 
@@ -49,7 +49,7 @@ Added (not in SkyMines):
 - Prestige.
 - Offline progression (idle accrual).
 
-Dropped or changed items are recorded in [DECISIONS.md](DECISIONS.md).
+Dropped or changed items are recorded in [decisions/](decisions/).
 
 ## Core gameplay loop
 

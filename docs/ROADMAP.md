@@ -1,14 +1,14 @@
 # Skylode - Roadmap
 
 What is in the first playable version, and what is deliberately deferred. For the
-rationale behind any of it, see [decisions/](decisions/); for the order the core was
-built in, [PHASES.md](PHASES.md).
+rationale behind any of it, see [decisions/](decisions/); for the order the two crates
+were built in, [PHASES.md](PHASES.md).
 
 ## Where this stands
 
 The MVP list below is **delivered** — the game is playable, pre-1.0, and every phase of
 both build plans has shipped. What separates the tree from `1.0.0` is the tail of the
-balance work, and it is two items:
+balance work, and it is three items:
 
 - **The tunables no harness reaches.** Enchant proc rates and cooldowns (the reference
   players barely buy the spatials), the offline cap and the auto-miner rate (an
@@ -23,6 +23,17 @@ balance work, and it is two items:
   felt earned — so they are the starting point for this pass, not a competing opinion.
   Note that the first two pull against the measured band: shortening the XP curve or
   slowing the swing both lengthen a run, and the band is guarded at both ends.
+- **The level-up bundle pays in the prestige currency, and nothing has measured how
+  much of a rank that finances.** The budget is linear in the level, so **65.9 % of it
+  lands on levels 31 to 50** — all of them past the End's unlock — and half of every
+  bundle is the world's enchant material
+  ([0012](decisions/0012-the-level-up-bundle-shares-the-enchant-fuel-table.md)), which
+  in the End is Amethyst. About **4 050 of the 12 290 raw items** a full climb is
+  granted are therefore the very currency a rank is bought with
+  ([0066](decisions/0066-prestige-currency-amethyst-condition-a-fully-realised.md)).
+  Whether that is a third of a first rank or a tenth of one is unknown, and the harness
+  cannot answer it: it counts Amethyst in the bank without separating what was mined
+  from what was given.
 - **The deepening of `GameState::validate`** that phase 11 listed and deliberately
   left: the cross-field plausibility checks reconciling an inventory and a level against
   the counters. It waits on the tunables above, because a `validate` tightened against a

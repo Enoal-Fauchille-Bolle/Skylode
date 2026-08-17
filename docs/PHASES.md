@@ -1,13 +1,19 @@
 # Skylode - Phases
 
-The dependency-ordered build plan for `skylode-core`, phase by phase. The TUI is
-out of scope here. These phases are *derived from* the design documents
+The dependency-ordered build plan for **both crates**, phase by phase: `skylode-core`
+under [Core](#core), `skylode-tui` under [Front-end](#front-end). This document states
+each phase's objective and the ordering that binds it. What ships in the MVP lives in
+[ROADMAP.md](ROADMAP.md); the *why* behind each rule lives in
+[decisions/](decisions/) — PHASES.md stays focused on order and intent.
+
+The two halves were arrived at differently, and saying so is the point of keeping them
+in one file. The core's phases were **derived** from the design documents
 ([DESIGN.md](DESIGN.md), [MECHANICS.md](MECHANICS.md), [SYSTEMS.md](SYSTEMS.md),
-[DECISIONS.md](DECISIONS.md), [ROADMAP.md](ROADMAP.md)) by diffing them against the
-code. This document states each phase's *objective* and the ordering that binds
-them. What ships in the MVP lives in [ROADMAP.md](ROADMAP.md); the *why* behind
-each rule lives in [DECISIONS.md](DECISIONS.md) — PHASES.md stays focused on order
-and intent.
+[decisions/](decisions/), [ROADMAP.md](ROADMAP.md)) by diffing them against the code.
+The front-end's were a build order for frames [UI.md](UI.md) already specified in full,
+so they are listed as a sequence rather than as objectives.
+
+## Core
 
 **Status: phases 0 to 11 have shipped.** The sentence this paragraph once carried —
 *"none of the dynamic mechanics exist yet: no tick, no block breaking, no RNG
@@ -28,7 +34,7 @@ paragraph used to carry a second copy of it, plus a note that SYSTEMS.md's was s
 a document annotating another document's rot instead of repairing it, which is the
 habit this whole directory was reorganised to break.
 
-## Hard ordering constraints
+### Hard ordering constraints
 
 Only three dependencies are truly rigid. Everything else can be reshuffled.
 
@@ -45,19 +51,20 @@ Only three dependencies are truly rigid. Everything else can be reshuffled.
    in progress", so `tick(input)` has no `self` to live on. It is the keystone, and
    keystones go in last.
 
-## Phase 0 - Reconcile code with the settled decisions
+### Phase 0 - Reconcile code with the settled decisions
 
 Bring the code back in line with decisions already recorded, before building on top
 of it. Three reconciliations: make `PickaxeTier::base_power` a strictly monotone
-curve so a tier jump is a short dip and never a permanent regression (see
-[DECISIONS.md](DECISIONS.md)); separate the two "compressed" concepts by name — a
+curve so a tier jump is a short dip and never a permanent regression
+([0017](decisions/0017-base-tier-speed-is-a-monotone-custom-curve.md)); separate the
+two "compressed" concepts by name — a
 **dense block** (`IronBlock`, `Cobblestone`, …) is a mineable, tougher grid cell,
 whereas a **Compressed unit** is 100 raw, never mined, minted by hand (see
 [MECHANICS.md](MECHANICS.md#compression)); and settle the filler-block rule so every
 block drops something, making `Block::material` total and removing the unreachable
 `None` branch every caller would otherwise carry.
 
-## Phase 1 - Deterministic foundations
+### Phase 1 - Deterministic foundations
 
 Lay the primitives every later phase draws on. Introduce the `rng` module — a seeded
 PRNG (`ChaCha8Rng`, chosen because `rand` makes no cross-release promise for
@@ -72,7 +79,7 @@ home for the constants [ROADMAP.md](ROADMAP.md) leaves open (world-unlock levels
 level cap, offline cap, compression ratio, cost-curve base and growth, autosave
 interval).
 
-## Phase 2 - The mine model
+### Phase 2 - The mine model
 
 The largest gap, and where the RNG first draws. Give mines an identity (a kind /
 registry: block pool, world, gating pickaxe tier, the material that pays for size
@@ -89,13 +96,15 @@ cell weights are never *both* zero, so the composition always describes a valid
 distribution — and that is the *only* structural rule the core enforces here. The
 valuable cell's weight per level is an ordinary tunable (`value_weight`) that phase
 10 sets: an earlier version of this design made a strict-sub-100% cap a
-load-bearing invariant, and [DECISIONS.md](DECISIONS.md) reversed it, because both
-of the jobs it did are done elsewhere — the free, reversible dial is the anti-brick,
+load-bearing invariant, and
+[0054](decisions/0054-richness-has-no-weight-cap-the-value-cell-weight-per.md)
+reversed it, because both of the jobs it did are done elsewhere — the free,
+reversible dial is the anti-brick,
 and the geometric cost curve is the anti-runaway. Moving the richness dial re-rolls
 the *remaining* cells while leaving broken ones broken: no free action may ever put a
 broken block back.
 
-## Phase 3 - The real mining-power formula
+### Phase 3 - The real mining-power formula
 
 Turn mining power from a stub into the spec formula, which unlocks instamine and
 therefore the endgame. Fold the Haste multiplier into `mining_power`
@@ -106,7 +115,7 @@ pickaxe tier ≥ the block's minimum, wiring up the `Ord` on `PickaxeTier` that 
 but nothing calls. Apply Fortune to drops, capped at 10
 ([MECHANICS.md](MECHANICS.md#fortune)).
 
-## Phase 4 - Enchant effects
+### Phase 4 - Enchant effects
 
 Give the five enchants their effects, most of them geometry over the phase-2 grid.
 Enchant level caps are per-world (Lapis < Quartz < Amethyst) — **done**: one shared
@@ -126,7 +135,7 @@ than on the mine, and draws **after** the three spatials — an order the two ha
 tested against rather than produced by a single loop (see
 [MECHANICS.md](MECHANICS.md#enchants)).
 
-## Phase 5 - Economy
+### Phase 5 - Economy
 
 Make upgrades cost something. Add the `economy` module with a geometric cost curve
 `cost(n) = base × growth^n`, split into a Compressed part plus a raw remainder,
@@ -138,7 +147,7 @@ debits, and returns `Result`, plus the affordability / buy-×N / buy-max queries
 Upgrades screen reads. Add temporary Haste (Redstone) boosts with a tick-based timer,
 feeding the phase-3 multiplier.
 
-## Phase 6 - Progression
+### Phase 6 - Progression
 
 Wire mining level to the two-axis gate. Cap the level at 50, stopping
 `Player::add_experience` from climbing without bound. Add world unlocks at the
@@ -161,7 +170,7 @@ and Excavator act on the loot and must not touch XP, or one investment would adv
 both axes and the two-axis gating would collapse into one (see
 [MECHANICS.md](MECHANICS.md#progression-and-gating)).
 
-## Phase 7 - The runtime core
+### Phase 7 - The runtime core
 
 The keystone. Introduce `GameState`, the missing aggregate that owns the player, the
 mines, the mine the player is in, the boost reserve and any running boost, the RNG
@@ -184,7 +193,7 @@ multiplication done the long way — and clamp a backward clock jump to 0. Core 
 wall clock: the caller injects `now`, or core stops being deterministic (see
 [MECHANICS.md](MECHANICS.md#offline-accrual)).
 
-## Phase 8 - Prestige
+### Phase 8 - Prestige
 
 Close the loop. Add the `prestige` module — the price of a rank and the multiplier it
 grants, as pure functions — and put the reset itself on `GameState`, which is the only
@@ -208,7 +217,7 @@ exactly the player who has just prestiged; the auto-miner instead takes it once 
 and offline paths stay one multiplication. `Player::prestige` is finally a `u32` that
 something increments.
 
-## Phase 9 - Save (serialisation half only)
+### Phase 9 - Save (serialisation half only)
 
 Make the state persistable, keeping the core pure. Add serde derives on every
 persisted type, including the PRNG state; a versioned save with
@@ -243,14 +252,14 @@ is written:
 The configuration the save carries stays a **type parameter**: the core transports the
 front-end's preferences without ever learning what a palette is.
 
-## Phase 10 - Balance
+### Phase 10 - Balance
 
 Tune the numbers against the now-deterministic engine. Write simulation tests of the
 form "N ticks ⇒ this level, this inventory", made possible precisely by the phase-1
 determinism, and use them to fix the final values of the tunables left open in
 [ROADMAP.md](ROADMAP.md#where-this-stands).
 
-## Phase 11 - The counters the Stats screen reads
+### Phase 11 - The counters the Stats screen reads
 
 The one core gap the front-end found that no earlier phase predicted, and it is
 small: [UI.md](UI.md) §5.5 prints three figures nothing counts. Add them to
@@ -282,7 +291,8 @@ its caller: files exist now, so the next schema change *is* the first real bump,
 carries a migration. `#[serde(default)]` was refused for a
 sharper reason: a default of `0` for `blocks_broken` would be *false* of an older
 file rather than merely absent, which is the one thing the
-[`unclaimed` precedent](DECISIONS.md) was careful to establish it was not. The
+[`unclaimed` precedent](decisions/0099-a-level-up-announces-it-does-not-pay-the-reward-is.md)
+was careful to establish it was not. The
 golden save moves instead, which is exactly the signal it exists to give.
 
 **What shipped, and the one thing that did not.** The three counters, their two
@@ -293,3 +303,50 @@ deliberately deferred**: reconciling an inventory or a level against `blocks_bro
 needs bounds on what a swing can be worth, and every one of those is a phase-10
 tunable nothing has measured. A `validate` tightened against a guess refuses honest
 saves, which is a worse failure than the tampering it would catch.
+
+## Front-end
+
+Ten phases, 0 to 9, shipped between 2026-07-18 and 2026-08-09. All of them are done.
+
+**The ordering was a core constraint, and that constraint is gone.** The list was
+written while the core stopped at static data, so its shape *was* that limit: the TUI
+could reach static layout and no further, because everything past phase 2 needed
+queries landing in core phases 5 to 7. Core phases 0 to 11 have since shipped, and no
+core dependency is left anywhere in the list. What ordered the tail instead was the
+front-end's own dependency — Settings needs a save, and a save needs a session that
+can load one.
+
+| Phase | What it is | Landed |
+| --- | --- | --- |
+| 0 | app shell, screen ring, overlay stack, `keymap` to `Action` | `d0ccc05`, 2026-07-18 |
+| 1 | the palette and the cell widget | `1920e8e`, 2026-07-24 |
+| 2 | static layout of all six screens, plus the pulled overlays | 2026-07-26 |
+| 3 | the Mine screen driven by a real run | `3d2f98e`, 2026-07-28 |
+| 4 | the Mines screen | `8356448`, 2026-07-28 |
+| 5 | Inventory, compression, and the three-state refusal | `66f2aa6`, 2026-07-28 |
+| 6 | Upgrades: three sub-tabs, the mark column, the dip modal | `44bde22`, 2026-07-29 |
+| 7 | the tick loop, and everything that consumes `Vec<GameEvent>` | `0c273b4`, 2026-08-03 |
+| 8 | persistence and the session state machine | 2026-08-04 |
+| 9 | Settings, and the cross-cutting work it unblocked | 2026-08-09 |
+
+The boost — bought on a fourth Upgrades sub-tab, fired with `b` — landed between 8 and
+9 on 2026-08-05 and is deliberately **unnumbered**: numbering it would have renumbered
+Settings in a list other documents already cited by number.
+
+**Phase 3 is where a wireframe stopped being an oracle and became a reference.** Phase
+2's acceptance test was exact — the running app matches the counted frame — and that
+was the payoff for migrating those frames verbatim into [UI.md](UI.md). It stopped
+working at phase 3, because a fresh run has no target, no boost and no enchants, so
+the app draws states no frame was ever drawn for. Phase 4 turned the concession into
+the method: four things the Mines frame drew did not survive a real run, and each was
+recorded as a *departure* under the frame it departs from rather than quietly
+implemented. Every `departures` subsection in [UI.md](UI.md) — there are eight — exists
+because of this phase.
+
+**Every core gap the front-end found had one shape:** a question the interface asks
+that the rules had no *public* way to answer. `MineKind::ALL`, `Material::ALL` and
+`EnchantType::ALL` were all `#[cfg(test)]` until a screen had to list twelve mines,
+fifteen materials or seven enchant types — an enum cannot enumerate itself, and mines
+are created lazily, so eleven of the twelve have no `Mine` to ask. The last gap of all
+was the three counters [phase 11](#phase-11---the-counters-the-stats-screen-reads)
+added.
