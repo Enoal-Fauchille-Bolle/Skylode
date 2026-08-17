@@ -9,7 +9,7 @@ Three documents divide the work, and each fact lives in exactly one of them:
 
 | Document | Job |
 | --- | --- |
-| [DECISIONS.md](DECISIONS.md) | the **verdict** and its short reason — an append-only ledger |
+| [decisions/](decisions/) | the **verdict** and its short reason — one numbered record each |
 | **this file** | **what is on screen**, and the constraint that made it that shape |
 | [DESIGN.md](DESIGN.md) | the concept and the loop; its screen list links here |
 
@@ -137,9 +137,9 @@ is load-bearing: the frames are unreadable without it.
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `[1 Mine]`         | the selected `Tabs` item — reverse video, not brackets                                                                                                                                                                                         |
 | `▸`  at line start | the `ListState` / `TableState` selection — reverse video on the whole row                                                                                                                                                                      |
-| `##`               | an intact **common** cell. In the terminal it is a **solid two-column swatch** of that block's colour and carries no glyph at all — see §5.8                                                                                                    |
-| `▓▓`               | an intact **value** cell — the same swatch, in the value block's colour, **plus a stipple** (`░░`). The stipple is unconditional, in both colour modes: it is what makes common-vs-value survive a palette the terminal cannot render (§5.8)   |
-| `::`               | the **targeted** cell, mid-break — the crack glyph over the swatch, `··` → `::` → `##` as it fills (§5.8)                                                                                                                                       |
+| `##`               | an intact **common** cell. In the terminal it is a **solid two-column swatch** of that block's colour and carries no glyph at all — see §4                                                                                                    |
+| `▓▓`               | an intact **value** cell — the same swatch, in the value block's colour, **plus a stipple** (`░░`). The stipple is unconditional, in both colour modes: it is what makes common-vs-value survive a palette the terminal cannot render (§4)   |
+| `::`               | the **targeted** cell, mid-break — the crack glyph over the swatch, `··` → `::` → `##` as it fills (§4)                                                                                                                                       |
 | (two spaces)       | a broken cell: **no swatch, no glyph**, the terminal's own background                                                                                                                                                                          |
 | `█░` in a gauge    | `LineGauge`'s filled / unfilled halves                                                                                                                                                                                                         |
 | `✓ ✗ —`            | affordable / cannot afford / not applicable                                                                                                                                                                                                    |
@@ -161,7 +161,8 @@ information per character.
 
 ### 4.1 A cell is a background swatch, not two coloured characters
 
-**Decided in [DECISIONS.md](DECISIONS.md).** A cell is two columns of *background*
+**Decided in [0105](decisions/0105-a-mine-cell-is-a-two-column-background-swatch-not-two.md).**
+A cell is two columns of *background*
 colour. The glyph channel is then free, and carries two things that never collide:
 
 - **the stipple `░░`** marks the mine's **value** cell, in both colour modes;
@@ -1023,11 +1024,12 @@ compressed any of it is wealthy and refused. The refusal remembers what it named
 **`M` has no cap to stop at, and the wording says so: `buy max`, not `buy to cap`.**
 Every other track ends at a ceiling — a maxed enchant, the last rung, richness 9 — so
 "as far as possible" terminates at something the game defines. The boost is the only
-uncapped sink in the economy (`organization/PRICES-FR.md` §Q10), so `M` here means
-*until the purse refuses*, and it can empty a Redstone reserve the enchant tracks are
-also paid from. Enoal's call, and taken with that consequence stated: `M` means the
-same thing on all four sub-tabs, and a key that behaved differently on one of them
-would be the harder thing to remember.
+uncapped sink in the economy
+([0121](decisions/0121-firing-onto-a-running-boost-asks-no-confirmation-and-m.md)), so
+`M` here means *until the purse refuses*, and it can empty a Redstone reserve the
+enchant tracks are also paid from. Enoal's call, and taken with that consequence
+stated: `M` means the same thing on all four sub-tabs, and a key that behaved
+differently on one of them would be the harder thing to remember.
 
 **The pane is the only one on this screen that says what to press next**, and that is
 forced by the split the core makes. Every other purchase here takes effect the moment
@@ -1618,7 +1620,7 @@ The split it settles into:
 - **The condition is displayed.** A one-row banner in `theme::REFUSED`, drawn directly
   above the footer on every screen, naming the cause: `Save failing: permission denied`.
   It is cleared when a write succeeds — which is the whole reason it is *not* a sticky
-  toast, since nothing ever leaves that buffer (§3.3) and retracting one would take its
+  toast, since nothing ever leaves that buffer (§5.5) and retracting one would take its
   own history entry with it.
 - **It yields the slot and takes it back.** A live toast covers the banner for its three
   seconds; when the toast expires the banner is simply true again, so it reappears with
@@ -1979,8 +1981,8 @@ worse than no aid. Help is also where the `✓` legend lives, since the glyph me
 
 ## 7. Spatial procs
 
-§3.5's second open item, untouched by §5 because a wireframe cannot draw an
-animation. Note what is **not** open: `c45ca03` settled the mechanics entirely —
+Untouched by §5, because a wireframe cannot draw an animation. Note what is **not**
+open: `c45ca03` settled the mechanics entirely —
 Explosive is a Chebyshev square (3x3 / 5x5 / 7x7 by band), Jackhammer a single
 full-width row, Nuke the whole grid, all three on a seeded proc, all three clipping
 themselves at holes and edges. The shapes exist and are deterministic. The only
@@ -2427,7 +2429,7 @@ never switches a sub-tab, and the sub-tab key is the configurable binding
 | Key | Action | Note |
 | --- | --- | --- |
 | `Tab` / `Shift+Tab` | ring forward / back | ratatui `Tabs` |
-| `1`..`6` | jump to screen N | six tabs since the Levels view (§5.7.5) |
+| `1`..`6` | jump to screen N | six tabs since the Levels view (§5.6) |
 | `Esc` | back to the Mine screen | **global, not shown** in footers, like `s` and `q`; lives in Help. Inside a modal it closes the modal instead — the box is offered every key first (§8.1) |
 | `?` | open Help | **shown in every footer** — the only place the hidden bindings below are discoverable |
 | `s` | open Settings | **global, not shown** in footers; lives in Help. It closes §6.10 as well as opening it, like `?` for Help — a key that leads nowhere else should be a toggle |
@@ -2446,11 +2448,11 @@ never switches a sub-tab, and the sub-tab key is the configurable binding
 | | `c` / `C` | compress / decompress |
 | **Upgrades** | `⇧←→` (configurable) | switch sub-tab (Pickaxe / Enchants / Mines / Boost) |
 | | `↑↓` | select row (preview is free on any row, §5.5) |
-| | `Enter` | buy the chain up to the cursor; refused past the `✓` prefix. A net power regression routes through the dip modal (§5.7.7) |
+| | `Enter` | buy the chain up to the cursor; refused past the `✓` prefix. A net power regression routes through the dip modal (§6.7) |
 | | `M` | buy max — to the end of the `✓` prefix |
 | **Stats** | `↑↓` | scroll history |
 | | `Home` | jump to the newest announcement |
-| | `p` | open the prestige preview (§5.7.8) |
+| | `p` | open the prestige preview (§6.8) |
 | **Levels** | `↑↓` | scroll |
 | | `Home` | jump to the current level |
 
@@ -2562,9 +2564,9 @@ than binding `c` in place (§6.4). No two bindings fight.
   §5.6 already spends on scrolling the history. Inventing a second navigation axis
   for a single action is how a keymap starts having modes.
   A plain lowercase `p` is safe because **it opens a read-only preview**, not the
-  reset: §5.7.8 is reachable at any time and is explicitly designed to be read long
+  reset: §6.8 is reachable at any time and is explicitly designed to be read long
   before it is usable, and the irreversible step is two modals away behind typed
-  confirmation (§5.7.9). The guard belongs on the act, not on the door to the
+  confirmation (§6.9). The guard belongs on the act, not on the door to the
   information about the act.
   **Consequence, applied:** §5.6's Stats footer becomes
   `↑↓  scroll history · Home  newest · p  prestige · ?  help` — `Tab` having since been
@@ -2627,7 +2629,9 @@ Two consequences the mode makes explicit rather than inherits:
   and by voice — long enough that a present player never meets it, audible when it does
   fire. It is not an anti-cheat measure (a strip of tape over `Space` defeats any bound);
   what it protects is the balance distinction between active play and idle accrual.
-  `docs/DECISIONS.md` has both halves.
+  [0096](decisions/0096-an-accessibility-toggle-space-starts-stops-with-a-15-s.md) and
+  [0153](decisions/0153-an-unbounded-accessibility-toggle-no-inactivity-cutoff.md) have
+  the two halves.
 
 On a terminal without the release protocol the *stop* tap needs about a second after the
 start tap, since the window has to lapse before it can rise again. §6.10's pane says so,
@@ -2699,10 +2703,10 @@ workspace lints to crates that opt in.
 
 ## 11. What the UI requires of the core
 
-These are **requirements**, stated next to the screen that spends them. Whether each
-is built, and in which phase, is tracked in `organization/TODO-CORE-EN.md`, which is
-authoritative for scheduling. **On disagreement, the TODO wins for the task list and
-this document wins for the signature** — and a disagreement is a bug to reconcile.
+These are **requirements**, stated next to the screen that spends them. Which phase
+built each is [PHASES.md](PHASES.md)'s subject; whether it exists at all is the
+**Status** column below. **This document is authoritative for the signature** — and a
+disagreement between the two is a bug to reconcile, not a precedence to look up.
 
 | Query | For | Phase | Status |
 | --- | --- | --- | --- |
@@ -2720,7 +2724,7 @@ this document wins for the signature** — and a disagreement is a bug to reconc
 | `Block::ticks_to_break(power)`, `Pickaxe::power_with(tier, eff)` | the dip in ticks per block, and a rung the player does not own (§5.4, §6.7) | 6 | **done** — `TICKS_PER_HARDNESS` was private to `mine`, and `Enchants::upgrade` is `pub(crate)`, so the front-end could compute neither |
 | `EnchantType::ALL`, `GameState::buy_pickaxe_chain` / `buy_enchant` / `buy_mine_size(kind)` / `buy_mine_richness(kind)` | the first three sub-tabs and their purchases (§5.4) | 6 | **done** — the two mine doors take a `MineKind`, since the cursor may sit on a mine the player is not standing in |
 | `GameState::buy_boost_charge` / `fire_boost` / `boost_charges`, `economy::boost_cost` | the fourth sub-tab, and `b` on the Mine screen (§5.4.4, §5.1) | — | **already public, and unused for two phases** — the core shipped both doors with the reserve and the timer, and nothing called them; this row exists so the next such gap is visible before it is a chantier |
-| `loot_for_level(n)` / `xp_for_level(n)` | the Levels roadmap (§5.7.5) | 6 | new |
+| `loot_for_level(n)` / `xp_for_level(n)` | the Levels roadmap (§5.6) | 6 | new |
 | `tick(&mut self, input) -> Vec<GameEvent>` | toasts, history, the proc flash — **all of them** (§5.5) | 7 | **done** — the front-end drives it from a 20 tps deadline (§10.1) and words each event in `announce` |
 | spatial `Event`s carrying **their cell list** | the proc flash (§7) | 7 | **done** — plus `broken`, a count the list could not stand in for: the shape includes ground already dug, so the toast and the flash need different numbers (§7) |
 | `tunables::TICKS_PER_SECOND` | the simulation deadline (§10.1) | 7 | **already public** — read rather than mirrored: a front-end spelling `50 ms` would give the tick rate a second definition that no balance pass can see |

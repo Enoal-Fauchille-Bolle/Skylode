@@ -449,7 +449,7 @@ impl Player {
     /// it across a prestige becomes a deliberate edit to this line. Written the other
     /// way — assigning each field back to its starting value — the field somebody
     /// forgets is the one that survives the reset, silently, which is exactly the
-    /// leak `docs/DECISIONS.md` closes for a mine's richness. `..` also makes the
+    /// leak `docs/decisions/0058` closes for a mine's richness. `..` also makes the
     /// compiler no help at all otherwise: an omitted field is not an error, it is a
     /// field left alone.
     ///

@@ -62,7 +62,7 @@ pub(crate) const MAX_XP_VALUE: u32 = 72;
 /// instamines Stone* — there is no progressive breaking left to speak of.
 ///
 /// **Not a tunable, for the reason the batch-reset threshold is not one.** It is
-/// what makes `DECISIONS.md`'s "1:1 fidelity to Minecraft is kept for hardness"
+/// what makes `docs/decisions/0018`'s "1:1 fidelity to Minecraft is kept for hardness"
 /// true in practice: the hardness table is only worth porting one-to-one if the
 /// break *times* come out one-to-one too, and this is the factor that decides
 /// that. Moving it does not tune the game, it revokes the decision. A balance pass
@@ -166,7 +166,7 @@ impl Block {
     /// kind and its dial, never a grid of block names.
     ///
     /// Read by the Mine screen, whose Break gauge is labelled with the block being
-    /// dug (`organization/UI-EN.md` §5.2). That caller reads the name off the grid
+    /// dug (`docs/UI.md` §5.1). That caller reads the name off the grid
     /// cell the target points at rather than storing it, so a name can never
     /// disagree with the cell it is drawn over.
     pub fn name(self) -> &'static str {
@@ -209,7 +209,7 @@ impl Block {
     /// scale makes every block in the game an instamine.
     ///
     /// The values are Minecraft's, exactly (Stone `1.5`, Obsidian `50.0`) — this is
-    /// the one table `DECISIONS.md` keeps 1:1, which is what lets the break times
+    /// the one table `docs/decisions/0018` keeps 1:1, which is what lets the break times
     /// come out 1:1 too and spares us re-deriving a balance pass Mojang already did.
     /// The *dense* forms are the exception, tougher than their ore counterparts —
     /// that toughness is what they cost you for the nine items they give back.
@@ -224,7 +224,9 @@ impl Block {
     /// reason to exist — a maxed pickaxe farms the End several times faster than a bare
     /// one — and gives the endgame the teeth the mono-mine grind used to supply. Both
     /// stay far below Ancient Debris' `30` and Obsidian's `50`, so the instamine
-    /// threshold the Redstone boost guards is untouched. See `docs/DECISIONS.md`.
+    /// threshold the Redstone boost guards is untouched. See `docs/decisions/0018` for
+    /// the fidelity rule this departs from, and `docs/decisions/0016` for what
+    /// Efficiency `6..=15` is for.
     pub fn hardness(self) -> f32 {
         match self {
             Self::Stone => 1.5,
@@ -346,7 +348,7 @@ impl Block {
     /// per grid and per second *with* a boost; it does not hold per second without
     /// one, because Ancient Debris and Obsidian take 67 and 70 seconds a grid where
     /// every other mine takes ten. That is the gap the boost exists to close
-    /// (`docs/DECISIONS.md`), so the one regime where the order breaks is the one the
+    /// (`docs/decisions/0040`), so the one regime where the order breaks is the one the
     /// player is meant to spend Redstone on.
     ///
     /// Read by [`Player::grant_break_experience`](crate::player::Player), which is

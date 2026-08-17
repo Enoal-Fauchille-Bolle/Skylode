@@ -68,7 +68,7 @@ const GAUGE_LABEL_WIDTH: usize = 32;
 ///
 /// Frozen rather than flexed, and it is what pins the counted frame: with the four
 /// fixed bands taking 11 of the 23 body rows, the middle band is left with the 12
-/// UI-EN.md §4.2 counted. It is also where a toast lands, which is why the gap is
+/// rows that remain. It is also where a toast lands, which is why the gap is
 /// four rows and not zero — a three-row toast needs somewhere to sit that is not on
 /// top of a gauge.
 const SPACER_ROWS: u16 = 4;
@@ -127,7 +127,7 @@ fn haul(frame: &mut Frame, area: Rect, view: &View) {
 /// total of 540 Netherrack and 73 Quartz. Adding them would invent an exchange rate
 /// the game does not have; quoting one and not the other would pick a favourite
 /// between the material that funds the mine's growth and the one it exists to
-/// produce. The three-row box is fixed (`organization/UI-EN.md` §5.2), so this has
+/// produce. The three-row box is fixed (`docs/UI.md` §5.1), so this has
 /// one line whichever shape it takes, and the grid below never moves.
 ///
 /// **The composite is flush right rather than eight spaces along**, which is the one
@@ -173,7 +173,7 @@ fn haul_line(haul: &HaulView, width: usize, format: NumberFormat) -> String {
 /// The holdings [`haul_line`] guarantees will fit the strip, as `(raw, compressed)`.
 ///
 /// **A stated bound, not a discovered one.** The strip is a fixed three-row box on
-/// every mine (`organization/UI-EN.md` §5.2) — that is what keeps the grid below it
+/// every mine (`docs/UI.md` §5.1) — that is what keeps the grid below it
 /// from moving — so the line inside cannot wrap, and something has to give at some
 /// number. Roughly six hundred thousand in raw value is where this design draws it.
 ///
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn the_counted_band_is_twelve_rows_at_the_reference_size() {
         // **23 rows, not 24**: that is what the app hands this screen once the tab
-        // bar has taken its own, and the twelve-row band UI-EN.md §4.2 counted is a
+        // bar has taken its own, and the twelve-row band left over is a
         // fact about *that* area. The four fixed bands take 11 of the 23 and `Fill`
         // is left with 12 — rows 3..=14, the Haul strip occupying 0..=2 above it.
         let (top, bottom) = grid_box_rows(&render_sized(80, 23));
@@ -574,7 +574,7 @@ mod tests {
     #[test]
     fn a_taller_terminal_grows_the_panel_but_never_the_mine() {
         // Enoal's rule, as two assertions: the reserved area breathes, the mine does
-        // not. Mine size is a game constant per mine (UI-EN.md §4.1), so a window
+        // not. Mine size is a game constant per mine (`docs/UI.md` §1), so a window
         // that could change it could change balance.
         let counted = render_screen();
         let tall = render_sized(80, 48);

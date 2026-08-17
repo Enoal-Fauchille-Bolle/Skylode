@@ -93,7 +93,7 @@ sha2 = "0.11.0"
 # never reaches its `persist` leaves nothing behind. `TempDir` then serves the tests.
 tempfile = "3.27.0"
 
-# Where the one file goes on each platform (`docs/DECISIONS.md`). Hand-rolling the
+# Where the one file goes on each platform (`docs/decisions/0113`). Hand-rolling the
 # lookup is ten lines on Linux and wrong on macOS and Windows, and a partial
 # reimplementation of a standard is more fragile than none because it looks correct.
 directories = "6.0.0"

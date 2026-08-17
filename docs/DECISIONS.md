@@ -5,8 +5,8 @@
 It was a single table of 154 rows whose lines averaged 524 characters and ran to
 2 028 at the longest. At that width `git diff` reports *"this line changed"* about a
 paragraph, so the ledger could not be reviewed, and a decision revisited had nowhere
-to go but on top of the one it replaced. It is now 154 numbered records, wrapped, each
-carrying its status and its cross-references, indexed in
+to go but on top of the one it replaced. It is now one numbered record per decision,
+wrapped, each carrying its status and its cross-references, indexed in
 [decisions/README.md](decisions/README.md).
 
 Nothing was dropped: every verdict and every argument moved across intact, including

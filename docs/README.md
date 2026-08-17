@@ -9,10 +9,11 @@ alphabetical accidents; the questions below are not.
 | --- | --- |
 | **understand what the game is** | [DESIGN.md](DESIGN.md) — the concept, the loop, what each screen is for |
 | **know the exact rule** | [MECHANICS.md](MECHANICS.md) — mining, worlds, pickaxe, enchants, prestige |
+| **know the order a swing resolves in** | the rustdoc on `GameState::resolve_swing` — five steps, three of them fixed |
 | **know the exact number** | [BALANCE.md](BALANCE.md) — every price, generated from the code |
 | **know what is on screen** | [UI.md](UI.md) — screens, overlays, keys, counted frames |
 | **know how it is built** | [SYSTEMS.md](SYSTEMS.md) — the save format, the tick loop, the module map |
-| **know *why* it is like that** | [decisions/](decisions/) — 154 numbered records, one per decision |
+| **know *why* it is like that** | [decisions/](decisions/) — one numbered record per decision |
 | **change something** | [guides/](guides/) — the recipe for each kind of change |
 | **reach a state a test cannot play to** | [DEV-MENU.md](DEV-MENU.md) |
 | **know what is left** | [ROADMAP.md](ROADMAP.md) — MVP scope and what is deferred |

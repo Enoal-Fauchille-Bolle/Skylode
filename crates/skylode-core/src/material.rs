@@ -214,7 +214,7 @@ impl Material {
 ///   that shape: a player holding 650 raw Iron is *refused* until they compress.
 ///   That refusal is what makes compressing a step in the upgrade path rather
 ///   than a cosmetic button, and it costs nothing to clear, since the conversion
-///   is free and reversible. See `docs/DECISIONS.md`.
+///   is free and reversible. See `docs/decisions/0025`.
 ///
 /// Distinct again from a *dense block* (`IronBlock`, `Cobblestone`): that is a
 /// grid cell you mine, which is tougher and drops nine **raw** items. Nine, not

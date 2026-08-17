@@ -78,7 +78,7 @@ pub(crate) const MAX_CELLS: u64 = {
 ///
 /// **Now `pub`, and the front-end is why.** The Mine panel prints `Richness  level
 /// 6 / 9` and the Mines detail pane draws the dial against the same ceiling
-/// (`organization/UI-EN.md` §5.2, §5.3), so a crate that could not see this number
+/// (`docs/UI.md` §5.1, §5.2), so a crate that could not see this number
 /// had to mirror it — and a mirrored ceiling is one that goes on printing `/ 9`
 /// after phase-10 balance moves it, with no test anywhere able to notice. There is
 /// no matching read for [`get_richness_level`](Mine::get_richness_level)'s
@@ -326,7 +326,7 @@ impl Mine {
     /// the generator's business.
     ///
     /// Two readers, both of which would otherwise have to reinvent the curve:
-    /// `organization/UI-EN.md` §5.2 prints this beside the mine, and the auto-miner
+    /// `docs/UI.md` §5.1 prints this beside the mine, and the auto-miner
     /// weights its closed-form payout by it — the one place in the game where the
     /// *expected* composition stands in for a grid nobody walks.
     ///
@@ -382,7 +382,7 @@ impl Mine {
     ///
     /// The free re-roll this leaves open — wiggling the dial until the value cells
     /// happen to line up under an Explosive — is knowingly accepted for the MVP:
-    /// single-player, offline, no leaderboard. See `DECISIONS.md`.
+    /// single-player, offline, no leaderboard. See `docs/decisions/0057`.
     ///
     /// **The progress on the targeted cell is forfeit**, though the aim is not: the
     /// cell still stands, so the player keeps pointing at it, but whatever block
@@ -602,7 +602,7 @@ impl Mine {
     ///
     /// **Returns one [`SpatialProc`] per enchant that fired, not one flat list of
     /// blocks.** A flat list answers "what did the swing pay?" and nothing else,
-    /// and the front-end needs more than that: `organization/UI-EN.md` §5.9 draws a
+    /// and the front-end needs more than that: `docs/UI.md` §7 draws a
     /// per-enchant flash over *the cells that blast covered*, so an event carrying
     /// only a count would leave it re-deriving the shape from the enchant level and
     /// the grid — a second copy of [`blast_cells`](crate::enchant::EnchantType)
@@ -866,7 +866,7 @@ impl Mine {
     /// that is the entire reason it is public. A run creates its mines *lazily*, on
     /// first entry ([`GameState`](crate::game::GameState)), so eleven of the twelve
     /// have no [`Mine`] at all until the player walks in; the Mines screen
-    /// nevertheless prints a size on every row (`organization/UI-EN.md` §5.3), and
+    /// nevertheless prints a size on every row (`docs/UI.md` §5.2), and
     /// `size_for_level(0)` is what it asks for those. The alternative was to build
     /// all twelve grids up front — twelve draws from the generator for mines a run
     /// may never open — or to copy the table into the front-end.

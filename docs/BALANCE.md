@@ -14,7 +14,7 @@ Every price in the game, in the denominations the till demands them in.
 > A hand-kept predecessor of this table went stale the day phase 10 replaced
 > one cost slope with four; this one cannot. The *rules* these prices
 > implement live in [MECHANICS.md](MECHANICS.md), and the *reasons* behind
-> them in [DECISIONS.md](DECISIONS.md).
+> them in [decisions/](decisions/).
 
 ## The parameters every price is generated from
 

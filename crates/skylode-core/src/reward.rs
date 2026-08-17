@@ -87,7 +87,7 @@ pub enum Payout {
     /// principal, abundant, scarce, then Emerald when the level earns it.
     ///
     /// **Always [`Raw`](Item::Raw), never [`Compressed`](Item::Compressed).** Compressed
-    /// units are minted by the player, by hand, and `docs/DECISIONS.md` keeps that a
+    /// units are minted by the player, by hand, and `docs/decisions/0013` keeps that a
     /// deliberate step rather than a cosmetic button; handing over ready-made ones
     /// would quietly do it for them. Since
     /// [`compress`](crate::inventory::Inventory::compress) is free and lossless both
@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(total, 10);
     }
 
-    /// The three levels the UI spec draws in `organization/UI-EN.md` §5.7.5, one per
+    /// The three levels the UI spec draws in `docs/UI.md` §6.5, one per
     /// Overworld band edge and one mid-Nether. They also pin the rounding decision: at
     /// level 23 the three lines come to 229 of a 230 budget, because each share is
     /// floored on its own rather than the principal taking a remainder.
@@ -558,7 +558,7 @@ mod tests {
     }
 
     /// The denomination decision, asserted where it can be broken. Compressed units are
-    /// the player's to mint (`docs/DECISIONS.md`); a reward that handed them over
+    /// the player's to mint (`docs/decisions/0013`); a reward that handed them over
     /// ready-made would do that step for them.
     #[test]
     fn every_bundle_is_credited_in_raw_only() {
@@ -599,9 +599,9 @@ mod tests {
     }
 
     /// **The ledger.** Every bundle of a full run, accumulated per material and checked
-    /// against `organization/PRICES-FR.md` D-13 — the totals the balance pass was
-    /// argued from, and the reason the rewards are believed to be ~3 % of what a run
-    /// must buy rather than an income.
+    /// against the totals the balance pass argued from — the ~3 % of everything a run
+    /// must buy that `docs/MECHANICS.md` §Level-up rewards states, which is what makes
+    /// the bundles an opening hand rather than an income.
     ///
     /// If this fails, the question is not "what are the new numbers?" but "what did we
     /// just change about the reward model?" — the same standing this crate gives its

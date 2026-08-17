@@ -46,7 +46,9 @@ Inventory, Upgrades and Levels share five actions instead of adding five apiece.
 2. **Put the modal's own state *in the variant*.** `Compress { material, direction,
    units }`, `Settings { row }`. Two facts that only mean anything together are stored
    together, so *"a count of 12 with no dialog open"* is a state nobody can write down.
-   Keep the payload `Copy` so `Modal` stays `Copy`.
+   The payload needs `Clone` and nothing more: `Modal` stopped being `Copy` when the
+   prestige confirm started carrying the text the player types, and `Modal`'s own
+   rustdoc argues what that cost.
 3. **`keymap`'s rule 2 gives a modal first refusal on every key.** You get `Esc` and the
    menu gestures for free; that layering is also why the first `Esc` closes the box and
    only the second is decoded to `Action::ToMine`.

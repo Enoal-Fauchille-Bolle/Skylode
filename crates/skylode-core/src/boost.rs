@@ -218,7 +218,7 @@ impl Boost {
     /// is.** A refusal in the core would make "fire while one runs" unrepresentable
     /// everywhere, front-end included; extending leaves the *rule* permissive and
     /// lets the interface put a confirmation in front of it — the same split
-    /// `organization/UI-EN.md` §5.9 draws for the proc flash, where the core hands
+    /// `docs/UI.md` §7 draws for the proc flash, where the core hands
     /// over the data and the wall-clock experience lives outside.
     ///
     /// `saturating_add` for [`tick`](Boost::tick)'s reason run the other way: a

@@ -85,7 +85,7 @@ impl MiningInput {
 
 /// How a figure's thousands are grouped.
 ///
-/// **Only the separator is a preference; abbreviation is not.** `docs/DECISIONS.md`
+/// **Only the separator is a preference; abbreviation is not.** `docs/decisions/0090`
 /// settles that numbers are exact and never shortened, because the composite
 /// denomination exists so the player can check a purchase in their head and
 /// *"I have 1.2M, the cost is 1.23M, can I?"* is unanswerable. So this enum offers

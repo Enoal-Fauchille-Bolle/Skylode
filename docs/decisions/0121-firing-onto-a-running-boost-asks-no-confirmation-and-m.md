@@ -20,8 +20,8 @@ interface was reasoned about when a second charge *replaced* the first, where fi
 sensible answer is yes is a keypress. The same addition is what makes a held `b`
 harmless — auto-repeat is byte-for-byte a fresh press under the legacy encoding and
 cannot be filtered, so the reserve is spent early and none of it is destroyed. `M`
-follows from the boost being the only uncapped sink in the economy
-(`organization/PRICES-FR.md` §Q10): "as far as possible" stops at the purse rather than
-at a ceiling, and can empty a Redstone reserve the enchant tracks are also paid from.
+follows from the boost being **the only uncapped sink in the economy** — every other
+track ends at a ceiling the game defines, and this one ends at the purse: "as far as
+possible" can empty a Redstone reserve the enchant tracks are also paid from.
 Taken with that stated: one meaning for `M` on all four sub-tabs beats an exception on
 one.

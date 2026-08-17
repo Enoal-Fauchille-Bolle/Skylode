@@ -149,6 +149,13 @@ divisor — 100, for mining without the right tool — has no counterpart here: 
 [mine gating table](#mine-gating-table) refuses a block below the required tier
 outright rather than letting the player chip at it.
 
+**A swing is more than a break, and its order has one home.** Impact, then the spatial
+procs, then XP over every block the swing brought down, then loot, then the refill —
+the rustdoc on `GameState::resolve_swing` states the five steps and which three cannot
+be reordered. It is deliberately not repeated here: that order was once written across
+eight files in three different truncations, none of which announced itself as partial,
+and this document was one of the eight.
+
 ### One block at a time
 
 There is a single `break_progress` counter. The targeted block is a random
@@ -213,7 +220,8 @@ Obsidian and Ancient Debris of the endgame. Minecraft exempts anything that drop
 itself, which would leave Fortune inert precisely where
 [post-instamine progression](#post-instamine-progression) needs it, and would make
 [richness](#mine-richness) shrink Fortune's reach rather than scale it. The 1:1
-fidelity to Minecraft is kept for hardness only — see [DECISIONS.md](DECISIONS.md).
+fidelity to Minecraft is kept for hardness only — see
+[0018](decisions/0018-break-time-is-ceil-30-hardness-mining-power-minecraft.md).
 
 ### XP
 
@@ -450,7 +458,8 @@ gating tier). This is the list the `MineKind` registry encodes.
 
 The eight Overworld mines are pure same-material (ore + dense form): an Overworld
 ore mine never has filler as its common cell, or unlocking it would drop the player
-into breaking mostly-valueless Stone (see [DECISIONS.md](DECISIONS.md)). The Nether
+into breaking mostly-valueless Stone (see
+[0051](decisions/0051-an-overworld-ore-mine-s-common-cell-is-the-ore-itself.md)). The Nether
 Quartz mine is the one place Netherrack — otherwise the sole material with no
 economic function — earns a role: it is that mine's common cell and its growth
 currency, with Quartz Ore as the value. Netherrack and Quartz gate behind Diamond,
@@ -688,7 +697,10 @@ Non-spatial enchants (qualitative on another axis):
 Dropped or merged: Drill (a column dominated by the row), Laser (merged into
 Jackhammer), a true Vein Miner (needs mixed-content mines, and mixed content now
 exists but Vein Miner was still dropped), and Lucky-Strike / Overclock (variance
-and gambling feel, rejected). See [DECISIONS.md](DECISIONS.md).
+and gambling feel, rejected). See
+[0143](decisions/0143-drill-and-laser-enchants.md),
+[0144](decisions/0144-lucky-strike-overclock-enchants.md) and
+[0145](decisions/0145-true-vein-miner.md).
 
 ### Enchant parameters (to tune at implementation)
 

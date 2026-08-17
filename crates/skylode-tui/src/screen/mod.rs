@@ -1,6 +1,6 @@
 //! The six tabs of the ring, and the dispatch to each.
 //!
-//! The ring is UI-EN.md §6.1: `Tab` cycles forward, `Shift+Tab` back, `1`..`6`
+//! The ring is `docs/UI.md` §2.1: `Tab` cycles forward, `Shift+Tab` back, `1`..`6`
 //! jump. Everything else in the design hangs off one of these six.
 //!
 //! **The counted widths are the `Fill` weights.** Every side-by-side split on these
@@ -386,7 +386,7 @@ mod tests {
     fn a_stored_offset_survives_a_redraw_that_did_not_need_to_move_it() {
         // The property the counted 80×24 frames depend on: with the cursor already
         // inside the window, `window` hands back exactly the slice the view asked
-        // for. If this ever fails, every wireframe in UI-EN.md §5 has moved.
+        // for. If this ever fails, every wireframe in `docs/UI.md` §5 has moved.
         assert_eq!(window(46, 30, 27, 19), 27..46);
     }
 

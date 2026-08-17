@@ -2,7 +2,7 @@
 //!
 //! This is the one place that knows about `KeyCode`. Everything downstream speaks
 //! [`Action`], which is what keeps [`crate::app::App::update`] testable without a
-//! terminal. It is also where UI-EN.md §9's configurable sub-tab binding will
+//! terminal. It is also where `docs/UI.md` §9's configurable sub-tab binding will
 //! land: one function to change, not a `match` scattered across six screens.
 //!
 //! **Three functions and not one**, because the game is no longer the only thing on

@@ -675,7 +675,7 @@ impl GameState {
     /// ceiling.
     ///
     /// Takes a [`MineKind`] because the screen that moves the dial is not the screen
-    /// the player digs on: `organization/UI-EN.md` §5.3 draws the dial of the mine
+    /// the player digs on: `docs/UI.md` §5.2 draws the dial of the mine
     /// under the *cursor*, which is routinely one the player left. Forwards to
     /// [`Mine::set_richness_setting`], which owns the rule and the redraw; this is
     /// here at all because the dial needs the generator, and the generator is this
@@ -842,7 +842,7 @@ impl GameState {
     /// ceiling is a deliberate position — the substitution mines (Quartz, Obsidian,
     /// End) trade a rarer ore for a slower grid, so "less enriched" is a legitimate
     /// setting and one the Efficiency recipe even has an *optimum* for
-    /// (`docs/DECISIONS.md`). Pushing that dial would overrule a choice; pushing a
+    /// (`docs/decisions/0052`). Pushing that dial would overrule a choice; pushing a
     /// pinned one only continues it. Note that a fresh mine (dial 0, ceiling 0)
     /// satisfies the condition, so the first rung always carries.
     ///
@@ -925,7 +925,7 @@ impl GameState {
     /// Iron + 50 Iron` must be paid in that shape, and a player holding 650 raw is
     /// refused until they come here and mint the units themselves. A purchase path
     /// that called this on their behalf would make the refusal a formality — see
-    /// `organization/UI-EN.md` §6.4, where that option is rejected by name.
+    /// `docs/UI.md` §8.4, where that option is rejected by name.
     ///
     /// Thin, like the five `buy_*` doors above: the rule and the arithmetic live in
     /// [`Inventory::compress`](crate::inventory::Inventory::compress), and a second
@@ -999,11 +999,11 @@ impl GameState {
     /// - **A backward clock yields [`None`] and changes nothing.** DST, a timezone
     ///   change and an NTP correction all produce one, and none of them is cheating,
     ///   so `elapsed` clamps to zero and the player is neither penalised nor
-    ///   flagged. `None` is exactly the shape §5.7.4 wants: it *skips the modal
+    ///   flagged. `None` is exactly the shape §6.4 wants: it *skips the modal
     ///   entirely*, because "welcome back, +0" after a DST change is a support ticket
     ///   about a bug that is not one. The stderr line `docs/MECHANICS.md` asks for
     ///   belongs to the front-end — core has no I/O.
-    /// - **No elapsed time yields [`None`] too.** The condition §5.7.4 draws on is
+    /// - **No elapsed time yields [`None`] too.** The condition §6.4 draws on is
     ///   `elapsed > 0`, not "we relaunched", so a run resumed a moment after it was
     ///   written says nothing rather than announcing a zero.
     /// - **A long absence is capped at [`OFFLINE_CAP`], and says so.** A clock set
@@ -1058,7 +1058,7 @@ impl GameState {
     /// inputs, same outcome, on any machine and after any reload.
     ///
     /// **It returns events rather than only mutating**, and that is a requirement
-    /// from the front-end, not a convenience (`organization/UI-EN.md` §5.6). A
+    /// from the front-end, not a convenience (`docs/UI.md` §5.5). A
     /// caller that has to *diff the state between frames* to notice an Excavator
     /// proc is guessing: it misses two procs landing in one tick, and it cannot tell
     /// a `+1 Compressed Iron` earned from one the player minted by hand. Six
@@ -1327,7 +1327,7 @@ impl GameState {
     /// from [`value_weight_percent`](Mine::value_weight_percent) rather than
     /// sampling cells. That is what leaves the generator's position a function of
     /// the player's swings alone, and it is also why the spatial enchants and the
-    /// Excavator are unreachable from here — `docs/DECISIONS.md` settles that procs
+    /// Excavator are unreachable from here — `docs/decisions/0009` settles that procs
     /// fire on active mining only, and a path that cannot draw cannot proc.
     ///
     /// **It grants no experience.** Ore opens pickaxes and levels open worlds, and
@@ -1562,7 +1562,7 @@ fn entry(list: &mut Vec<(Item, u32)>, item: Item) -> &mut u32 {
 /// What an absence produced, for the "welcome back" the player is owed.
 ///
 /// **It shows the multiplication.** `rate × elapsed` is the entire mechanic, so
-/// `organization/UI-EN.md` §5.7.4 prints both factors and the product — a number
+/// `docs/UI.md` §6.4 prints both factors and the product — a number
 /// the player can check in their head is a number they trust. The report therefore
 /// carries `blocks` and both durations rather than only the loot.
 ///
@@ -1604,7 +1604,7 @@ pub struct Input {
 /// Something that happened inside a [`tick`](GameState::tick) and that the player
 /// is owed an announcement about.
 ///
-/// **Not a log of everything.** The set is `docs/DECISIONS.md`'s list of mechanics
+/// **Not a log of everything.** The set is `docs/decisions/0086`'s list of mechanics
 /// that need an announcement, and nothing else: an ordinary break is already
 /// visible in the inventory and the progress bar, so it emits nothing. One buffer
 /// serves both the 3-second toast and the Stats history, which is what makes
@@ -1630,8 +1630,8 @@ pub enum GameEvent {
     },
     /// A spatial enchant fired, and these are the cells its shape covered.
     ///
-    /// **`cells`, not a count**, and that is a hard requirement from `UI-EN.md`
-    /// §5.9: the front-end paints the blast over the grid, and a `{ blocks: 200 }`
+    /// **`cells`, not a count**, and that is a hard requirement from `docs/UI.md`
+    /// §7: the front-end paints the blast over the grid, and a `{ blocks: 200 }`
     /// leaves it re-deriving the geometry from the enchant level — a second copy of
     /// [`blast_cells`](crate::enchant::EnchantType) living in the wrong crate.
     ///
@@ -2667,7 +2667,7 @@ mod tests {
     ///
     /// The position is a real one to hold. On the three substitution mines a lower
     /// dial buys a faster grid, and Netherite's Efficiency recipe has an *optimum*
-    /// share rather than a maximal one (`docs/DECISIONS.md`) — so "less enriched" is a
+    /// share rather than a maximal one (`docs/decisions/0052`) — so "less enriched" is a
     /// choice, and a purchase may not overrule it.
     #[test]
     fn buying_a_richness_ceiling_leaves_a_dial_below_it_where_the_player_put_it() {
@@ -5657,7 +5657,7 @@ mod tests {
     /// means the regression it protects against is invisible from the floor: restore
     /// `NETHERITE_ENHANCEMENT_COST_GROWTH` to the shared `1.45` and the speedrunner still
     /// prestiges at 1.0 h, dead on, while the completionist quietly goes back to 5.4 h. A
-    /// band described in `DECISIONS.md` was being held at one end.
+    /// band described in `docs/decisions/0030` was being held at one end.
     #[test]
     fn the_completionist_ceiling_stays_inside_its_window() {
         // 1.5 h to 4 h at 20 tps. The measured run sits at ~2.3 h, and the upper bound is
@@ -5698,7 +5698,7 @@ mod tests {
     /// inversion is deliberate. The wall was content the player could not use: the harness
     /// measured the rank-10 run spending 3.4 of its 3.5 hours banking, with the entire game
     /// — twelve mines, six tiers, both progression axes — traversed in the remaining six
-    /// minutes. See `docs/DECISIONS.md`.
+    /// minutes. See `docs/decisions/0070`.
     ///
     /// **Asserted per phase, and as a shape rather than as values.** Per phase because the
     /// two are pulled in opposite directions on purpose and a total can hide both moving:

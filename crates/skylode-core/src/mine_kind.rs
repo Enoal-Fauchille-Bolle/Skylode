@@ -28,7 +28,7 @@
 //! An Overworld ore mine must never have worthless filler as its common cell: the
 //! Iron mine is Iron Ore, not Stone with iron veins, or unlocking it would drop
 //! the player into breaking mostly-valueless Stone and stall progression at the
-//! moment it should accelerate (see `docs/DECISIONS.md`). That rule is about
+//! moment it should accelerate (see `docs/decisions/0051`). That rule is about
 //! *pace*, and it binds where pace is fragile — the Overworld tier ladder. It does
 //! not forbid a themed common cell elsewhere: the Nether's Quartz mine is
 //! `Netherrack` (common) plus `QuartzOre` (value). Netherrack, otherwise the one
@@ -93,7 +93,7 @@ impl MineKind {
     /// **Public, unlike the `ALL_*` constants the other tables keep for their own
     /// tests**, because a front-end has to *list* the twelve: the Mines screen draws
     /// one row per mine grouped under three world headers
-    /// (`organization/UI-EN.md` §5.3), and it cannot ask the enum to enumerate
+    /// (`docs/UI.md` §5.2), and it cannot ask the enum to enumerate
     /// itself. The alternative was a twelve-entry array copied into `skylode-tui`,
     /// which is exactly the second copy this module spends its every method
     /// avoiding.
@@ -261,7 +261,7 @@ impl MineKind {
 ///
 /// **A "why", not a bool.** A closed door the front-end can only render as
 /// *locked* is a dead end; the Mines screen prints `Lv 30` beside the End mine
-/// (`organization/UI-EN.md` §5.3), so the core owes the requirement itself.
+/// (`docs/UI.md` §5.2), so the core owes the requirement itself.
 ///
 /// **Two independent [`Option`]s, not an enum of cases**, because the two axes
 /// are independent and the interface treats them so: the detail pane draws them
@@ -496,7 +496,7 @@ mod tests {
     /// The level axis alone, isolated by handing the player a pickaxe that already
     /// clears the tier gate (Netherite, which the End mine now needs): one level
     /// short of the End they are held by the *world* and nothing else — the state
-    /// `UI-EN.md` §5.3 draws, and the reason the lock names a level rather than a
+    /// `docs/UI.md` §5.2 draws, and the reason the lock names a level rather than a
     /// bare "locked".
     #[test]
     fn a_mine_in_a_shut_world_owes_only_a_level() {

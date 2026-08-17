@@ -1,6 +1,6 @@
 //! Ephemeral announcements drawn over the current screen.
 //!
-//! UI-EN.md §3.3: no screen owns announcements, and six specified mechanics need
+//! `docs/UI.md` §2.2: no screen owns announcements, and six specified mechanics need
 //! one. The design settles them as a 2–3 s overlay at the bottom of whatever
 //! screen you are on, with the full history kept in Stats — *one buffer, two
 //! renderings*, which is what makes "ephemeral plus history" a single feature.

@@ -461,7 +461,7 @@ mod tests {
     /// **The three choices punctuate the same digits and lose none of them.**
     ///
     /// The second assertion is the load-bearing one and the reason it is written as a
-    /// filter rather than as three literals: `docs/DECISIONS.md` settles that a figure
+    /// filter rather than as three literals: `docs/decisions/0090` settles that a figure
     /// is never abbreviated, so whatever the player picks, stripping the punctuation
     /// has to give back the number itself. A format that rounded, truncated or shortened
     /// would pass any single `assert_eq!` against a hand-written expectation and fail

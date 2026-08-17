@@ -30,7 +30,7 @@
 //!
 //! Costs are quoted, and must be paid, in both raw and Compressed — `6 Compressed
 //! Iron + 50 Iron`, never the flat `650 Iron` the same value would make (see
-//! [`Item`] and `docs/DECISIONS.md`). So a [`CostLine`] is not "how much of a
+//! [`Item`] and `docs/decisions/0023`). So a [`CostLine`] is not "how much of a
 //! material" but "how much in each denomination of it", and the split is fixed by
 //! [`RAW_PER_COMPRESSED`].
 //!
@@ -538,7 +538,7 @@ pub(crate) const FUEL_SCARCE_PERMILLE: u32 = 150;
 /// **Two callers, one table.** [`reward`](crate::reward) reads it at the *band* a
 /// mining level falls in, so a level-up pays out the materials an enchant of that rung
 /// charges. Sharing the table rather than mirroring it is what makes a re-balance of
-/// the fuel move price and reward in a single edit — see `docs/DECISIONS.md`.
+/// the fuel move price and reward in a single edit — see `docs/decisions/0012`.
 pub(crate) fn enchant_fuel(level: u8) -> Option<(Material, Material)> {
     match level {
         1 => Some((Material::Stone, Material::Coal)),
@@ -696,7 +696,7 @@ pub fn mine_richness_cost(kind: MineKind, current_richness_level: u32) -> Cost {
 /// it.
 ///
 /// **Both numbers, not the difference**, because the interface quotes both — *"6
-/// Compressed Iron, you have 2"* (`organization/UI-EN.md` §6.4). A bare shortfall of
+/// Compressed Iron, you have 2"* (`docs/UI.md` §8.4). A bare shortfall of
 /// four would make the player do the subtraction backwards to learn what the price
 /// actually is.
 ///

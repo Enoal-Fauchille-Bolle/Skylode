@@ -35,7 +35,7 @@ use crate::{action::Action, format::grouped, screen::panel, theme, view::View};
 /// reused as `Fill` weights, per the module note on `screen`.
 const TABLE_WEIGHT: u16 = 48;
 
-/// The Compress panel's share — the 32 columns UI-EN.md §5.4 counted.
+/// The Compress panel's share — the 32 columns `docs/UI.md` §5.3 counted.
 const COMPRESS_WEIGHT: u16 = 32;
 
 /// Draws the table, the compress panel, and the footer.

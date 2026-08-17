@@ -40,7 +40,8 @@ dropped on macOS (a bundle identifier of just `skylode`) and ignored on Linux, s
 project folder is the bare application name on all three.
 
 Only the Linux row has been *observed*; the other two are read off the library's
-implementation. That is the trade [DECISIONS.md](DECISIONS.md) already accepted when
+implementation. That is the trade
+[0113](decisions/0113-the-save-lives-at-the-platform-s-own-data-location.md) already accepted when
 it chose the library — the point of a crate that knows three platforms is not to
 second-guess its conventions from one of them — and the extra component is a directory
 name, not a rule.
@@ -590,7 +591,8 @@ released**. The legacy encoding is "one key = its character", inherited from
 teletypes where a key *was* a character and a character has no duration. The
 release is not lost in transit: it is never encoded. A tty only knows "data stream
 in, data stream out". So *hold Space* — the interaction
-[DECISIONS.md](DECISIONS.md) settles on — is not expressible by default.
+[0044](decisions/0044-mining-interaction-active-continuous-hold-space.md) settles on — is
+not expressible by default.
 
 Two layers, and the second is the one that runs on most machines:
 
@@ -620,8 +622,11 @@ space_held = (now - last_space_event) < HOLD_WINDOW    // HOLD_WINDOW = 1100 ms
 ```
 
 That is the whole mechanism: one subtraction, one comparison. No measurement, no
-calibration, no persisted state — see [DECISIONS.md](DECISIONS.md) for why each of
-those was tried and rejected. The 1100 is not a preference: the window must exceed
+calibration, no persisted state — see
+[0150](decisions/0150-measuring-the-auto-repeat-delay-to-calibrate-hold.md),
+[0151](decisions/0151-querying-the-os-for-the-auto-repeat-delay.md) and
+[0152](decisions/0152-auto-detecting-a-player-whose-auto-repeat-is-disabled.md) for why each
+of those was tried and rejected. The 1100 is not a preference: the window must exceed
 the largest initial auto-repeat delay a user setting can produce (Windows caps at
 1000 ms), or mining cuts out during the gap and resumes, hitching on every hold.
 Since the initial delay and the repeat interval differ, no single timeout avoids

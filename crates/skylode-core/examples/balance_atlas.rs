@@ -171,7 +171,7 @@ fn header() {
     println!("> A hand-kept predecessor of this table went stale the day phase 10 replaced");
     println!("> one cost slope with four; this one cannot. The *rules* these prices");
     println!("> implement live in [MECHANICS.md](MECHANICS.md), and the *reasons* behind");
-    println!("> them in [DECISIONS.md](DECISIONS.md).");
+    println!("> them in [decisions/](decisions/).");
     println!();
 }
 

@@ -97,7 +97,7 @@ impl Pickaxe {
     /// away regardless, swapping its 30 divisor for 100; Skylode has no second
     /// regime, which is why [`TICKS_PER_HARDNESS`](crate::mine) is the mine's only
     /// conversion constant. This predicate is the other side of that decision: below
-    /// the tier the answer is no, not "slowly". See `docs/DECISIONS.md`.
+    /// the tier the answer is no, not "slowly". See `docs/decisions/0005`.
     ///
     /// `pub`, and it needs no gatekeeping: a predicate changes nothing, so unlike
     /// [`upgrade`](Pickaxe::upgrade) there is no free transaction to protect. A
@@ -137,7 +137,7 @@ impl Pickaxe {
     /// the design: Fortune applies to every cell equally. Minecraft exempts
     /// anything that drops itself — every dense block, Obsidian, Ancient Debris —
     /// which would leave the enchant inert across the whole endgame and make mine
-    /// richness *shrink* Fortune's reach instead of scaling it. `docs/DECISIONS.md`
+    /// richness *shrink* Fortune's reach instead of scaling it. `docs/decisions/0020`
     /// settles the other way on both counts, so the fidelity this crate keeps 1:1
     /// for hardness stops here.
     ///
@@ -145,7 +145,7 @@ impl Pickaxe {
     /// *contained* — `Block::drops`, before this multiplier ever runs. If Fortune
     /// paid both, one purchase would advance the pickaxe axis and the level axis at
     /// once, and the two-axis gate the whole progression rests on would collapse to
-    /// one. See `docs/DECISIONS.md`.
+    /// one. See `docs/decisions/0059`.
     ///
     /// Nothing multiplies anything yet: the phase-7 tick is what puts this beside a
     /// broken block, as `inventory.add(item, n * pickaxe.fortune_multiplier())`.
@@ -387,7 +387,7 @@ impl PickaxeTier {
     /// than ever. If the base power itself went backwards — Gold above Diamond —
     /// that dip would become a permanent regression, and the player would be
     /// right to refuse the upgrade. The 1:1 fidelity to Minecraft is kept for
-    /// hardness only. See `docs/DECISIONS.md`.
+    /// hardness only. See `docs/decisions/0014` and `docs/decisions/0018`.
     ///
     /// Tier also gates *which* blocks are mineable, via
     /// [`Block::min_pickaxe_tier`](crate::block::Block::min_pickaxe_tier).

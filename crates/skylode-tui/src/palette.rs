@@ -285,7 +285,7 @@ pub enum CellRole {
 
 /// How many colours the terminal is being asked for.
 ///
-/// A player preference, stored in the save (UI-EN.md §5.7.10) — which is why it is
+/// A player preference, stored in the save (`docs/UI.md` §6.10) — which is why it is
 /// a plain two-variant enum with a `Default` and no detection. What the *terminal*
 /// reports is a separate question, printed beside this choice on the Settings screen
 /// rather than allowed to override it: a player on a terminal that under-reports its

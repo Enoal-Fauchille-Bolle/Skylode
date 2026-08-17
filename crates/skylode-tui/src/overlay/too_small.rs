@@ -1,4 +1,4 @@
-//! The terminal-too-small filter (UI-EN.md §5.7.2, §6.2).
+//! The terminal-too-small filter (`docs/UI.md` §6.2, §8.2).
 //!
 //! This is **not** a screen and **not** a [`super::Modal`]. It has no incoming key
 //! and no outgoing one: it is a pure function of the frame's size, drawn in front
@@ -12,7 +12,7 @@
 //! *any* size, so below the box's own footprint it degrades to the bare `80 x 24`
 //! target with no border at all.
 //!
-//! Per the bootstrap rule (UI-EN.md §3.4) it renders with **hardcoded defaults**
+//! Per the bootstrap rule (`docs/UI.md` §2.3) it renders with **hardcoded defaults**
 //! only — no [`crate::view::View`], no config. There is nothing here a save could
 //! colour, which is the rule doing its job rather than being fought.
 
@@ -24,7 +24,7 @@ use ratatui::{
 
 use super::centered_rect;
 
-/// The reference budget every frame in UI-EN.md is counted against.
+/// The reference budget every frame in `docs/UI.md` is counted against.
 ///
 /// Public because [`fits`] is the predicate the render loop gates on, and a caller
 /// that wants to explain *why* it is showing this screen reads the same two
@@ -34,7 +34,7 @@ pub const MIN_WIDTH: u16 = 80;
 pub const MIN_HEIGHT: u16 = 24;
 
 /// The message box's footprint. Below this the box itself will not fit, so the
-/// filter drops to the bare target — the "no minimum" clause of §5.7.2.
+/// filter drops to the bare target — the "no minimum" clause of §6.2.
 const BOX_WIDTH: u16 = 44;
 /// The message box's height. See [`BOX_WIDTH`].
 const BOX_HEIGHT: u16 = 10;
@@ -92,7 +92,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
 
 /// Builds the caret row that underlines whichever dimension is too small.
 ///
-/// The point of the underline (§5.7.2): a player at 80×18 must learn it is the
+/// The point of the underline (§6.2): a player at 80×18 must learn it is the
 /// *height* that is short, not the width. So the carets sit under the offending
 /// number only — under both, and the ` x ` between them, when both are short,
 /// which is what makes the wireframe's continuous `^^^^^^^` appear.

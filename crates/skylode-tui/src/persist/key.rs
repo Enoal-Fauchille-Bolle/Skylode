@@ -2,7 +2,7 @@
 //!
 //! **The ceiling is structural and comes first.** The game runs on the player's
 //! machine, so the binary necessarily contains everything needed to produce a valid
-//! save. What `docs/DECISIONS.md` chooses is therefore an *effort level*, not a
+//! save. What `docs/decisions/0114` chooses is therefore an *effort level*, not a
 //! guarantee: hiding moves the attack from one command needing no skill to reading
 //! the program itself, which is where the trade's own rule of thumb puts save editing
 //! into the *not worth it* basket for most players. It costs no dependency and

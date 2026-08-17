@@ -107,7 +107,7 @@ impl SaveSlots {
 /// single expression so that what is untested is the lookup and nothing else.
 ///
 /// **[`None`] starts the game without persistence** rather than refusing to launch
-/// (`docs/DECISIONS.md`) — a player who cannot save should still be able to play. It
+/// (`docs/decisions/0113`) — a player who cannot save should still be able to play. It
 /// is an [`Option`] at the edge and *not* a null [`SaveSlots`] that quietly writes
 /// nowhere: nothing in this module can be asked to save into thin air, because
 /// without a `SaveSlots` there is no way to ask. Same shape as
@@ -205,7 +205,7 @@ pub fn save(
 
 /// Reads **one** slot, and reports rather than repairs.
 ///
-/// `docs/DECISIONS.md` keeps both files exactly as they are, so nothing here falls
+/// `docs/decisions/0097` keeps both files exactly as they are, so nothing here falls
 /// back to the backup, deletes a bad file or clamps a value it dislikes. The caller
 /// asks for a path and is told what is at it; `docs/UI.md` §8.3 turns *"restore the
 /// backup"* into a keypress, which means the choice belongs to the player and the
@@ -281,7 +281,7 @@ pub enum PersistError {
     /// The envelope is well formed and its signature does not match the payload.
     ///
     /// The file was edited, or a disk corrupted it in a way that still parses. This is
-    /// the refusal `docs/DECISIONS.md` gives **no** *"continue anyway"*: loading data
+    /// the refusal `docs/decisions/0097` gives **no** *"continue anyway"*: loading data
     /// that failed its HMAC is exactly what a hand-editor needs.
     Tampered,
     /// The file was written by a newer build than this one.

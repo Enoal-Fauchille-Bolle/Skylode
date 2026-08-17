@@ -7,7 +7,7 @@
 //!
 //! The **richness dial is one control, drawn identically on all twelve mines** —
 //! slider, arrows, rung, and the split beneath it. That is a departure from
-//! UI-EN.md §5.3, which reserved the slider for the three mines whose two cells drop
+//! `docs/UI.md` §5.2, which reserved the slider for the three mines whose two cells drop
 //! *different* materials and replaced it with a flat readout on the other nine.
 //!
 //! The spec's argument was about the **stakes**, and it holds: only on Quartz,
@@ -45,7 +45,7 @@ use crate::{
 };
 
 /// The list panel's share of the row, against [`DETAIL_WEIGHT`] — and still the 38
-/// columns UI-EN.md §5.3 counted, per the module note on `screen`.
+/// columns `docs/UI.md` §5.2 counted, per the module note on `screen`.
 const LIST_WEIGHT: u16 = 38;
 
 /// The detail pane's share — the other 42 of the counted 80.
@@ -161,7 +161,7 @@ fn list(frame: &mut Frame, area: Rect, view: &View) {
             // Two marks, and the cursor wins the column when they coincide: `▸` is
             // where the player is *looking*, which is the thing that moved and the
             // thing they need to find again. `●` is a standing fact they can recover
-            // by walking the list. UI.md §5.8.5 keeps both a glyph and a colour, and
+            // by walking the list. UI.md §4.4 keeps both a glyph and a colour, and
             // `theme::marked` derives the second from the first.
             let mark = if row.kind == view.mines.selected {
                 " ▸ "
@@ -274,7 +274,7 @@ fn gate_line(kind: MineKind, detail: &MineDetail) -> String {
 /// composition the bar above is a picture of.
 ///
 /// **A departure from the counted frame, and the same one §5.1 already records for
-/// the Haul strip.** UI-EN.md §5.3 draws `Crying 64%   Obsidian 36%` indented eight
+/// the Haul strip.** `docs/UI.md` §5.2 draws `Crying 64%   Obsidian 36%` indented eight
 /// columns to sit under the bar — but it abbreviates, and the block is really
 /// *Crying Obsidian*. Spelled out, that pair is 31 columns, and the indent plus a
 /// readable gap does not fit the 38 this pane has. Rather than ship an abbreviation
@@ -412,7 +412,7 @@ fn detail(frame: &mut Frame, area: Rect, view: &View) {
     // vertical rule on a slider track reads as the *handle*, and the handle here is
     // already the filled edge — at rung 3 of a bought 6 it would sit at 60 % while the
     // dial is at 30 %, making the loudest glyph on the row point at the wrong number.
-    // Three glyphs and not three colours, for `docs/DECISIONS.md`'s reason about the
+    // Three glyphs and not three colours, for `docs/decisions/0107`'s reason about the
     // mine cells: colour discrimination is the unreliable channel, so the distinction
     // rides on the glyph and survives a remapped palette. At a maxed ceiling the tail is
     // empty and this is exactly the two-tone bar it has always been.
@@ -1008,7 +1008,7 @@ mod tests {
     /// A dial below its ceiling, because the fixture's is *on* its ceiling and would
     /// leave the middle region — the one this test exists to colour — with no cells to
     /// find. The two muted regions share a colour on purpose: they are told apart by
-    /// their glyph, which is the channel `docs/DECISIONS.md` argues is the reliable one,
+    /// their glyph, which is the channel `docs/decisions/0107` argues is the reliable one,
     /// and inventing a third tone would need a contrast gate against a background this
     /// process cannot see (see `theme`).
     #[test]

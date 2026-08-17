@@ -7,7 +7,7 @@
 //! input* becomes a *semantic action* exactly once, in [`keymap`], so that
 //! [`app::App::update`] can be exercised without a terminal at all.
 //!
-//! The design this implements is `organization/UI-EN.md`; the game rules it will
+//! The design this implements is `docs/UI.md`; the game rules it will
 //! eventually render live in `skylode-core`, which this crate may read but never
 //! duplicate.
 

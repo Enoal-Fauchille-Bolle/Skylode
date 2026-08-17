@@ -104,7 +104,7 @@ reviews:
       instructions: |
         `docs/` is the specification and runs ahead of the code on purpose. Flag prose
         that describes behaviour the code has since changed, and flag a change that
-        contradicts a decision recorded in `docs/DECISIONS.md` without saying that it
+        contradicts a decision recorded in `docs/decisions/` without saying that it
         does.
 
 chat:

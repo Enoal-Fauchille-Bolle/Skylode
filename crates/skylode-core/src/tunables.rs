@@ -229,13 +229,13 @@ pub const MILLIS_PER_SECOND: u64 = 1_000;
 /// roughly every four and a half seconds, which is what a player watching a fresh
 /// Stone mine actually sees. This line used to claim 0.55, a figure that only holds
 /// at 50 ticks a second; the rate had been quoted against a tick length the game does
-/// not have. `docs/UI.md` §5.7.4's offline-summary wireframe quotes `0.56 blocks/s`
+/// not have. `docs/UI.md` §6.4's offline-summary wireframe quotes `0.56 blocks/s`
 /// and is stale by the same factor; the screen that replaces it must compute the
 /// figure from this constant rather than transcribe one.
 ///
 /// **It runs from the first tick, unconditionally**, and that is a decision rather
 /// than an oversight: there is no unlock to buy and no level to reach, so a new player
-/// is earning ore before they have swung at anything. See `docs/DECISIONS.md`.
+/// is earning ore before they have swung at anything. See `docs/decisions/0043`.
 ///
 /// Provisional: the MVP auto-miner has no tiers and no purchases, so this single
 /// number is the whole system, and phase 10 sets it against the manual rate it is
@@ -278,7 +278,7 @@ pub const OFFLINE_CAP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 ///
 /// 100 is round enough that the player can do the arithmetic in their head: an
 /// upgrade priced at 650 Iron is quoted as `6 Compressed Iron + 50 Iron`, which
-/// reads better than the single large number. See `docs/DECISIONS.md`.
+/// reads better than the single large number. See `docs/decisions/0024`.
 ///
 /// Not to be confused with `RAW_PER_DENSE_BLOCK` (9), which is what *mining* a
 /// dense block yields. The two are unrelated ratios for unrelated things; see

@@ -59,7 +59,7 @@ use crate::overlay::dev::{self, DevRow, DevState};
 /// The widest the interface is ever drawn, whatever the terminal offers.
 ///
 /// **Twice the counted frame**, and that is the whole justification: the wireframes
-/// in UI-EN.md §5 are 80 columns of *deliberately dense* text, so at 240 columns a
+/// in `docs/UI.md` §5 are 80 columns of *deliberately dense* text, so at 240 columns a
 /// detail pane would be a hundred columns of whitespace with a forty-column
 /// sentence adrift in it. Past this width the surplus becomes margin either side
 /// rather than more line to cross with the eye.
@@ -110,7 +110,7 @@ const HOLD_WINDOW: Duration = Duration::from_millis(1_100);
 /// player watching their mine never meets it, and when it does fire it **announces
 /// itself**, so the latch is never turned off behind the player's back.
 ///
-/// **It is not an anti-cheat measure**, and `docs/DECISIONS.md` is what settles that: a
+/// **It is not an anti-cheat measure**, and `docs/decisions/0126` is what settles that: a
 /// strip of tape over the mine key defeats any bound this could have, and this project
 /// answers that class of question the same way every time — single-player, offline, no
 /// leaderboard. What the switch protects is the *balance* distinction between active
@@ -121,7 +121,7 @@ const HOLD_WINDOW: Duration = Duration::from_millis(1_100);
 /// Fifteen *seconds* was the figure first written down, and it was chosen against the
 /// exploit rather than against play — at that scale *"I am watching my mine"* and *"I
 /// have left"* are not distinguishable, so it made the toggle into a tap-every-fifteen-
-/// seconds. See `docs/DECISIONS.md`.
+/// seconds. See `docs/decisions/0126`.
 pub(crate) const ABSENCE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The most simulation steps one [`App::advance`] will run before giving up and
@@ -1566,7 +1566,7 @@ impl App {
     /// **`M` here has no cap to stop at, and that is deliberate rather than overlooked.**
     /// Every other track ends at a ceiling — a maxed enchant, the last rung, richness 9 —
     /// so "as far as possible" terminates at something the game defines. The boost is the
-    /// one uncapped sink in the economy (`organization/PRICES-FR.md` §Q10), so `M` here
+    /// one uncapped sink in the economy (`docs/decisions/0121`), so `M` here
     /// means *until the purse refuses*, and it can empty a Redstone reserve the enchant
     /// tracks are also paid from. Enoal's call: `M` means the same thing on all four
     /// sub-tabs, and a key that behaved differently on one of them would be the harder
@@ -1627,7 +1627,7 @@ impl App {
     /// *started* from *extended*. Reading the state first is the only way the sentence
     /// can be about what the keypress did.
     ///
-    /// **No confirmation before adding to a running boost**, though `docs/DECISIONS.md`
+    /// **No confirmation before adding to a running boost**, though `docs/decisions/0010`
     /// leaves the interface free to ask for one. The modal it describes was reasoned
     /// about when a second charge *replaced* the first, where firing at 25 of 30
     /// seconds left cost the player 25 seconds; charges stack by addition now, so the
@@ -2056,7 +2056,7 @@ impl App {
     /// Enters the selected mine, or says why it will not open.
     ///
     /// The jump to the Mine screen is the **only screen-to-screen edge** in
-    /// UI-EN.md §6.1's graph, and it is worth the exception: choosing a mine and then
+    /// `docs/UI.md` §8.1's graph, and it is worth the exception: choosing a mine and then
     /// having to press `1` to go look at it is a chore with no decision in it.
     ///
     /// A refusal becomes a toast rather than a modal because
@@ -2234,7 +2234,7 @@ impl App {
         let area = frame.area();
 
         // The terminal-too-small filter used to stand here and now stands one level
-        // up, in `Session::render` (UI-EN.md §6.2). It is not a screen and not a
+        // up, in `Session::render` (`docs/UI.md` §8.2). It is not a screen and not a
         // modal: below the 80×24 budget it replaces the whole frame regardless of
         // what is up — *including the title*, which is what this function cannot
         // see. Keeping a second copy here would mean a check that can never be true.
@@ -2338,7 +2338,8 @@ impl App {
     /// The digits are printed rather than merely bound so the shortcut is
     /// discoverable without opening help — and the prestige readout that used to
     /// share this row was dropped precisely to keep six numbered tabs fitting in
-    /// 80 columns (UI-EN.md §5.7.5).
+    /// 80 columns — a trade `the_tab_bar_fits_the_eighty_column_reference_width`
+    /// now keeps honest.
     ///
     /// **Both styles are stated, though ratatui's default highlight is already
     /// reversed.** UI.md §3 requires the selected tab to be reverse video rather
@@ -2654,7 +2655,7 @@ mod tests {
     fn at_the_counted_size_the_band_is_the_whole_terminal() {
         // The identity case, and the one that matters most: `Max` above the actual
         // width leaves `Flex::Center` nothing to centre, so 80×24 is untouched and
-        // every counted wireframe in UI-EN.md §5 still describes what is drawn.
+        // every counted wireframe in `docs/UI.md` §5 still describes what is drawn.
         let buffer = render_to_buffer(&session());
         assert_eq!(box_span(&buffer), Some((0, 79)));
     }
@@ -2847,8 +2848,8 @@ mod tests {
 
     #[test]
     fn the_tab_bar_fits_the_eighty_column_reference_width() {
-        // UI-EN.md §5.7.5 counts the six-tab bar at 65 columns, which is what
-        // dropping the prestige readout bought. If a renamed tab ever pushes it
+        // The six-tab bar measures 65 columns, which is what dropping the
+        // prestige readout bought. If a renamed tab ever pushes it
         // past 80 this fails rather than silently truncating on a real terminal.
         let buffer = render_to_buffer(&session());
         let bar = row(&buffer, 0);
@@ -4207,7 +4208,7 @@ mod tests {
         app.update(Action::Confirm);
 
         assert_eq!(app.state.current_mine().kind(), MineKind::Coal);
-        // The one screen-to-screen edge in the graph (UI-EN.md §6.1): picking a mine
+        // The one screen-to-screen edge in the graph (`docs/UI.md` §8.1): picking a mine
         // and then having to press `1` to look at it is a chore with no decision.
         assert_eq!(app.screen, Screen::Mine);
         assert!(app.toasts.is_empty(), "an accepted mine announced itself");

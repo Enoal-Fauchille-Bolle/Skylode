@@ -954,7 +954,7 @@ mod tests {
 
     /// Fortune climbs with the world like the five specials — the amendment that
     /// removed the third cap group. What it must *not* lose is its ceiling: the End's
-    /// cap is still 10, the level past which `docs/DECISIONS.md` says more Fortune
+    /// cap is still 10, the level past which `docs/decisions/0020` says more Fortune
     /// buys nothing. A re-balance of `World::enchant_cap` that moved the top would
     /// silently delete that point, so it is pinned here rather than left implied.
     #[test]

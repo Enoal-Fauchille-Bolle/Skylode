@@ -742,7 +742,7 @@ fn enchant_pane(detail: &EnchantDetail, height: usize, format: NumberFormat) -> 
 /// footer but that one. A pane that quoted a price and stopped would be selling
 /// something with no visible effect.
 ///
-/// **The stacking rule is stated, not merely permitted.** `docs/DECISIONS.md` leaves
+/// **The stacking rule is stated, not merely permitted.** `docs/decisions/0010` leaves
 /// the "are you sure?" to the interface and the interface declines to ask one — because
 /// a second charge *adds* its window rather than replacing it, so firing early costs
 /// nothing. That is only true if the player knows it, which is what the last two lines
@@ -798,9 +798,9 @@ fn boost_pane(detail: &BoostDetail, height: usize, format: NumberFormat) -> Vec<
 ///
 /// **Six tracks, not five.** The frame's own prose reads *"all five specials"* and
 /// `docs/UI.md` §5.4.1 still adds *"while Fortune's 10 is its own"* — both predate
-/// `DECISIONS.md`'s amendment, which put Fortune on [`World::enchant_cap`] with the other
-/// five so that no lever in the game is maxable at level 1. `enchant.rs` implements the
-/// amendment; this says what it implements.
+/// `docs/decisions/0039`'s amendment, which put Fortune on [`World::enchant_cap`]
+/// with the other five so that no lever in the game is maxable at level 1.
+/// `enchant.rs` implements the amendment; this says what it implements.
 fn cap_sentence(cap: u8, world: World) -> Vec<String> {
     // Written out because an enum cannot enumerate itself and the core has no `ALL` for
     // worlds — the same reason `MineKind::ALL` had to be added for the Mines screen.

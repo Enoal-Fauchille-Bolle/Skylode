@@ -1,7 +1,7 @@
 //! Overlays: things drawn *over* a screen without costing it a row.
 //!
-//! UI-EN.md §5.7 counts ten of them, and §6.2 splits them in two kinds that are
-//! not the same feature:
+//! `docs/UI.md` §6 specifies them one by one, and §2.2 splits them in two kinds
+//! that are not the same feature:
 //!
 //! - **Pulled** — the player opens them (compression dialog, dip modal, prestige
 //!   preview/confirm, settings). They capture input, so they live in

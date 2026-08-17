@@ -112,8 +112,9 @@ the ore anyway?"*, and with nothing spent the question has no second half.
 - **No mark on a cheated save.** It was considered and rejected: a `cfg`-gated field
   would make the save format differ between profiles, and an always-compiled one puts
   a permanent line in the document to serve a debug-only feature. The project has
-  already settled the underlying question — see [DECISIONS.md](DECISIONS.md) on the
-  free richness re-roll: *single-player, offline, no leaderboard*.
+  already settled the underlying question — see
+  [0057](../docs/decisions/0057-the-free-geometric-re-roll-is-knowingly-left-open-at.md)
+  on the free richness re-roll: *single-player, offline, no leaderboard*.
 
 ## Where the code is
 

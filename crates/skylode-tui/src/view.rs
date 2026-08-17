@@ -2572,7 +2572,7 @@ const SELECTED_RUNG: &str = "Netherite Pickaxe";
 #[cfg(test)]
 /// The topmost drawn rung at 80×24, which is what makes the counted frame the
 /// counted frame: `window(46, 30, 27, 19)` is `27..46`, and row 27 is
-/// `Diamond Eff III`, exactly as UI-EN.md §5.5 drew it.
+/// `Diamond Eff III`, exactly as `docs/UI.md` §5.4 drew it.
 const PICKAXE_OFFSET: usize = 27;
 
 #[cfg(test)]
@@ -4218,7 +4218,7 @@ mod tests {
                 .and_then(|row| row.cells.first())
                 .map(String::as_str),
             Some("Diamond Eff III"),
-            "the counted window no longer starts where UI-EN.md §5.5 drew it"
+            "the counted window no longer starts where docs/UI.md §5.4 drew it"
         );
     }
 

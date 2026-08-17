@@ -117,7 +117,7 @@ pub fn multiplier_permille(rank: u32) -> u32 {
 /// Two linear terms have one, and it is [a comparison of two
 /// slopes](PRESTIGE_SURCHARGE_PER_RANK_PERMILLE).
 ///
-/// **Amethyst, and only Amethyst.** `docs/DECISIONS.md` makes it dual-use on purpose:
+/// **Amethyst, and only Amethyst.** `docs/decisions/0066` makes it dual-use on purpose:
 /// the same ore pushes the End's enchant cap or buys a rank, which is what turns the
 /// End's richness dial into a real three-way decision instead of a slider that is
 /// always worth maxing.
@@ -150,7 +150,7 @@ fn amethyst_price(rank: u32) -> u32 {
 
 /// Why a run cannot prestige yet — or that it can.
 ///
-/// The condition `docs/DECISIONS.md` settles is a **fully realised run**, and it is two
+/// The condition `docs/decisions/0066` settles is a **fully realised run**, and it is two
 /// progression gates: the mining level at [`LEVEL_CAP`] and the pickaxe at
 /// [`Netherite`](PickaxeTier::Netherite). Reaching the End (level 30) alone is not
 /// enough — that left the shortest path an XP race that never climbed a tier, which the
@@ -161,7 +161,7 @@ fn amethyst_price(rank: u32) -> u32 {
 /// and it was the single source of the mono-mine Obsidian grind that phase 10 exists to
 /// flatten. Dropping it leaves Netherite's Efficiency `6..=15` a pure optimisation: the
 /// speedrunner skips it and farms Amethyst, the completionist maxes it, and the two
-/// finally diverge. See `docs/DECISIONS.md`.
+/// finally diverge. See `docs/decisions/0066`.
 ///
 /// A **struct of two [`Option`]s**, the shape [`MineLock`](crate::mine_kind::MineLock)
 /// takes for the mine gate and for the same reason: `docs/UI.md` §6.8 prints each
