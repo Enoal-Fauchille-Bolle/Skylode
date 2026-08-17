@@ -88,5 +88,8 @@ place — link to it.
 **Start at [docs/README.md](docs/README.md)**, which routes by what you are trying to
 do. Before proposing gameplay or systems changes, read
 [docs/decisions/](docs/decisions/) — it records what is settled and what was explicitly
-rejected, and cite a decision by number. Design docs still run ahead of the code in
-places: treat `docs/` as the specification and `crates/` as the part of it that exists.
+rejected, and cite a decision by number. The phases have shipped, so `docs/` now lags
+`crates/` more often than it leads: where a document and the code disagree on a
+**number or a behaviour**, the code is right and the document is stale — say so rather
+than coding to the document. A disagreement about **intent** is a design question, not
+a stale fact: open a decision record.
