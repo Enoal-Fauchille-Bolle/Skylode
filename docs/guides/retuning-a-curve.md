@@ -57,7 +57,7 @@ Four tests measure pacing, and they are in `crates/skylode-core/src/game.rs`:
 | --- | --- |
 | `the_first_prestige_lands_inside_the_pacing_window` | the floor, ~1 h — the speedrunner |
 | `the_completionist_ceiling_stays_inside_its_window` | the ceiling, ~2.3 h |
-| `the_prestige_loop_settles_instead_of_walling` | the ladder's shape across ten ranks |
+| `the_prestige_loop_settles_instead_of_walling` | the ladder's shape across eight ranks |
 | `one_climb_still_banks_about_what_the_price_is_aimed_at` | that `AMETHYST_PER_CLIMB` is still true |
 
 ```sh
