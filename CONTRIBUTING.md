@@ -18,7 +18,7 @@ effort stays aligned with the roadmap.
 ```sh
 cargo build --release   # build the workspace
 cargo test              # run the test suite
-cargo run -p skylode-tui  # play it: Space mines, q quits
+cargo run -p skylode-tui  # play it: Space mines, q backs out to the title
 ```
 
 A debug build also carries a **dev menu** — ore out of nothing, free upgrades, a time
@@ -32,7 +32,9 @@ what follows is when you would reach for one.
 
 ```sh
 scripts/check-docs.sh        # the documentation's linter — links, anchors, Rust names,
-                             # line width, and the decision records' numbering. Runs in CI.
+                             # line width, the decision records' numbering, `§` section
+                             # references, and pointers into the gitignored working
+                             # directory. Runs in CI.
 scripts/coverage.sh          # the workspace's coverage, as a browsable per-line report
 scripts/diff-coverage.sh     # coverage of what *this branch* changed (needs diff-cover)
 scripts/kitty-test.sh        # does this terminal speak the kitty keyboard protocol?
@@ -111,6 +113,13 @@ tag is the only thing that starts a release; nothing else does. Tags that are no
 versions (backup markers, for example) go without the `v` prefix, which is what
 keeps the two kinds apart.
 
+**A tag is safe to move for exactly as long as nothing has been published under it.**
+Both `v0.1.0` and `v0.2.0` failed on their first push and were re-tagged, and neither
+cost anything, because the run had stopped before it uploaded a crate or attached an
+archive. Once either has happened the version is out in the world and the only way
+forward is the next number: crates.io does not accept a second upload of a version,
+and an archive somebody has downloaded cannot be recalled by moving a ref.
+
 ### What a tag does
 
 Pushing one runs [`release.yml`](.github/workflows/release.yml), which re-runs the
@@ -142,6 +151,21 @@ Two things to do by hand before tagging, in this order:
    refuses to resolve `skylode-core = "^<old>"` against the new version.
 2. Decide whether this release wants a hand-written body. Prose is worth it when the
    release speaks to a player; a plumbing release reads better generated.
+3. **Commit everything first.** `cargo publish` refuses a dirty tree, and the reason
+   is worth knowing rather than working around: only a clean run writes a real commit
+   SHA into the `.cargo_vcs_info.json` it packs, which is what ties the uploaded
+   `.crate` back to a revision anybody can check out.
+
+**Publishing by hand happens off-tag, and the divergence is measured rather than
+assumed.** The first upload of a crate cannot come from the workflow, so it comes
+from whatever tree is checked out — and `skylode-core 0.1.0` went to crates.io from a
+commit **eleven commits past `v0.1.0`**. That looks like the registry claiming to
+carry the tagged release while carrying something later, and the way to tell is to run
+the diff rather than to reason about it: `git diff v0.1.0 <commit> -- crates/<crate>/`
+came back **one line**, `rust-version.workspace = true`, with no source change at all.
+The registry therefore holds the tag's code plus a declared MSRV, which is more correct
+than the tag rather than less. The general worry is sound; that instance was harmless;
+only the diff separates the two.
 
 ### What the three numbers promise
 
@@ -191,6 +215,18 @@ The rule runs the other way too, which is the half that is easy to miss. A
 a crate that ships inside the binary. At that point somebody downloading an archive
 is running the vulnerable code, and the release is the entire point. The commit type
 says no; the player says yes; the player wins.
+
+**A breaking dependency bump asks two questions, and the compile error hides the
+second.** `rand` 0.9 to 0.10 is a major for a `0.x` crate — the middle number is the
+breaking axis there too — and it arrived as six `E0599`s, fixed by one import: 0.10
+split `Rng` in two and moved `random`, `random_range` and `random_bool` onto an
+extension trait. That is the *shallow* question. The real one is whether the **draw
+sequence moved**, because rand's own policy allows exactly that at a minor bump before
+1.0, and a changed sequence would corrupt nothing: every save still parses, still
+passes its HMAC, still loads without a word, and every run quietly continues on other
+dice. The golden vectors exist to answer it — and **a crate that does not compile runs
+no tests**, so the fix has to come first and the question second. Fix the build in a
+throwaway worktree, then run the vectors, then decide.
 
 `1.0.0` is reserved for one condition, and it is checkable rather than a matter of
 taste: **the MVP list in [docs/ROADMAP.md](docs/ROADMAP.md) is complete**. Tagging it
@@ -243,8 +279,9 @@ rarely, and never on `main`.
 ## Design context
 
 Before proposing gameplay or systems changes, read the design documents in
-[docs/](docs/), especially [DECISIONS.md](docs/DECISIONS.md), which records what
-has already been settled or rejected and why.
+[docs/](docs/), starting at [docs/README.md](docs/README.md). What has already been
+settled or rejected, and why, is [docs/decisions/](docs/decisions/) — cite a record by
+its number.
 
 To reach a state past the first hour of a run without playing to it, use the dev menu
 ([docs/DEV-MENU.md](docs/DEV-MENU.md)).
