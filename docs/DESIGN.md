@@ -12,7 +12,8 @@ documents:
   by phase.
 - [decisions/](decisions/): settled decisions and rejected ideas, one record each.
 
-**Status:** pre-MVP design.
+**Status:** delivered and playable, pre-1.0. What is left is the balance tail —
+see [ROADMAP.md](ROADMAP.md).
 
 ## Concept
 
