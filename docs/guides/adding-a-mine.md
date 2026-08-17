@@ -10,14 +10,16 @@ blocks, skip to step 2.
 
 Add the variant to `Block` in `crates/skylode-core/src/block.rs`, then run `cargo
 check`. Every method on `Block` is an exhaustive `match`, so the compiler names them:
-`material`, `name`, `hardness`, `world`, `min_pickaxe_tier`, `xp_value`, `drops`.
+`material`, `name`, `hardness`, `world`, `min_pickaxe_tier`, `xp_value`, `drop_amount`.
 
 Two of those are not free choices:
 
 - **`hardness` is Minecraft's number, unchanged.** That 1:1 fidelity is
   [0018](../decisions/0018-break-time-is-ceil-30-hardness-mining-power-minecraft.md), and
   it is what makes break *times* comparable to the source game. It is not a balance dial.
-- **`drops` returns 9 for a dense form and 1 otherwise.** A dense block
+- **`drop_amount` returns `RAW_PER_DENSE_BLOCK` for a dense form and 1 otherwise**, and
+  `drops` pairs it with the material — that one is a two-line delegation, so the
+  compiler will not stop there. A dense block
   (`IronBlock`) is not the same thing as a Compressed unit
   ([0027](../decisions/0027-a-dense-block-and-a-compressed-unit-are-different.md)) —
   one is mined, the other is minted by hand.
