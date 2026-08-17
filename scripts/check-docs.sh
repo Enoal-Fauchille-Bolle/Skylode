@@ -50,12 +50,21 @@ report() {
 # `git ls-files` and not `find`, and this is the load-bearing choice in the whole
 # script. It restricts every check to what is *tracked*, which means a scratch file, a
 # draft, or a private working directory can never fail someone else's build — and it
-# is why `organization/` is not checked here and needs no exemption for it: gitignored
-# is already out of scope. It also means the checks describe the repository as a
-# stranger cloning it sees it, which is the audience this whole exercise is aimed at.
+# is why the contents of `organization/` are not checked here and need no exemption:
+# gitignored is already out of scope. (Checking whether a tracked file *points at*
+# that directory is a different question, and check 7 is the one that asks it.) It
+# also means the checks describe the repository as a stranger cloning it sees it,
+# which is the audience this whole exercise is aimed at.
 mapfile -t DOCS < <(git ls-files '*.md')
 
-printf '%sChecking %d tracked markdown files…%s\n\n' "$BLUE" "${#DOCS[@]}" "$RESET"
+# Checks 6 and 7 read the rustdoc as well, because the crates cite the design
+# documents as heavily as `docs/` cites itself — 416 section references against 150,
+# measured on 2026-08-17 — and `cargo doc -D warnings` validates intra-doc links to
+# *Rust items* only. A `§` and a file path in a doc comment are prose to it.
+mapfile -t SRC < <(git ls-files 'crates/*.rs')
+
+printf '%sChecking %d tracked markdown files and %d source files…%s\n\n' \
+  "$BLUE" "${#DOCS[@]}" "${#SRC[@]}" "$RESET"
 
 # ---------------------------------------------------------------------------
 # 1. Relative links that resolve to nothing.
@@ -66,7 +75,7 @@ printf '%sChecking %d tracked markdown files…%s\n\n' "$BLUE" "${#DOCS[@]}" "$R
 # `docs/` — which is itself the evidence that an unwatched corpus rots and a watched
 # one does not.
 
-printf '%s[1/5]%s relative links\n' "$BLUE" "$RESET"
+printf '%s[1/8]%s relative links\n' "$BLUE" "$RESET"
 
 for f in "${DOCS[@]}"; do
   dir=$(dirname "$f")
@@ -100,7 +109,7 @@ rm -f /tmp/check-docs-links.$$
 # only)` -> `phase-9---save-serialisation-half-only`, where the run of three hyphens
 # is the dropped parenthesis leaving its space behind.
 
-printf '%s[2/5]%s heading anchors\n' "$BLUE" "$RESET"
+printf '%s[2/8]%s heading anchors\n' "$BLUE" "$RESET"
 
 slugify() {
   printf '%s' "$1" \
@@ -158,14 +167,15 @@ rm -f /tmp/check-docs-anchors.$$
 # catch a name that has vanished entirely, which is what a rename produces.
 #
 # The allowlist holds names that are real but live outside `crates/`: two environment
-# variables, a Linux kernel ioctl the keyboard section cites, one rustdoc lint, and
-# the word MASK where `SYSTEMS.md` uses it as prose. Measured on 2026-08-16: those
-# four were the *only* false positives across the whole tracked corpus, which is what
-# makes this check cheap enough to keep.
+# variables, a Linux kernel ioctl the keyboard section cites, one rustdoc lint, the
+# word MASK where `SYSTEMS.md` uses it as prose, and a rustc error code that
+# `CONTRIBUTING.md` quotes from a compiler message. Measured on 2026-08-16 and again
+# on 2026-08-17: those were the *only* false positives across the whole tracked
+# corpus, which is what makes this check cheap enough to keep.
 
-printf '%s[3/5]%s Rust identifiers\n' "$BLUE" "$RESET"
+printf '%s[3/8]%s Rust identifiers\n' "$BLUE" "$RESET"
 
-ALLOWLIST='CARGO_REGISTRY_TOKEN|KDSKBMODE|MASK|SKYLODE_DEV|RUSTDOCFLAGS|rustdoc::private_intra_doc_links|GITHUB_STEP_SUMMARY|GITHUB_OUTPUT'
+ALLOWLIST='E0599|CARGO_REGISTRY_TOKEN|KDSKBMODE|MASK|SKYLODE_DEV|RUSTDOCFLAGS|rustdoc::private_intra_doc_links|GITHUB_STEP_SUMMARY|GITHUB_OUTPUT'
 
 for f in "${DOCS[@]}"; do
   grep -ohE '`[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*`|`[A-Z][A-Z0-9_]{3,}`' "$f" \
@@ -207,7 +217,7 @@ rm -f /tmp/check-docs-ids.$$
 # Measured against those three: the entire tracked corpus had two violations on
 # 2026-08-16, both ordinary prose overshooting by under fifteen columns.
 
-printf '%s[4/5]%s prose line width\n' "$BLUE" "$RESET"
+printf '%s[4/8]%s prose line width\n' "$BLUE" "$RESET"
 
 LIMIT=100
 
@@ -246,7 +256,7 @@ rm -f /tmp/check-docs-width.$$
 # which is why the records are wrapped at 88 columns: to keep that diff readable by
 # the one reviewer who can judge it.
 
-printf '%s[5/5]%s decision records\n' "$BLUE" "$RESET"
+printf '%s[5/8]%s decision records\n' "$BLUE" "$RESET"
 
 ADR_DIR="docs/decisions"
 if [ -d "$ADR_DIR" ]; then
@@ -272,6 +282,27 @@ if [ -d "$ADR_DIR" ]; then
     grep -q "($base)" "$index" || report "record $number is missing from the index"
   done
 
+  # Every `docs/decisions/NNNN` cited anywhere must name a record that exists.
+  #
+  # This is the rustdoc's only way to cite a decision. A doc comment cannot use a
+  # relative markdown link — the generated HTML lives under `target/doc`, so the path
+  # would resolve from the wrong place — so the citation is plain text, and plain text
+  # is what check 1 cannot follow. The form deliberately omits the slug: a slug is
+  # derived from the record's title, so embedding one would make rewording a title
+  # break every citation of it, which is the failure this whole check family exists to
+  # prevent.
+  grep -rhoE 'docs/decisions/[0-9]{4}' "${DOCS[@]}" "${SRC[@]}" Cargo.toml \
+    crates/*/Cargo.toml .coderabbit.yaml 2>/dev/null \
+    | sed 's|.*/||' | sort -u | while read -r cited; do
+    ls "$ADR_DIR/$cited"-*.md > /dev/null 2>&1 \
+      || printf 'a citation names record %s, which does not exist\n' "$cited"
+  done > /tmp/check-docs-cited.$$ || true
+
+  while read -r line; do
+    [ -n "$line" ] && report "$line"
+  done < /tmp/check-docs-cited.$$
+  rm -f /tmp/check-docs-cited.$$
+
   # Every `Supersedes:`/`Superseded by:` target must name a record that exists. The
   # link checker already proves the *path* resolves; this proves the field was filled
   # in with a record rather than with prose.
@@ -286,6 +317,212 @@ if [ -d "$ADR_DIR" ]; then
     [ -n "$line" ] && report "$line"
   done < /tmp/check-docs-adr.$$
   rm -f /tmp/check-docs-adr.$$
+fi
+
+# ---------------------------------------------------------------------------
+# 6. `§` references that name no numbered heading.
+# ---------------------------------------------------------------------------
+#
+# This repository cites sections by number 566 times — `docs/UI.md §5.2`, `(UI.md
+# §6.11)`, a bare `§8.3` in a doc comment — and until 2026-08-17 nothing checked one.
+# Check 2 does the same job for markdown `#anchor` links, but a `§` is prose: it
+# renders as text, so a wrong one is invisible in exactly the way a wrong anchor is.
+#
+# The cost of leaving it unchecked was paid in full when `UI-EN.md` became
+# `docs/UI.md` and the overlays were promoted from a sub-section (§5.7) to a chapter
+# (§6). Every number below §5.7 shifted by one, and everything above it moved further:
+# §5.9 became §7, §6.4 became §8.4. The old numbers did not stop resolving — several
+# of them still name a real section, a *different* one — so a reader following
+# `game.rs`'s §5.3 lands on Inventory where the sentence means Mines. Both crates ended
+# up carrying a mix of the two schemes with nothing to tell them apart, which is the
+# failure this check exists to make impossible.
+#
+# Two resolution rules, and they are the whole of the convention:
+#
+#   - the target is the **last `*.md` named at or before the `§` in the same
+#     paragraph**, matched by basename so `UI.md §5.2` and `docs/UI.md §5.2` mean the
+#     same thing;
+#   - with no file named in the paragraph, the reference points **inside its own
+#     file** for markdown, and at `docs/UI.md` for a doc comment — which is what a bare
+#     `§` has always meant in `crates/`, both crates included.
+#
+# "At or before" reaches exactly one line back, and both halves of that were measured
+# rather than chosen. A strictly line-scoped first draft reported two decision records
+# as unanchored when both name `UI.md` on the line directly above the `§` — everything
+# here is hard-wrapped, so a citation and its file land on either side of a break
+# often. Widening it to the whole paragraph then mis-resolved three of `UI.md`'s own
+# bare references to `MECHANICS.md`, named six lines earlier in the same bullet. One
+# line back is what a wrap can separate; more than that is a different sentence.
+#
+# The second rule has an edge the first pass got wrong, and it is worth stating: a
+# file with no numbered headings of its own — a decision record, say — cannot be the
+# target of its own bare `§`. Two records were citing `§6.8` and `§7` meaning
+# `docs/UI.md`, which a reader of the record has no way to know. Those are reported as
+# *unanchored* rather than dead: the number is fine, the sentence just never says
+# which document numbers it that way.
+#
+# A target that is not tracked is skipped rather than reported: that is check 7's
+# finding, and one mistake should not be counted twice.
+
+printf '%s[6/8]%s section references\n' "$BLUE" "$RESET"
+
+# `file<TAB>number` for every numbered heading, the trailing dot of `## 5. Foo`
+# stripped so it compares equal to the `§5` that cites it.
+#
+# `docs/decisions/` is skipped, and not as an optimisation. A record opens with
+# `# 0068 — The prestige multiplier …`, which is a heading whose first word is a run
+# of digits — indistinguishable, to a regex, from `## 5. The screens`. Indexing it
+# would tell this check that every record carries a section numbered 0068, and the
+# first thing that goes wrong is the unanchored rule below: a record would be judged
+# capable of being the target of its own `§`. Records have no internal numbering at
+# all; their subheadings are `## Decision` and `## Why`.
+for f in "${DOCS[@]}"; do
+  case "$f" in "$ADR_DIR"/*) continue ;; esac
+  grep -oE '^#{1,6} [0-9]+(\.[0-9]+)*\.?[[:space:]]' "$f" \
+    | sed -E 's/^#+ //; s/\.?[[:space:]]$//' \
+    | while read -r n; do printf '%s\t%s\n' "$f" "$n"; done
+done > /tmp/check-docs-headings.$$ || true
+
+for f in "${DOCS[@]}"; do
+  printf '%s\t%s\n' "${f##*/}" "$f"
+done > /tmp/check-docs-basenames.$$
+
+awk '
+  FILENAME == ARGV[1] { heading[$1 "#" $2] = 1; numbered[$1] = 1; next }
+  FILENAME == ARGV[2] { path[$1] = $2; next }
+
+  FNR == 1 { carried = ""; carried_from = 0 }
+
+  {
+    line = $0
+    # Only the line directly above may lend its document to a bare reference.
+    inherited = (FNR == carried_from + 1) ? carried : ""
+    pos = 0
+    while (match(substr(line, pos + 1), /§[0-9]+(\.[0-9]+)*/)) {
+      # Save the match immediately. The filename scan below calls match() in turn,
+      # and match() writes RSTART/RLENGTH globally — reading them afterwards walks
+      # this loop backwards and never terminates.
+      start = pos + RSTART
+      len   = RLENGTH
+      pos   = start + len - 1
+
+      # `§` is two bytes and mawk counts bytes, so the number starts at +2.
+      num = substr(line, start + 2, len - 2)
+      sub(/\.$/, "", num)
+
+      target = inherited
+      tail = substr(line, 1, start - 1)
+      while (match(tail, /[A-Za-z0-9_.\/-]+\.md/)) {
+        target = substr(tail, RSTART, RLENGTH)
+        tail = substr(tail, RSTART + RLENGTH)
+      }
+
+      if (target != "") {
+        base = target
+        sub(/^.*\//, "", base)
+        if (!(base in path)) continue   # untracked: check 7 owns it
+        target = path[base]
+      } else if (FILENAME !~ /\.md$/) {
+        target = "docs/UI.md"
+      } else if (FILENAME in numbered) {
+        target = FILENAME
+      } else {
+        printf "%s:%d cites §%s and names no document; %s has no sections of its own\n", \
+               FILENAME, FNR, num, FILENAME
+        continue
+      }
+
+      if (!((target "#" num) in heading))
+        printf "%s:%d cites §%s, which %s has no heading for\n", \
+               FILENAME, FNR, num, target
+    }
+
+    # Carry the last document this line named into the rest of the paragraph, so that
+    # a bare section reference on the next line resolves against it.
+    tail = line
+    while (match(tail, /[A-Za-z0-9_.\/-]+\.md/)) {
+      carried = substr(tail, RSTART, RLENGTH)
+      carried_from = FNR
+      tail = substr(tail, RSTART + RLENGTH)
+    }
+  }
+' /tmp/check-docs-headings.$$ /tmp/check-docs-basenames.$$ \
+  "${DOCS[@]}" "${SRC[@]}" > /tmp/check-docs-sections.$$ || true
+
+while read -r line; do
+  [ -n "$line" ] && report "section reference: $line"
+done < /tmp/check-docs-sections.$$
+rm -f /tmp/check-docs-headings.$$ /tmp/check-docs-basenames.$$ /tmp/check-docs-sections.$$
+
+# ---------------------------------------------------------------------------
+# 7. Tracked files pointing at a gitignored working document.
+# ---------------------------------------------------------------------------
+#
+# `organization/` holds the working documents this project was drafted in. They are
+# gitignored, so a stranger who clones this repository does not get them, and every
+# tracked sentence that cites one is a dead end for the only reader who matters.
+#
+# The names are listed literally rather than read from the directory, because the
+# directory is precisely what a fresh clone lacks — a check that silently passes when
+# its input is missing is the shape of check that CI green-lights forever.
+#
+# The list is by *basename*, and that is the load-bearing detail. Auditing this on
+# 2026-08-17 with `git grep 'organization/'` found 22 references; the real number was
+# 51, because 29 of them wrote `UI-EN.md` with no directory in front. A rule keyed on
+# the prefix would have been satisfied by a corpus that still pointed, twenty-nine
+# times, at a file nobody has.
+
+printf '%s[7/8]%s references to working documents\n' "$BLUE" "$RESET"
+
+WORKING_DOCS='organization/|UI-EN\.md|PRICES-FR\.md|TODO-(CORE|TUI|CI|REPO)(-[A-Z]+)?\.md|PROMPT-[A-Z-]+\.md'
+
+for f in "${DOCS[@]}" "${SRC[@]}"; do
+  # This script names them all in the comment above, which is the one place the names
+  # have to appear for the rule to be readable at all.
+  [ "$f" = "scripts/check-docs.sh" ] && continue
+  grep -nE "$WORKING_DOCS" "$f" | while IFS=: read -r n _; do
+    printf '%s:%s\n' "$f" "$n"
+  done
+done > /tmp/check-docs-working.$$ || true
+
+while read -r line; do
+  [ -n "$line" ] && report "points at a gitignored working document: $line"
+done < /tmp/check-docs-working.$$
+rm -f /tmp/check-docs-working.$$
+
+# ---------------------------------------------------------------------------
+# 8. A decision count written in prose that the directory contradicts.
+# ---------------------------------------------------------------------------
+#
+# Four tracked files quote the size of `docs/decisions/` as a number in a sentence,
+# and on 2026-08-17 two of them said 157 and two said 154 against a directory holding
+# 157. Nothing distinguished the stale pair from the current one by reading.
+#
+# This is the smallest possible instance of the rule `docs/BALANCE.md` is built on: a
+# figure derivable from the tree is not a fact to maintain by hand. `BALANCE.md` earns
+# a generator; one integer earns a check.
+#
+# Deliberately *not* matched: `DECISIONS.md`'s "a single table of 154 rows", which is
+# a true statement about what the ledger used to be. The pattern requires the words
+# "numbered records", which is the phrase only a claim about the present uses.
+
+printf '%s[8/8]%s decision count\n' "$BLUE" "$RESET"
+
+if [ -d "$ADR_DIR" ]; then
+  actual=$(find "$ADR_DIR" -maxdepth 1 -name '[0-9][0-9][0-9][0-9]-*.md' | wc -l)
+
+  for f in "${DOCS[@]}"; do
+    grep -noE '[0-9]+ numbered records' "$f" | while IFS=: read -r n claim; do
+      claimed=${claim%% *}
+      [ "$claimed" = "$actual" ] \
+        || printf '%s:%s says %s numbered records; there are %s\n' "$f" "$n" "$claimed" "$actual"
+    done
+  done > /tmp/check-docs-count.$$ || true
+
+  while read -r line; do
+    [ -n "$line" ] && report "stale decision count: $line"
+  done < /tmp/check-docs-count.$$
+  rm -f /tmp/check-docs-count.$$
 fi
 
 printf '\n'
