@@ -490,6 +490,16 @@ mod tests {
     /// this test fails, the question is not "what is the new text?" but "what did we
     /// just do to every existing save?" — and the answer is a
     /// [`SAVE_VERSION`] bump with a migration.
+    ///
+    /// **It also pins something it was not written for, and that turned out to
+    /// matter.** The `rng.seed` array below is the 32 *output* bytes of
+    /// `seed_from_u64(1)`, so this literal fixes the `u64` → `[u8; 32]` expansion at
+    /// the byte. That expansion lives in `rand_core` and carries **no** portability
+    /// promise — unlike the ChaCha8 stream it feeds, which `rand_chacha` does promise
+    /// and which is why [`Rng`](crate::rng::Rng) chose it over `StdRng`. A dependency
+    /// bump that rewrote the expansion would leave every golden vector intact and
+    /// still deal a different run; this comparison is what refuses it. Pinning a
+    /// *computed value* rather than a structure is what buys that.
     #[test]
     fn the_written_shape_is_pinned() {
         let state = GameState::new(1, SystemTime::UNIX_EPOCH + Duration::from_secs(1_000));

@@ -58,6 +58,10 @@ gh attestation verify skylode-v0.2.0-x86_64-unknown-linux-gnu.tar.gz \
   --repo Enoal-Fauchille-Bolle/Skylode
 ```
 
+**Success is silent outside a terminal.** Piped into a file or run from a script,
+that command prints nothing and exits `0` — which looks exactly like a command that
+did nothing. Add `--format json` when you need the result in writing.
+
 Or build it yourself:
 
 ```sh

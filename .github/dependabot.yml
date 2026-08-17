@@ -16,6 +16,30 @@
 #
 # Dependabot understands a SHA pin: it rewrites the SHA **and the trailing version
 # comment** together, so the two never drift apart.
+#
+# ---------------------------------------------------------------------------
+# What the Actions tab looks like once this file exists, because it is alarming
+# ---------------------------------------------------------------------------
+#
+# The first week this ran, sixteen runs appeared on the Actions tab. Two thirds of that
+# count is not this repository doing anything, and knowing which third is which saves
+# the next person the triage.
+#
+# **`Dependabot Updates` is not a workflow of this repository.** GitHub runs the updater
+# on its own side and surfaces each *update job* under the same tab as the workflows, so
+# entries appear there that no file here defines and no commit here changed.
+#
+# **Two jobs per ecosystem on the first run is a bootstrap artefact, not a duplicate.**
+# All four were enqueued within three seconds of the push that *created* this file,
+# carrying the same base commit and the same job definition; both cargo jobs computed
+# the identical change set and both called `create_pull_request`. The server
+# deduplicated them, because a group's branch name is a hash of its contents — the
+# second call met a branch that already existed. **One pull request came out of the
+# four.** The `github_actions` pair produced none at all, which is the answer to whether
+# the seven SHA pins had drifted since they were set: they had not.
+#
+# The one third that *was* ours — the same seven jobs running twice on one commit — is
+# fixed, and `ci.yml` argues the fix beside the filter that carries it.
 version: 2
 
 updates:
