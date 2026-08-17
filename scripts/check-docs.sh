@@ -406,8 +406,14 @@ awk '
       len   = RLENGTH
       pos   = start + len - 1
 
-      # `§` is two bytes and mawk counts bytes, so the number starts at +2.
-      num = substr(line, start + 2, len - 2)
+      # Take the number out of the match itself rather than by offset. `§` is one
+      # character and two bytes, and the two awks disagree about which of those
+      # match() counts: mawk counts bytes, gawk in a UTF-8 locale counts characters.
+      # Any fixed `+2` is therefore correct on exactly one of them — the first draft
+      # hard-coded mawk, passed on Debian, and reported 592 findings on a runner
+      # where every `§5.2` had been read as `§.2` and every `§6` as `§`.
+      num = substr(line, start, len)
+      sub(/^§/, "", num)
       sub(/\.$/, "", num)
 
       target = inherited
