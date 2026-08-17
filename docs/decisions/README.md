@@ -8,7 +8,9 @@ replaced a single 154-row table whose lines averaged 524 characters and peaked a
 as a new record that cites the old one, and the old one keeps its argument intact. A
 log whose losing arguments have been overwritten looks authoritative and is not.
 Where a decision was instead *refined in place* before this directory existed, the
-record carries an **Amended** field and an `
+record carries an **Amended** field counting the revisions and an `## Amendments`
+section giving each one and its reason, so the refinement is visible rather than
+folded into the original argument.
 
 ## scope
 
