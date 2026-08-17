@@ -5,3 +5,23 @@ target/
 # report of one machine's run is not a fact about this repository.
 cobertura.xml
 coverage.log
+
+# `CLAUDE.md` carries this repository's conventions, so it is tracked like any other
+# document — and being tracked is what puts it under `scripts/check-docs.sh`, which
+# reads `git ls-files` and could not see it before. That is not a detail: an untracked
+# CLAUDE.md is a document with no executor, which is the condition every stale line
+# this repository has found grew in.
+#
+# The negation is needed because a global ignore file excludes `CLAUDE.md` everywhere.
+# A `.gitignore` inside the repository outranks `core.excludesFile`, so it bites.
+# Verified rather than assumed: `git status --porcelain --ignored CLAUDE.md` reports
+# `??` and not `!!`. (`git check-ignore -v` is the wrong test — it exits 0 when *any*
+# pattern matches, a negation included, and only the leading `!` in its output says
+# which kind matched.)
+!CLAUDE.md
+
+# The half of it that is about personal preferences rather than about Skylode — how he wants things
+# explained, in which language. Useful to an assistant, meaningless to a contributor,
+# and not this project's business. `CLAUDE.local.md` is the documented name for it,
+# and no global rule covers that one.
+CLAUDE.local.md
