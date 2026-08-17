@@ -27,15 +27,25 @@ compiled out of `--release` entirely. See [docs/DEV-MENU.md](docs/DEV-MENU.md).
 
 ## Scripts
 
-Three tools live in [scripts/](scripts/). Each argues its own purpose in its header;
+Five tools live in [scripts/](scripts/). Each argues its own purpose in its header;
 what follows is when you would reach for one.
 
 ```sh
 scripts/check-docs.sh        # the documentation's linter — links, anchors, Rust names,
                              # line width, and the decision records' numbering. Runs in CI.
+scripts/coverage.sh          # the workspace's coverage, as a browsable per-line report
+scripts/diff-coverage.sh     # coverage of what *this branch* changed (needs diff-cover)
 scripts/kitty-test.sh        # does this terminal speak the kitty keyboard protocol?
 scripts/unsaved-game.sh      # run the game where it cannot find or create a save (Linux)
 ```
+
+**`diff-coverage.sh` is the one to run before a large commit.** The workspace figure
+sits near 99 %, which makes it useless as a review signal — a hundred new uncovered
+lines move it by less than a point — and the 94 % gate in CI only refuses a collapse.
+Scoring the diff alone answers the question a reviewer actually has. It needs
+`diff-cover`, a Python tool: `pipx install diff-cover`, or
+`pip install --user --break-system-packages diff-cover` on a distribution that marks its
+Python externally-managed. Compare against another branch with `COMPARE_BRANCH=…`.
 
 `kitty-test.sh` answers a question that comes up as *"why does `Space` fire twice for
 me?"*. The mine key is two layers — a hold inferred from a time window everywhere, and a
