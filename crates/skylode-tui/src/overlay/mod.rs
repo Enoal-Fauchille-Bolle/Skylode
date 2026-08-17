@@ -97,8 +97,10 @@ pub enum Modal {
     /// [`App::modal`](crate::app::App::modal)**, and that is the same device
     /// [`TargetView`](crate::view::TargetView) uses for the cell being dug: two facts
     /// that only mean anything together are stored together, so *"a count of 12 with
-    /// no dialog open"* is a state that cannot be written down. The whole payload is
-    /// [`Copy`], so [`Modal`] stays `Copy` and nothing downstream changes shape.
+    /// no dialog open"* is a state that cannot be written down. This payload is
+    /// [`Copy`], but [`Modal`] itself is not: [`PrestigeConfirm`](Modal::PrestigeConfirm)
+    /// owns the [`String`] the player types, so the enum is [`Clone`] and call sites
+    /// take it by reference or clone it deliberately.
     ///
     /// `material` is read from the Inventory cursor at the moment of opening rather
     /// than followed live: the dialog is *about* one pile, and a cursor that could
