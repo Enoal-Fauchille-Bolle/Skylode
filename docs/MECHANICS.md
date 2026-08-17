@@ -769,9 +769,11 @@ mine more" are different messages, and only one of them is bad news.
 - **The base governs the early game, the slope governs the late one.** Step zero
   costs the base whatever the slope, so raising a slope to make the game harder
   inflates only the endgame. This is why the enchant ladder carries a *high* base and
-  the *gentlest* slope: its ten levels are split 3 / 3 / 4 across the worlds, and a
-  steep curve would make the Overworld's three a rounding error, leaving the ores
-  that fuel them barely demanded.
+  the *gentlest* slope of the tracks every run climbs: its ten levels are split
+  3 / 3 / 4 across the worlds, and a steep curve would make the Overworld's three a
+  rounding error, leaving the ores that fuel them barely demanded. The Netherite
+  enhancement is gentler still and sits outside that comparison on purpose — a
+  ten-step track only a completionist buys, priced apart for exactly that reason.
 - **Most costs are a single material; several are a mix.** A price is a list of
   lines, one per material. The ordinary pickaxe upgrades and the nine same-material
   mine tracks quote a single line. Four prices quote more, and all four **share** one
