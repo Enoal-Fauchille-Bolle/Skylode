@@ -1062,8 +1062,10 @@ impl GameState {
     /// caller that has to *diff the state between frames* to notice an Excavator
     /// proc is guessing: it misses two procs landing in one tick, and it cannot tell
     /// a `+1 Compressed Iron` earned from one the player minted by hand. Six
-    /// mechanics owe the player an announcement, one buffer feeds both the toast and
-    /// the history, and only the inside of the tick can fill it.
+    /// mechanics owe the player an announcement (`docs/decisions/0086`) and one buffer
+    /// feeds both the toast and the history; **four of them happen in here**, and
+    /// nothing outside the tick can see those four. The offline credit and the
+    /// `compress first` refusal are the front-end's to raise.
     ///
     /// An ordinary break emits **nothing** — the inventory and the progress bar are
     /// already readable, and a variant per broken cell would allocate on every tick

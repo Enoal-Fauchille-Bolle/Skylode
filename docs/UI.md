@@ -2732,8 +2732,8 @@ disagreement between the two is a bug to reconcile, not a precedence to look up.
 The two that change shape rather than add a function:
 
 - **`tick` must return what happened, not merely mutate.** Six mechanics need an
-  announcement, one buffer serves both the toast and the history, and the buffer can
-  only be filled from inside the tick.
+  announcement and one buffer serves both the toast and the history; four of the six
+  happen inside the simulation, and nothing outside the tick can see those four.
 - **Spatial events must carry their cell list.** A front-end handed
   `Nuke { blocks: 200 }` cannot draw the shape, and the shape is the reward.
 

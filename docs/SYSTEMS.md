@@ -568,8 +568,10 @@ balance sheet of one swing.
 front-end that had to diff the state between frames to notice an Excavator proc
 would be guessing: it misses two procs landing in the same tick, and it cannot tell
 a `+1 Compressed Iron` earned from one the player minted by hand. Six mechanics owe
-the player an announcement, one buffer feeds both the toast and the Stats history,
-and only the inside of the tick can fill it. Events carry data and never
+the player an announcement and one buffer feeds both the toast and the Stats history
+— but only four of the six happen inside the simulation, so the tick fills the buffer
+for those while the front-end pushes the other two, the offline credit and the
+`compress first` refusal. Events carry data and never
 presentation — no colours, no durations, no instants — so the toast's window and the
 proc flash's decay stay on the front-end's side of the determinism boundary.
 
