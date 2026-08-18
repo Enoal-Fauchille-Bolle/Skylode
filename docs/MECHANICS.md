@@ -401,10 +401,11 @@ three-way call on the scarcest resource in the game: cash out (prestige), power 
 
 **The dial also changes a mine's speed, and not always in the player's favour.** The
 two cells of a mine can differ in hardness, so shifting weight between them shifts how
-long a grid takes. Enriching the Quartz mine makes it **2.4x slower** (Netherrack 0.4
-against Quartz Ore 3.0); enriching the End mine makes it **1.5x slower** (End Stone 10
-against Amethyst 15, phase 10 — see [pickaxe progression](#pickaxe-progression) on why
-the End is hardened); the Obsidian mine is unaffected, both its cells being 50. For the
+long a grid takes. Read across the whole dial — the value cell's weight climbing from
+10 % at richness 0 to 91 % at the top — enriching the Quartz mine makes a grid **4.2x
+slower** (Netherrack 0.4 against Quartz Ore 3.0) and the End mine **1.4x slower** (End
+Stone 10 against Amethyst 15, phase 10 — see [pickaxe progression](#pickaxe-progression)
+on why the End is hardened); the Obsidian mine is unaffected, both its cells being 50. For the
 Quartz mine this falls out of keeping Minecraft's hardness table 1:1; for the End it is
 now designed. Either way it reads as a genuine trade — rarer ore, slower grid — so
 enriching the End is a real cost, not the free speed bonus its soft-Amethyst version
