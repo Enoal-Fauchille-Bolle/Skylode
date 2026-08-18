@@ -83,7 +83,7 @@ place — link to it.
 | what the game must do | `docs/` |
 | why, and what was rejected | `docs/decisions/`, one numbered record each |
 | how to make a change | `docs/guides/` |
-| what is left to do | GitHub issues |
+| what is left to do | `docs/ROADMAP.md` |
 
 **Start at [docs/README.md](docs/README.md)**, which routes by what you are trying to
 do. Before proposing gameplay or systems changes, read

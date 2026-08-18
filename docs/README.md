@@ -33,7 +33,7 @@ The rule this directory is organised around, and the one to keep it organised:
 | what the game must do | **`docs/`** |
 | why, and what was rejected | **`docs/decisions/`** |
 | how to make a change | **`docs/guides/`** |
-| what is left to do | **GitHub issues** |
+| what is left to do | **[ROADMAP.md](ROADMAP.md)** |
 
 Everything else links. A fact restated in a second place is a fact that will be wrong
 in one of them, and there is no way to tell which — the swing order was once written in
