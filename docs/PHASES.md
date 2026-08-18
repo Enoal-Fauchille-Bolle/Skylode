@@ -204,9 +204,11 @@ game pays through. The level goes first because Amethyst only drops in the End, 
 quoting a price to a player thirty levels short of the ore answers the wrong question.
 
 The deep reset takes the pickaxe, Efficiency, Fortune, every enchant, the inventory,
-every mine's size and richness, and the mining level — plus three the design's list
-does not name and that would otherwise survive by omission: the boost reserve, the
-auto-miner's carries, and the mines left behind. It does **not** take the RNG, whose
+every mine's size and richness, and the mining level — plus seven that would
+otherwise survive by omission: the boost reserve, a boost still running, the
+auto-miner's carries, the mines left behind, the uncollected level rewards, the
+prestige multiplier's yield carry, and the run clock (`run_playtime` alone of the
+three counters). It does **not** take the RNG, whose
 *position* is run state — rewinding it would deal the player back an identical run —
 nor `last_seen`, since prestiging is neither a save nor an absence.
 

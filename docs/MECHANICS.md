@@ -933,12 +933,18 @@ source.
   mine sizes, **mine richness**, enchant levels, and the mining level (XP) all reset
   to the start. Richness goes with size because it is the second track of the same
   object, funded in the same currency: keeping it would make the first prestige
-  nearly painless on mines, and re-walking the progression is the point. Three more
-  go with them, for the same reason rather than as an afterthought: the **boost
-  reserve** (ore already converted, plus the charges the erased levels granted), the
-  **auto-miner's carries**, and the **mines left behind** — a run that kept its
+  nearly painless on mines, and re-walking the progression is the point. **Seven
+  more go with them**, for the same reason rather than as an afterthought, and
+  `GameState::prestige` is the exhaustive list — a field that survives by omission
+  survives silently. They are: the **boost reserve** (ore already converted, plus
+  the charges the erased levels granted) and any **boost still running**; the
+  **auto-miner's carries**; the **mines left behind**, since a run that kept its
   visited mines would hold a richness-9 End grid its level-1 player is no longer
-  allowed to enter.
+  allowed to enter; the **uncollected level rewards**
+  ([0099](decisions/0099-a-level-up-announces-it-does-not-pay-the-reward-is.md));
+  the prestige multiplier's own **yield carry**; and the **run clock** — the one of
+  the three counters a reset touches, since `blocks_broken` and `playtime` are
+  lifetime totals.
 - **Persists:** the prestige rank and its permanent global multiplier — **ore yield
   and XP gain, and deliberately not mining speed** (phase 10). Speed was a third term
   and it was the wrong one twice over: past instamine a block falls in one tick and
