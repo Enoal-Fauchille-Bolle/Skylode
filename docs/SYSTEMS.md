@@ -109,10 +109,11 @@ game-state struct. The fields, derived from the mechanics:
   and the prestige multiplier's unpaid fraction of each item. They look like
   bookkeeping and are not: dropping them turns a fractional rate into a floor, which
   at a low enough rate is zero forever.
-- `config`: the player's *preferences* — colour palette (256 or the 16-colour
-  fallback), ASCII-only glyphs, mining input mode, number format. **Not** game
-  state, but it lives here anyway: see below. The core carries it as a **type
-  parameter** and never learns what it is — the front-end gets its own type back.
+- `config`: the player's *preferences* — `colour`, `mining_input`, `number_format`,
+  `toast_duration` and `sub_tab_keys`, one row each on the Settings screen
+  (`UI.md` §6.10). **Not** game state, but it lives here anyway: see below. The
+  core carries it as a **type parameter** and never learns what it is — the
+  front-end gets its own type back.
 
 All the maps in the file are **ordered**, not hashed, so the same run always writes
 the same bytes: a text that varies from write to write can be neither pinned by a
