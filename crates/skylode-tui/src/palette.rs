@@ -361,6 +361,8 @@ pub fn swatch(kind: MineKind, role: CellRole, mode: ColourMode) -> Swatch {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::Path};
+
     use super::*;
 
     /// A colour in CIELAB — the space the palette's gate is quoted in.
@@ -684,5 +686,75 @@ mod tests {
                 ink: Color::White
             }
         );
+    }
+
+    /// One swatch as `docs/UI.md` §4.2 writes a colour cell: the index, then its sRGB.
+    fn as_documented(swatch: Swatch) -> String {
+        let Color::Indexed(index) = swatch.bg else {
+            unreachable!("the 256-colour columns are indexed, never named")
+        };
+        let (red, green, blue) = indexed_rgb(index);
+        format!("**{index}** #{red:02x}{green:02x}{blue:02x}")
+    }
+
+    /// `docs/UI.md` §4.2's table is [`PALETTE`], column for column.
+    ///
+    /// Those twenty-four swatches were transcribed into the document by hand, and a
+    /// transcription is precisely what goes stale in silence here: every other test in
+    /// this module measures the **constant**, so a mistyped index or a `ΔE` left
+    /// behind by a re-tuned colour would survive a green suite indefinitely. Six of
+    /// the seven columns are re-derived below and compared, which makes the two copies
+    /// one — the document can now only be wrong by the game being wrong.
+    ///
+    /// The mine's own name is the seventh column and is deliberately left out:
+    /// `docs/UI.md` §4.2 heads its last row `Amethyst` where [`MineKind::name`]
+    /// answers `End`, and the two block columns beside it already pin which pair the
+    /// row is about.
+    ///
+    /// A failure is a question about the **document** first. What the palette is
+    /// allowed to be is settled by `every_pair_clears_the_contrast_gate` and
+    /// `no_swatch_is_dark_enough_to_read_as_a_hole`, which measure the constant against
+    /// the design rule rather than against the prose quoting it.
+    #[test]
+    fn the_design_document_transcribes_this_palette_exactly() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/UI.md");
+        let doc = fs::read_to_string(&path).unwrap_or_default();
+        assert!(!doc.is_empty(), "{} is unreadable or empty", path.display());
+
+        let rows: Vec<&str> = doc
+            .lines()
+            .skip_while(|line| !line.starts_with("### 4.2"))
+            .take_while(|line| !line.starts_with("### 4.3"))
+            .filter(|line| line.starts_with("| ") && !line.starts_with("| ---"))
+            // The header row is the one whose first cell is not a mine.
+            .skip(1)
+            .collect();
+
+        assert_eq!(
+            rows.len(),
+            PALETTE.len(),
+            "§4.2 tabulates {} mines against {} in the palette",
+            rows.len(),
+            PALETTE.len()
+        );
+
+        for (entry, row) in PALETTE.iter().zip(rows) {
+            let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+            let derived = [
+                format!("`{:?}`", entry.mine.common_block()),
+                as_documented(entry.common),
+                format!("`{:?}`", entry.mine.value_block()),
+                as_documented(entry.value),
+                format!("{:.0}", delta_e(lab(entry.common.bg), lab(entry.value.bg))),
+                format!("{:?}", entry.fallback.bg).to_lowercase(),
+            ];
+
+            assert_eq!(
+                cells[2..8],
+                derived,
+                "§4.2's {:?} row has drifted from PALETTE",
+                entry.mine
+            );
+        }
     }
 }
