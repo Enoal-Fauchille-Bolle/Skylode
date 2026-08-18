@@ -1249,9 +1249,9 @@ two-denomination rule governs **paying**, never receiving.
 > follow the `level × 100` curve the code currently ships, which
 > [ROADMAP.md](ROADMAP.md) still lists as an open tunable — real, but provisional.
 
-**Core reads.** `loot_for_level(n)` and `xp_for_level(n)` for **every** `n`, not
-just the level that fired — a roadmap that can only show the past is a history, and
-Stats already has one.
+**Core reads.** `reward::reward_for_level(n)` and `Player::xp_for_level(n)` for
+**every** `n`, not just the level that fired — a roadmap that can only show the
+past is a history, and Stats already has one.
 
 #### 5.6.1 Departures from the frame above
 
@@ -2724,7 +2724,7 @@ disagreement between the two is a bug to reconcile, not a precedence to look up.
 | `Block::ticks_to_break(power)`, `Pickaxe::power_with(tier, eff)` | the dip in ticks per block, and a rung the player does not own (§5.4, §6.7) | 6 | **done** — `TICKS_PER_HARDNESS` was private to `mine`, and `Enchants::upgrade` is `pub(crate)`, so the front-end could compute neither |
 | `EnchantType::ALL`, `GameState::buy_pickaxe_chain` / `buy_enchant` / `buy_mine_size(kind)` / `buy_mine_richness(kind)` | the first three sub-tabs and their purchases (§5.4) | 6 | **done** — the two mine doors take a `MineKind`, since the cursor may sit on a mine the player is not standing in |
 | `GameState::buy_boost_charge` / `fire_boost` / `boost_charges`, `economy::boost_cost` | the fourth sub-tab, and `b` on the Mine screen (§5.4.4, §5.1) | — | **already public, and unused for two phases** — the core shipped both doors with the reserve and the timer, and nothing called them; this row exists so the next such gap is visible before it is a chantier |
-| `loot_for_level(n)` / `xp_for_level(n)` | the Levels roadmap (§5.6) | 6 | new |
+| `reward::reward_for_level(n)` / `Player::xp_for_level(n)` | the Levels roadmap (§5.6) | 6 | **done** — `reward_for_level` hands back the whole `LevelReward`, payout and boost charge together, so the roadmap and the claim read one value and cannot drift |
 | `tick(&mut self, input) -> Vec<GameEvent>` | toasts, history, the proc flash — **all of them** (§5.5) | 7 | **done** — the front-end drives it from a 20 tps deadline (§10.1) and words each event in `announce` |
 | spatial `Event`s carrying **their cell list** | the proc flash (§7) | 7 | **done** — plus `broken`, a count the list could not stand in for: the shape includes ground already dug, so the toast and the flash need different numbers (§7) |
 | `tunables::TICKS_PER_SECOND` | the simulation deadline (§10.1) | 7 | **already public** — read rather than mirrored: a front-end spelling `50 ms` would give the tick rate a second definition that no balance pass can see |
