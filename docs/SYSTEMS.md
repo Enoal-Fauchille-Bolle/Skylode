@@ -556,7 +556,7 @@ the TUI redraws on change at roughly 30 fps, reading the core state without
 driving it.
 
 The swing inside one tick resolves in a fixed order, and **that order is stated in the
-code, on `GameState::tick`** — it is an execution contract rather than a design
+code, on `GameState::resolve_swing`** — it is an execution contract rather than a design
 intention, so it belongs where a reader can check it against the function that keeps it.
 What matters here is the step that is easy to get wrong: the batch reset is **last**. It
 cannot fire on the break that empties the grid, because a blast can empty it too, and

@@ -180,8 +180,8 @@ Add `tick(input)`, the fixed 20 tps step applying held-Space mining, the auto-mi
 boost timers, XP, and enchant procs — all drawn from the seeded RNG
 (see [SYSTEMS.md](SYSTEMS.md#tick-loop)). The spatial procs themselves already exist
 (phase 4); wiring them up means calling them after a break and putting the refill
-**last** — the shipped order is on `GameState::tick`, which grew two more steps than
-this objective anticipated — which moves the batch reset out of the break that
+**last** — the shipped order is on `GameState::resolve_swing`, five steps with three
+of them fixed — which moves the batch reset out of the break that
 empties the grid and to the end of the step — a blast may empty the mine too, and a
 refill in the middle would drop a full grid under the enchants that have not rolled
 yet. Add a basic flat-rate auto-miner (tiers and purchases are post-MVP); it never

@@ -1070,9 +1070,11 @@ impl GameState {
     /// the player holds Space and hand a maxed Nuke two hundred events to say what
     /// one says. [`Vec::new`] does not allocate, so a quiet tick costs nothing.
     ///
-    /// The order inside is the swing's, and every step of it is load-bearing:
-    /// **boost → impact → procs → XP → loot → refill**. See
-    /// [`resolve_swing`](GameState::resolve_swing).
+    /// The order inside is the boost tick and then the swing's **five** steps, every
+    /// one of them load-bearing: **boost → impact → procs → XP → loot → refill**.
+    /// Only the first belongs to the tick; see
+    /// [`resolve_swing`](GameState::resolve_swing) for the other five and for which
+    /// of them are interchangeable.
     ///
     /// A tick with the key up is not a slower swing but **no** swing, and it
     /// [forfeits](Mine::forfeit_progress) the block in progress: a release costs the
