@@ -25,9 +25,15 @@ carries progression.
 
 ### Level-up rewards
 
-A level-up hands over exactly one **payout**, plus up to two **garnishes** that run
-on their own rhythms and ignore which payout fired. Level-ups never gate content by
-themselves; only the world thresholds do.
+A level-up **announces** exactly one **payout**, plus up to two **garnishes** that
+run on their own rhythms and ignore which payout fired. It hands none of them over:
+the reward is filed against the level and the player collects it on the Levels
+screen — `Enter` for one, `A` for all — and anything still uncollected is lost to a
+prestige
+([0099](decisions/0099-a-level-up-announces-it-does-not-pay-the-reward-is.md)).
+Level-ups never gate content by themselves; only the world thresholds do, and those
+fire on *reaching* the level, so a dimension opens whether or not its rung was ever
+claimed.
 
 **The payout is a world or a bundle of ore, never both and never neither.** Levels
 15 and 30 open a dimension and pay no ore: that world *is* the reward, and a bundle
@@ -76,7 +82,8 @@ the bundle keeps paying in the proportion the player is spending.
 Amethyst`, not `4 Compressed + 55`. Minting a [Compressed](#compression) unit is the
 player's own move, free and reversible both ways, and a reward that arrived pre-split
 would make it for them; the strict two-denomination rule is about *paying*, never about
-receiving. What the Levels screen prints is therefore exactly what lands.
+receiving. What the Levels screen prints is therefore exactly what the player will
+collect from it.
 
 #### The garnishes
 
