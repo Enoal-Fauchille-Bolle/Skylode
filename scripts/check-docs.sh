@@ -160,33 +160,73 @@ rm -f /tmp/check-docs-anchors.$$
 # compiled. This is the markdown half of what `broken_intra_doc_links` already does
 # for the rustdoc.
 #
-# It matches the *last* segment of a path rather than the whole of it: `Foo::bar`
-# passes if `bar` exists anywhere in `crates/`. That is deliberately loose. A stricter
-# check would have to resolve module paths, and the failure it would then report most
-# often is its own — a linter that cries wolf gets deleted, and this one only needs to
-# catch a name that has vanished entirely, which is what a rename produces.
+# Three citation shapes, and the third is the one that had to be argued for. A path
+# (`Foo::bar`) and a SCREAMING_CASE constant were the original two. A bare function
+# named in prose is the shape that let `loot_for_level` live in `UI.md` describing a
+# function nobody ever wrote, so `snake_case(` now counts as well — but **only when
+# the name carries an underscore**. Without that restriction the pattern cannot tell
+# a call from the language itself: `pub(crate)`, `#[serde(…)]`, `expect(dead_code, …)`
+# and the `feat(core):` of a commit example all have the shape *identifier, paren*,
+# and they were seventeen of the eighteen matches when this was measured. Requiring
+# a compound name costs the single-word methods, which the corpus writes as
+# `GameState::tick` anyway, and it left zero false positives across all 179 files.
 #
-# The allowlist holds names that are real but live outside `crates/`: two environment
-# variables, a Linux kernel ioctl the keyboard section cites, one rustdoc lint, the
-# word MASK where `SYSTEMS.md` uses it as prose, and a rustc error code that
-# `CONTRIBUTING.md` quotes from a compiler message. Measured on 2026-08-16 and again
-# on 2026-08-17: those were the *only* false positives across the whole tracked
-# corpus, which is what makes this check cheap enough to keep.
+# What counts as the name existing is the other half, and it is deliberately *not*
+# "a definition". The index below accepts four positions: a declaration keyword, a
+# name opening a line before `,` `:` `(` or `{` — an enum variant, a struct field, a
+# call — and a `use` binding. The looser three are sound for the same reason the
+# strict one is: **none of them survives the definition being renamed, because the
+# crate would stop compiling.** What does survive a rename is a mention in a comment
+# or a string, and those are exactly what this excludes — a comment line opens with
+# `//`, never with an identifier. Requiring a keyword instead would have rejected
+# `Action::CursorUp` and `Session::next_frame`, since `enum Action` declares `Action`
+# and nothing else; a linter that cries wolf gets deleted.
+#
+# The allowlist holds names that are real but that `crates/*.rs` cannot vouch for,
+# in three groups: items of dependencies we cite but do not define, two file names
+# the SCREAMING_CASE pattern cannot tell from a constant, and `PRESTIGE`, which is
+# the word the player types rather than the constant `CONFIRM_WORD` holding it.
+# Measured on 2026-08-18 across the whole tracked corpus: those are the only false
+# positives, which is what makes this check cheap enough to keep.
 
 printf '%s[3/8]%s Rust identifiers\n' "$BLUE" "$RESET"
 
-ALLOWLIST='E0599|CARGO_REGISTRY_TOKEN|KDSKBMODE|MASK|SKYLODE_DEV|RUSTDOCFLAGS|rustdoc::private_intra_doc_links|GITHUB_STEP_SUMMARY|GITHUB_OUTPUT'
+ALLOWLIST='E0599|CARGO_REGISTRY_TOKEN|KDSKBMODE|MASK|SKYLODE_DEV|RUSTDOCFLAGS'
+ALLOWLIST+='|rustdoc::private_intra_doc_links|GITHUB_STEP_SUMMARY|GITHUB_OUTPUT'
+# Items of dependencies: crossterm, directories, ratatui, and one std associated const.
+ALLOWLIST+='|event::poll|ProjectDirs::data_dir|Modifier::DIM|u64::MAX'
+ALLOWLIST+='|REPORT_EVENT_TYPES|REPORT_ALL_KEYS_AS_ESCAPE_CODES'
+# File names, and the word the prestige overlay makes the player type by hand.
+ALLOWLIST+='|LICENSE|SHA256SUMS|PRESTIGE'
+
+# One pass over the sources rather than one per identifier: a few hundred `grep -r`
+# invocations become a single index and a `grep -qxF` membership test each.
+{
+  grep -rhoE '\b(fn|struct|enum|trait|union|type|const|static|mod)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' \
+       --include='*.rs' crates/ | awk '{ print $2 }'
+  grep -rhE '^[[:space:]]*(pub[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[,:({]' \
+       --include='*.rs' crates/ \
+    | sed -E 's/^[[:space:]]*(pub[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*).*/\2/'
+  grep -rhE '^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]' --include='*.rs' crates/ \
+    | grep -oE '[A-Za-z_][A-Za-z0-9_]*'
+} | sort -u > /tmp/check-docs-names.$$
 
 for f in "${DOCS[@]}"; do
   grep -ohE '`[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*`|`[A-Z][A-Z0-9_]{3,}`' "$f" \
     | tr -d '`' | sort -u | while read -r id; do
     printf '%s\t%s\n' "$f" "$id"
   done
+  grep -ohE '`[a-z][a-z0-9_]*_[a-z0-9_]*\(' "$f" \
+    | tr -d '`(' | sort -u | while read -r id; do
+    printf '%s\t%s\n' "$f" "$id"
+  done
 done | sort -u -k2 | while IFS=$'\t' read -r f id; do
   printf '%s' "$id" | grep -qE "^($ALLOWLIST)$" && continue
   last=${id##*::}
-  grep -rqE "\b${last}\b" crates/ || printf '%s cites %s\n' "$f" "$id"
+  grep -qxF "$last" /tmp/check-docs-names.$$ || printf '%s cites %s\n' "$f" "$id"
 done > /tmp/check-docs-ids.$$ || true
+
+rm -f /tmp/check-docs-names.$$
 
 while read -r line; do
   [ -n "$line" ] && report "unknown identifier: $line"
