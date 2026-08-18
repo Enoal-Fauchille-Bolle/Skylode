@@ -201,7 +201,7 @@ competes with the background.
 | Quartz | `Netherrack` | **95** #875f5f | `QuartzOre` | **255** #eeeeee | 53 | red |
 | Ancient Debris | `AncientDebris` | **137** #af875f | `NetheriteBlock` | **238** #444444 | 42 | yellow |
 | Obsidian | `Obsidian` | **54** #5f0087 | `CryingObsidian` | **165** #d700ff | 52 | magenta |
-| Amethyst | `Endstone` | **229** #ffffaf | `Amethyst` | **135** #af5fff | 135 | magenta |
+| End | `Endstone` | **229** #ffffaf | `Amethyst` | **135** #af5fff | 135 | magenta |
 
 ### 4.3 The 16-colour fallback
 
