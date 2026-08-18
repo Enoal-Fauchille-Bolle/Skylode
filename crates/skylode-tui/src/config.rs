@@ -264,11 +264,12 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
+    use std::{fs, path::Path, time::SystemTime};
 
     use skylode_core::{game::GameState, save};
 
     use super::*;
+    use crate::overlay::settings::ROWS;
 
     #[test]
     fn the_default_binding_is_the_shift_arrows_the_footer_advertises() {
@@ -461,5 +462,99 @@ mod tests {
             ),
             Err(error) => unreachable!("a pre-phase-9 save should still load: {error}"),
         }
+    }
+
+    /// The names serde writes for [`Config`]'s fields, in declaration order.
+    ///
+    /// Read back out of the serialised text rather than listed here, so that the two
+    /// copies the tests below compare are never *both* hand-kept — this half is
+    /// whatever the struct actually writes, `#[serde(rename)]` included. Splitting on
+    /// `,` is sound for the reason this module's header gives: every preference is a
+    /// closed enum, so every value is a bare word that can hold no comma of its own.
+    fn serialised_field_names() -> Vec<String> {
+        let Ok(text) = serde_json::to_string(&Config::default()) else {
+            unreachable!("a config of closed enums always serialises")
+        };
+        text.split(',')
+            .filter_map(|pair| pair.split('"').nth(1).map(str::to_owned))
+            .collect()
+    }
+
+    /// `docs/SYSTEMS.md`'s `config` bullet names exactly these fields, in this order.
+    ///
+    /// That bullet is the **premise** of the audit this module's header describes —
+    /// *every config field, and no game-state field* — and it is a hand-kept copy of a
+    /// list the compiler owns. It had already drifted once: it named four preferences,
+    /// one of which this struct never had, and correcting it by hand bought the same
+    /// guarantee for the same short while. This is what makes the next drift fail.
+    ///
+    /// The document's half is read as *every all-lowercase backticked word in the
+    /// bullet*, which is a rule about how that sentence may be worded rather than a
+    /// parser — `` `UI.md` `` and `` `Config` `` fall outside it, and the failure
+    /// message is where the rule is stated to whoever trips it.
+    #[test]
+    fn the_systems_document_names_exactly_these_preferences() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/SYSTEMS.md");
+        let doc = fs::read_to_string(&path).unwrap_or_default();
+        assert!(!doc.is_empty(), "{} is unreadable or empty", path.display());
+
+        // The bullet runs from its own marker to the first blank line or next bullet;
+        // it is four lines long today and nothing may assume it stays four.
+        let mut bullet = String::new();
+        for line in doc.lines() {
+            match line.strip_prefix("- `config`:") {
+                Some(rest) => bullet.push_str(rest),
+                None if bullet.is_empty() => continue,
+                None if line.trim().is_empty() || line.starts_with("- ") => break,
+                None => bullet.push_str(line),
+            }
+            bullet.push(' ');
+        }
+        assert!(
+            !bullet.is_empty(),
+            "no `- `config`:` bullet in {}",
+            path.display()
+        );
+
+        // Backticks alternate open/close, so the *odd* pieces of the split are the
+        // ones that were inside a pair.
+        let documented: Vec<&str> = bullet
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|token| {
+                token
+                    .chars()
+                    .all(|letter| letter.is_ascii_lowercase() || letter == '_')
+            })
+            .collect();
+
+        assert_eq!(
+            documented,
+            serialised_field_names(),
+            "docs/SYSTEMS.md's `config` bullet has drifted from this struct. It is \
+             read as every all-lowercase backticked word in the bullet, so a new \
+             preference belongs in that sentence and an unrelated `like_this` word \
+             does not."
+        );
+    }
+
+    /// The Settings screen draws one row per preference — the audit's other half.
+    ///
+    /// A count and not a mapping, because there is nothing to map through: a
+    /// [`SettingsRow`](crate::overlay::settings::SettingsRow) carries no field name,
+    /// deliberately, and inventing one so a test could match on it would put a third
+    /// copy of the list in the crate. What a count still catches is the failure the
+    /// rule exists for — a field added here and never given a row, which is a
+    /// preference no player can reach without editing the save the HMAC protects.
+    #[test]
+    fn every_preference_has_a_settings_row() {
+        assert_eq!(
+            ROWS.len(),
+            serialised_field_names().len(),
+            "Settings draws {} rows for {} preferences (UI.md §6.10)",
+            ROWS.len(),
+            serialised_field_names().len()
+        );
     }
 }
