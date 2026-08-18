@@ -702,14 +702,16 @@ mod tests {
     /// Those twenty-four swatches were transcribed into the document by hand, and a
     /// transcription is precisely what goes stale in silence here: every other test in
     /// this module measures the **constant**, so a mistyped index or a `ΔE` left
-    /// behind by a re-tuned colour would survive a green suite indefinitely. Six of
-    /// the seven columns are re-derived below and compared, which makes the two copies
-    /// one — the document can now only be wrong by the game being wrong.
+    /// behind by a re-tuned colour would survive a green suite indefinitely. All seven
+    /// columns are re-derived below and compared, which makes the two copies one — the
+    /// document can now only be wrong by the game being wrong.
     ///
-    /// The mine's own name is the seventh column and is deliberately left out:
-    /// `docs/UI.md` §4.2 heads its last row `Amethyst` where [`MineKind::name`]
-    /// answers `End`, and the two block columns beside it already pin which pair the
-    /// row is about.
+    /// **The mine's own name is checked with the rest, and it is the column that had
+    /// already drifted.** The table quoted the *variant* — `Amethyst` — where
+    /// [`MineKind::name`] answers `End`, and the eleven other rows cannot expose that
+    /// class of slip, because their variant and their display name coincide. Only the
+    /// row where the two differ can fail, so it is the only row that ever secured the
+    /// column.
     ///
     /// A failure is a question about the **document** first. What the palette is
     /// allowed to be is settled by `every_pair_clears_the_contrast_gate` and
@@ -741,6 +743,7 @@ mod tests {
         for (entry, row) in PALETTE.iter().zip(rows) {
             let cells: Vec<&str> = row.split('|').map(str::trim).collect();
             let derived = [
+                entry.mine.name().to_owned(),
                 format!("`{:?}`", entry.mine.common_block()),
                 as_documented(entry.common),
                 format!("`{:?}`", entry.mine.value_block()),
@@ -750,7 +753,7 @@ mod tests {
             ];
 
             assert_eq!(
-                cells[2..8],
+                cells[1..8],
                 derived,
                 "§4.2's {:?} row has drifted from PALETTE",
                 entry.mine
