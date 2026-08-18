@@ -186,11 +186,13 @@ discarded leftover buys — progress resets to 0 rather than carrying the oversh
 into the next block, so no amount of power clears more than one cell per tick.
 
 Netherite at Efficiency 15 is worth 235, which instamines the Overworld ores (90)
-and the dense blocks (150) but not Ancient Debris (900) or Obsidian (1500): those
-are what the Haste enchant and the Redstone boost are for — **the two together, not
-one each**. Even Haste at its highest cap tops the pickaxe out at 705, so the last
-two blocks stay out of reach of permanent upgrades *entirely*, and only the
-temporary boost closes the gap. That is the staging this table is meant to have: a
+and their dense forms (150) but not Ancient Debris (900), nor the three
+50-hardness blocks — Obsidian, Crying Obsidian and the Netherite Block, 1500 each,
+the last of them a dense form that is nothing like the others. Those four are what
+the Haste enchant and the Redstone boost are for — **the two together, not one
+each**. Even Haste at its highest cap tops the pickaxe out at 705, so all four stay
+out of reach of permanent upgrades *entirely*, and only the temporary boost closes
+the gap. That is the staging this table is meant to have: a
 ceiling the player cannot buy their way past, which is what leaves the boost a job
 and the endgame a lever. The exact rungs are phase-10 balance, but that ordering is
 not one of them — `mine`'s
@@ -888,7 +890,8 @@ and value, not speed:
   main throughput multiplier once instamine is reached.
 - **[Mine richness](#mine-richness):** more value per cell. This lever *strengthens*
   at instamine, because the extra hardness of a dense cell stops costing anything —
-  one block per tick whatever it is made of — so a dense cell becomes a flat nine
+  one block per tick whatever it is made of, the Netherite Block aside — so a dense
+  cell becomes a flat nine
   for one. It also stacks multiplicatively with Fortune.
 - **Fortune:** more drops per block, up to the cap of 10.
 - **Ore value:** the End's Amethyst is the highest-value ore, mined toward
