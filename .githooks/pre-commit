@@ -1,19 +1,26 @@
 #!/usr/bin/env sh
 # Git pre-commit hook
 #
-# Runs four checks on all Rust code: cargo fmt, check, clippy and doc. A fifth,
-# tarpaulin, ran here until 20bbffa, where it was removed deliberately — this
-# header claimed otherwise for months, which is the kind of comment CONTRIBUTING
-# now calls worse than none. The coverage gate lives in `ci.yml` instead, where it
-# costs a commit nothing and cannot be skipped with a `dev/*` branch name, and the
-# argument for the 94 % figure lives in `tarpaulin.toml`, beside the setting it
-# defends. The step itself stayed here commented out until it had drifted into
-# announcing `[5/5]` among four; git remembers the lines, which is what git is for.
+# Scans the staged changes for secrets, then runs four checks on all Rust code:
+# cargo fmt, check, clippy and doc. A fifth Rust check, tarpaulin, ran here until
+# 20bbffa, where it was removed deliberately — this header claimed otherwise for
+# months, which is the kind of comment CONTRIBUTING now calls worse than none. The
+# coverage gate lives in `ci.yml` instead, where it costs a commit nothing and
+# cannot be skipped with a `dev/*` branch name, and the argument for the 94 %
+# figure lives in `tarpaulin.toml`, beside the setting it defends. The step itself
+# stayed here commented out until it had drifted into announcing `[5/5]` among
+# four; git remembers the lines, which is what git is for.
 #
-# Nothing added by the CI beyond these four belongs here: `cargo-deny`,
+# The secret scan runs before the `dev/*` bypass: a key pushed to a public
+# repository is compromised whatever the branch, and removing it from the history
+# afterwards does not make it secret again. It only looks at the staged diff, so it
+# costs a few tens of milliseconds.
+#
+# Nothing added by the CI beyond these checks belongs here: `cargo-deny`,
 # `actionlint` and the MSRV toolchain all need a tool a fresh clone does not have,
 # and a hook that fails on a missing tool blocks a correct commit for a reason that
-# is not the code.
+# is not the code. `betterleaks` is no exception to the rule, only to the tool: when
+# it is missing, the scan warns and steps aside instead of failing.
 
 # Set up colors
 RED_BOLD="\033[1;31m"
@@ -23,35 +30,46 @@ GOLD_BOLD="\033[1;33m"
 WHITE_BOLD="\033[1;37m"
 RESET="\033[0m"
 
+printf "${BLUE_BOLD}Running pre-commit checks...${RESET}\n"
+
+# Scan the staged changes for secrets, on every branch
+printf "${WHITE_BOLD}[1/5] Scanning for secrets...${RESET}\n"
+if command -v betterleaks >/dev/null 2>&1; then
+    if ! betterleaks git . --pre-commit --staged --no-banner --redact --verbose --log-level warn; then
+        printf "${RED_BOLD}Secret detected. Remove it from the staged changes (see CONTRIBUTING.md for false positives).${RESET}\n"
+        exit 1
+    fi
+else
+    printf "${GOLD_BOLD}betterleaks not installed, skipping the secret scan (see CONTRIBUTING.md).${RESET}\n"
+fi
+
 # Get the current branch name
 branch="$(git branch --show-current)"
 
-# If we are on a dev/ branch, bypass all checks
+# If we are on a dev/ branch, bypass the remaining checks
 case "$branch" in
   dev/*)
-    printf "${GOLD_BOLD}Branch starts with 'dev/', bypassing pre-commit checks.${RESET}\n"
+    printf "${GOLD_BOLD}Branch starts with 'dev/', bypassing the remaining pre-commit checks.${RESET}\n"
     exit 0
     ;;
 esac
 
-printf "${BLUE_BOLD}Running pre-commit checks...${RESET}\n"
-
 # Run cargo fmt
-printf "${WHITE_BOLD}[1/4] Running cargo fmt...${RESET}\n"
+printf "${WHITE_BOLD}[2/5] Running cargo fmt...${RESET}\n"
 if ! cargo fmt --all -- --check; then
     printf "${RED_BOLD}cargo fmt failed. Please run 'cargo fmt' to fix formatting issues.${RESET}\n"
     exit 1
 fi
 
 # Run cargo check
-printf "${WHITE_BOLD}[2/4] Running cargo check...${RESET}\n"
+printf "${WHITE_BOLD}[3/5] Running cargo check...${RESET}\n"
 if ! cargo check --all-targets --all-features; then
     printf "${RED_BOLD}cargo check failed. Please fix the compilation errors.${RESET}\n"
     exit 1
 fi
 
 # Run cargo clippy
-printf "${WHITE_BOLD}[3/4] Running cargo clippy...${RESET}\n"
+printf "${WHITE_BOLD}[4/5] Running cargo clippy...${RESET}\n"
 if ! cargo clippy --all-targets --all-features -- -D warnings; then
     printf "${RED_BOLD}cargo clippy failed. Please fix the linting warnings.${RESET}\n"
     exit 1
@@ -62,7 +80,7 @@ fi
 # commit over a rustdoc warning inside `rand`, which is not ours to fix. This
 # catches an intra-doc link to an item that was renamed or removed; it cannot
 # catch rustdoc whose prose has quietly stopped being true.
-printf "${WHITE_BOLD}[4/4] Running cargo doc...${RESET}\n"
+printf "${WHITE_BOLD}[5/5] Running cargo doc...${RESET}\n"
 if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --all-features; then
     printf "${RED_BOLD}cargo doc failed. Please fix the rustdoc warnings.${RESET}\n"
     exit 1

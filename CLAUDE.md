@@ -35,10 +35,11 @@ cargo run -p skylode-core --example balance_atlas > docs/BALANCE.md
 
 `doc-all` is a `.cargo/config.toml` alias for `doc --document-private-items`; plain
 `cargo doc` silently drops every link to a `pub(crate)` item, which is most of the
-interesting ones. The `pre-commit` hook runs fmt, check, clippy and **doc with
-`-D warnings`**; tarpaulin and `check-docs.sh` are deliberately *not* in it, so both are
-conventions run by hand and gates run in CI. Both hooks bypass everything on a `dev/*`
-branch. Install once per clone with `.githooks/setup-hooks.sh`.
+interesting ones. The `pre-commit` hook runs a Betterleaks secret scan, then fmt, check,
+clippy and **doc with `-D warnings`**; tarpaulin and `check-docs.sh` are deliberately
+*not* in it, so both are conventions run by hand and gates run in CI. Both hooks bypass
+everything but the secret scan on a `dev/*` branch. Install once per clone with
+`.githooks/setup-hooks.sh`.
 
 ## Conventions
 

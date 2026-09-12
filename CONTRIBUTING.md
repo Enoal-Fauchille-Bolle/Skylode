@@ -256,9 +256,10 @@ Both scripts do the same thing: `git config core.hooksPath .githooks`, which
 points git at the versioned hooks instead of the local `.git/hooks/`. Undo it
 with `git config --unset core.hooksPath`.
 
-- **`pre-commit`** runs `cargo fmt --check`, `cargo check`, and `cargo clippy -D
-  warnings` over the workspace, and refuses the commit on the first failure. It
-  is the slow one, since it compiles.
+- **`pre-commit`** scans the staged changes for secrets (see [Secret
+  scan](#secret-scan)), then runs `cargo fmt --check`, `cargo check`, `cargo
+  clippy -D warnings` and `cargo doc -D warnings` over the workspace, and refuses
+  the commit on the first failure. It is the slow one, since it compiles.
 - **`commit-msg`** validates the commit message against the rules above: type
   from the closed list, optional lowercase scope, optional breaking-change `!`,
   subject in the imperative mood and 72 characters at most, no trailing period,
@@ -266,8 +267,10 @@ with `git config --unset core.hooksPath`.
 
 Both hooks step aside where enforcing them would only get in the way:
 
-- **On a `dev/*` branch**, both bypass every check. Work in progress stays cheap
-  there; rewrite the history before merging into `main`.
+- **On a `dev/*` branch**, both bypass every check but the secret scan. Work in
+  progress stays cheap there; rewrite the history before merging into `main`. A
+  pushed key is compromised whatever the branch, and rewriting the history does not
+  make it secret again, so the scan runs everywhere.
 - **On the messages git writes itself** (merges, reverts, `fixup!`/`squash!`),
   `commit-msg` bypasses validation. They cannot follow the convention and are not
   typed by hand. This is also why there is no `merge` type: a merge is already
@@ -275,6 +278,30 @@ Both hooks step aside where enforcing them would only get in the way:
 
 Skipping a hook for a single commit is `git commit --no-verify`. Reach for it
 rarely, and never on `main`.
+
+### Secret scan
+
+The scan runs [Betterleaks](https://github.com/betterleaks/betterleaks) over the
+staged changes only, so it takes a few tens of milliseconds. A fresh clone does not
+have it: without it on the `PATH`, `pre-commit` prints a warning and carries on,
+so install it once:
+
+```sh
+brew install betterleaks        # macOS, Linux
+sudo dnf install betterleaks    # Fedora
+```
+
+On Windows, download `betterleaks_<version>_windows_x64.zip` from the
+[releases](https://github.com/betterleaks/betterleaks/releases) and put
+`betterleaks.exe` on the `PATH`. `go install github.com/betterleaks/betterleaks@latest`
+works anywhere Go does.
+
+When the scan flags something that is not a secret, such as a test fixture, end
+that line with a `betterleaks:allow` comment rather than skipping the hook:
+
+```rust
+const FIXTURE: &str = "..."; // betterleaks:allow
+```
 
 ## Design context
 
